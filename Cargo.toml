@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rp-core",
+    "crates/rp-io",
+    "crates/rp-transforms",
+    "crates/rp-java",
+    "crates/rp-bedrock",
+    "crates/rp-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+thiserror = "2.0"
+anyhow = "1.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+rayon = "1.10"
+clap = { version = "4.5", features = ["derive"] }
+indicatif = "0.17"
+proptest = "1.5"
+tempfile = "3.12"
+
+rp-core = { path = "crates/rp-core" }
+rp-io = { path = "crates/rp-io" }
+rp-transforms = { path = "crates/rp-transforms" }
+rp-java = { path = "crates/rp-java" }
+rp-bedrock = { path = "crates/rp-bedrock" }

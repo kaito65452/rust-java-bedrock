@@ -1,0 +1,28 @@
+[package]
+name = "rp-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rp-cli"
+path = "src/main.rs"
+
+[dependencies]
+rp-core.workspace = true
+rp-io.workspace = true
+rp-transforms.workspace = true
+rp-java.workspace = true
+rp-bedrock.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+image.workspace = true
+zip.workspace = true
+uuid.workspace = true

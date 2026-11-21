@@ -1,0 +1,15 @@
+[package]
+name = "rp-bedrock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rp-core.workspace = true
+rp-io.workspace = true
+rp-transforms.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+rayon.workspace = true
