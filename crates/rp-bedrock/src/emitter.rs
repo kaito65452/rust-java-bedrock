@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rp_core::{
-    BedrockGeoVersion, ConversionReport, Edition, MappingTable, ResourcePackIR, WarningSeverity,
+    BedrockGeoVersion, ConversionReport, Edition, MappingTable, ModelCategory, ResourcePackIR,
+    WarningSeverity,
 };
 use rp_io::PackContainer;
 use rp_transforms::locale::{
     emit_bedrock_lang, normalize_locale_to_bedrock, transform_locale_keys,
 };
-use rp_transforms::model::model_asset_to_bedrock_geo_versioned;
+use rp_transforms::model::model_asset_to_bedrock_geo_with_head_bind;
 use rp_transforms::texture::{
     FlipbookEntry, build_item_texture_json, build_terrain_texture_json, java_animation_to_flipbook,
 };
@@ -101,6 +102,25 @@ pub fn emit_bedrock_pack(
         .bedrock_geo_version
         .unwrap_or_else(|| BedrockGeoVersion::for_engine_version(min_engine));
 
+    let attachable_targets: BTreeSet<String> = ir
+        .attachables
+        .values()
+        .flat_map(|att| {
+            let mut refs = Vec::new();
+            let item_name = att
+                .item_identifier
+                .strip_prefix("minecraft:")
+                .unwrap_or(&att.item_identifier);
+            refs.push(format!("item/{item_name}"));
+            if let Some(geo_id) = &att.default_geometry {
+                let stem = geo_id.strip_prefix("geometry.").unwrap_or(geo_id.as_str());
+                refs.push(stem.to_string());
+                refs.push(format!("entity/{stem}"));
+            }
+            refs
+        })
+        .collect();
+
     for (model_id, model) in &ir.models {
         if model.elements.is_empty() {
             report.record_warning(
@@ -110,7 +130,15 @@ pub fn emit_bedrock_pack(
             );
             continue;
         }
-        let geo = model_asset_to_bedrock_geo_versioned(model, mappings, geo_version, &mut report);
+        let bind_to_head = attachable_targets.contains(model_id.as_str())
+            || (!ir.attachables.is_empty() && model.category == ModelCategory::Item);
+        let geo = model_asset_to_bedrock_geo_with_head_bind(
+            model,
+            mappings,
+            geo_version,
+            bind_to_head,
+            &mut report,
+        );
         let geo_path = if let Some(rest) = model_id.strip_prefix("entity/") {
             format!("models/entity/{rest}.geo.json")
         } else {

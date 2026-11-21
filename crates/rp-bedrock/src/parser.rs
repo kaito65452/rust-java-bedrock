@@ -354,6 +354,7 @@ pub fn parse_bedrock_pack_with_options(
 
     // Link attachable textures & synthesize Java item models when an attachable references a parsed geometry.
     let mut synthesized_models: Vec<ModelAsset> = Vec::new();
+    let mut first_helmet_model: Option<ModelAsset> = None;
     for attachable in ir.attachables.values() {
         let Some(geo_id) = &attachable.default_geometry else {
             continue;
@@ -405,10 +406,23 @@ pub fn parse_bedrock_pack_with_options(
                     if item_model.display.is_empty() {
                         item_model.display = default_wearable_display_transforms();
                     }
+                    if item_name.ends_with("_helmet") && first_helmet_model.is_none() {
+                        first_helmet_model = Some(item_model.clone());
+                    }
                     synthesized_models.push(item_model);
                 }
             }
         }
+    }
+    if let Some(helmet_model) = first_helmet_model
+        && !ir.models.contains_key("item/carved_pumpkin")
+        && !synthesized_models
+            .iter()
+            .any(|m| m.id == "item/carved_pumpkin")
+    {
+        let mut pumpkin_model = helmet_model;
+        pumpkin_model.id = String::from("item/carved_pumpkin");
+        synthesized_models.push(pumpkin_model);
     }
     for model in synthesized_models {
         ir.models.insert(model.id.clone(), model);
@@ -453,17 +467,17 @@ fn default_wearable_display_transforms() -> BTreeMap<String, DisplayTransform> {
         (
             String::from("gui"),
             DisplayTransform {
-                rotation: [30.0, 225.0, 0.0],
+                rotation: [25.0, 145.0, 0.0],
                 translation: [0.0, 0.0, 0.0],
-                scale: [0.625, 0.625, 0.625],
+                scale: [0.85, 0.85, 0.85],
             },
         ),
         (
             String::from("head"),
             DisplayTransform {
                 rotation: [0.0, 0.0, 0.0],
-                translation: [0.0, 0.0, 0.0],
-                scale: [1.0, 1.0, 1.0],
+                translation: [0.0, 0.0, -4.25],
+                scale: [1.1, 1.1, 1.1],
             },
         ),
         (

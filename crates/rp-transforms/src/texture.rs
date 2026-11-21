@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
-use image::{ImageFormat, ImageReader, RgbaImage, imageops};
+use image::{ImageFormat, ImageReader, Rgba, RgbaImage, imageops};
 use serde::{Deserialize, Serialize};
 
 use rp_core::{
-    AnimationFrame, AnimationSpec, ConversionReport, CoreError, MappingTable, TextureAsset,
-    TextureCategory, WarningSeverity,
+    AnimationFrame, AnimationSpec, ConversionReport, CoreError, FaceDirection, MappingTable,
+    ModelAsset, ModelElement, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
 };
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -364,6 +364,185 @@ pub fn build_item_texture_json(
         texture_name: String::from("atlas.items"),
         texture_data,
     }
+}
+
+/// Renders an orthographic 128x64 humanoid helmet armor sheet PNG from a 3D `ModelAsset` and its texture.
+pub fn render_model_to_humanoid_helmet_png(
+    model: &ModelAsset,
+    tex_payload: &TexturePayload,
+) -> Result<Vec<u8>, CoreError> {
+    let decoded = tex_payload.decode()?;
+    let (src_w, src_h) = decoded.dimensions();
+    let mut out = RgbaImage::new(128, 64);
+
+    if model.elements.is_empty() || src_w == 0 || src_h == 0 {
+        let mut buf = Vec::new();
+        out.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)?;
+        return Ok(buf);
+    }
+
+    let mut min_c = [f32::INFINITY; 3];
+    let mut max_c = [f32::NEG_INFINITY; 3];
+    for el in &model.elements {
+        for i in 0..3 {
+            min_c[i] = min_c[i].min(el.from[i]).min(el.to[i]);
+            max_c[i] = max_c[i].max(el.from[i]).max(el.to[i]);
+        }
+    }
+    let span_x = (max_c[0] - min_c[0]).max(0.001);
+    let span_y = (max_c[1] - min_c[1]).max(0.001);
+    let span_z = (max_c[2] - min_c[2]).max(0.001);
+
+    let mut project_face = |dir: FaceDirection, ox: u32, oy: u32| {
+        let mut refs: Vec<&ModelElement> = model
+            .elements
+            .iter()
+            .filter(|el| el.faces.contains_key(&dir))
+            .collect();
+        refs.sort_by(|a, b| match dir {
+            FaceDirection::North => b.from[2].total_cmp(&a.from[2]),
+            FaceDirection::South => a.to[2].total_cmp(&b.to[2]),
+            FaceDirection::West => b.from[0].total_cmp(&a.from[0]),
+            FaceDirection::East => a.to[0].total_cmp(&b.to[0]),
+            FaceDirection::Up => a.to[1].total_cmp(&b.to[1]),
+            FaceDirection::Down => b.from[1].total_cmp(&a.from[1]),
+        });
+
+        for el in refs {
+            let Some(face) = el.faces.get(&dir) else {
+                continue;
+            };
+            let uv = face.uv.unwrap_or([0.0, 0.0, 16.0, 16.0]);
+            let (u0, u1, v0, v1) = match dir {
+                FaceDirection::North => (
+                    (max_c[0] - el.to[0]) / span_x,
+                    (max_c[0] - el.from[0]) / span_x,
+                    (max_c[1] - el.to[1]) / span_y,
+                    (max_c[1] - el.from[1]) / span_y,
+                ),
+                FaceDirection::South => (
+                    (el.from[0] - min_c[0]) / span_x,
+                    (el.to[0] - min_c[0]) / span_x,
+                    (max_c[1] - el.to[1]) / span_y,
+                    (max_c[1] - el.from[1]) / span_y,
+                ),
+                FaceDirection::West => (
+                    (max_c[2] - el.to[2]) / span_z,
+                    (max_c[2] - el.from[2]) / span_z,
+                    (max_c[1] - el.to[1]) / span_y,
+                    (max_c[1] - el.from[1]) / span_y,
+                ),
+                FaceDirection::East => (
+                    (el.from[2] - min_c[2]) / span_z,
+                    (el.to[2] - min_c[2]) / span_z,
+                    (max_c[1] - el.to[1]) / span_y,
+                    (max_c[1] - el.from[1]) / span_y,
+                ),
+                FaceDirection::Up => (
+                    (el.from[0] - min_c[0]) / span_x,
+                    (el.to[0] - min_c[0]) / span_x,
+                    (el.from[2] - min_c[2]) / span_z,
+                    (el.to[2] - min_c[2]) / span_z,
+                ),
+                FaceDirection::Down => (
+                    (el.from[0] - min_c[0]) / span_x,
+                    (el.to[0] - min_c[0]) / span_x,
+                    (max_c[2] - el.to[2]) / span_z,
+                    (max_c[2] - el.from[2]) / span_z,
+                ),
+            };
+            draw_projected_quad(&mut out, ox, oy, [u0, v0, u1, v1], &decoded, uv);
+        }
+    };
+
+    project_face(FaceDirection::Up, 16, 0);
+    project_face(FaceDirection::West, 0, 16);
+    project_face(FaceDirection::North, 16, 16);
+    project_face(FaceDirection::East, 32, 16);
+    project_face(FaceDirection::South, 48, 16);
+
+    let mut png_bytes = Vec::new();
+    out.write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)?;
+    Ok(png_bytes)
+}
+
+fn draw_projected_quad(
+    dst: &mut RgbaImage,
+    ox: u32,
+    oy: u32,
+    norm_bounds: [f32; 4],
+    src: &RgbaImage,
+    java_uv: [f32; 4],
+) {
+    let (src_w, src_h) = src.dimensions();
+    if src_w == 0 || src_h == 0 {
+        return;
+    }
+
+    let x_start = (norm_bounds[0].min(norm_bounds[2]) * 16.0).floor() as i32;
+    let x_end = (norm_bounds[0].max(norm_bounds[2]) * 16.0).ceil() as i32;
+    let y_start = (norm_bounds[1].min(norm_bounds[3]) * 16.0).floor() as i32;
+    let y_end = (norm_bounds[1].max(norm_bounds[3]) * 16.0).ceil() as i32;
+
+    let x_lo = x_start.clamp(0, 15);
+    let x_hi = x_end.saturating_sub(1).max(x_lo).clamp(0, 15);
+    let y_lo = y_start.clamp(0, 15);
+    let y_hi = y_end.saturating_sub(1).max(y_lo).clamp(0, 15);
+
+    let dx_norm = (norm_bounds[2] - norm_bounds[0]).abs();
+    let dy_norm = (norm_bounds[3] - norm_bounds[1]).abs();
+
+    for py in y_lo..=y_hi {
+        let ty = if dy_norm < 1e-5 {
+            0.5
+        } else {
+            (((py as f32 + 0.5) / 16.0 - norm_bounds[1]) / (norm_bounds[3] - norm_bounds[1]))
+                .clamp(0.0, 1.0)
+        };
+        let v = (java_uv[1] + (java_uv[3] - java_uv[1]) * ty) * (src_h as f32 / 16.0);
+        let sy = (v.floor() as i32).clamp(0, (src_h - 1) as i32) as u32;
+
+        for px in x_lo..=x_hi {
+            let tx = if dx_norm < 1e-5 {
+                0.5
+            } else {
+                (((px as f32 + 0.5) / 16.0 - norm_bounds[0]) / (norm_bounds[2] - norm_bounds[0]))
+                    .clamp(0.0, 1.0)
+            };
+            let u = (java_uv[0] + (java_uv[2] - java_uv[0]) * tx) * (src_w as f32 / 16.0);
+            let sx = (u.floor() as i32).clamp(0, (src_w - 1) as i32) as u32;
+            let src_px = *src.get_pixel(sx, sy);
+            if src_px[3] > 0 {
+                let dx = ox + px as u32;
+                let dy = oy + py as u32;
+                if src_px[3] == 255 {
+                    dst.put_pixel(dx, dy, src_px);
+                } else {
+                    let existing = *dst.get_pixel(dx, dy);
+                    dst.put_pixel(dx, dy, blend_over(existing, src_px));
+                }
+            }
+        }
+    }
+}
+
+fn blend_over(dst: Rgba<u8>, src: Rgba<u8>) -> Rgba<u8> {
+    let sa = f32::from(src[3]) / 255.0;
+    let da = f32::from(dst[3]) / 255.0;
+    let out_a = sa + da * (1.0 - sa);
+    if out_a <= 1e-6 {
+        return Rgba([0, 0, 0, 0]);
+    }
+    let ch = |i: usize| -> u8 {
+        let v = (f32::from(src[i]) * sa + f32::from(dst[i]) * da * (1.0 - sa)) / out_a;
+        v.round().clamp(0.0, 255.0) as u8
+    };
+    Rgba([
+        ch(0),
+        ch(1),
+        ch(2),
+        (out_a * 255.0).round().clamp(0.0, 255.0) as u8,
+    ])
 }
 
 fn gcd(mut a: u32, mut b: u32) -> u32 {

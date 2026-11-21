@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -433,6 +433,18 @@ pub fn model_asset_to_bedrock_geo_versioned(
     geo_version: BedrockGeoVersion,
     report: &mut ConversionReport,
 ) -> BedrockGeoFile {
+    model_asset_to_bedrock_geo_with_head_bind(model, mappings, geo_version, false, report)
+}
+
+/// Converts a canonical `ModelAsset` into Bedrock `BedrockGeoFile` with optional player-head bone binding.
+#[must_use]
+pub fn model_asset_to_bedrock_geo_with_head_bind(
+    model: &ModelAsset,
+    mappings: &MappingTable,
+    geo_version: BedrockGeoVersion,
+    bind_to_head: bool,
+    report: &mut ConversionReport,
+) -> BedrockGeoFile {
     if model.has_overrides {
         report.record_lossy(
             &model.id,
@@ -448,6 +460,15 @@ pub fn model_asset_to_bedrock_geo_versioned(
     let uv_scale_x = tex_w as f32 / 16.0;
     let uv_scale_y = tex_h as f32 / 16.0;
 
+    let y_offset = if bind_to_head
+        && !model.elements.is_empty()
+        && model.elements.iter().all(|e| e.to[1] <= 20.0)
+    {
+        16.0
+    } else {
+        0.0
+    };
+
     let identifier = model_id_to_bedrock_identifier(&model.id, mappings);
     let mut bone_map: BTreeMap<String, Vec<BedrockCube>> = BTreeMap::new();
 
@@ -456,16 +477,25 @@ pub fn model_asset_to_bedrock_geo_versioned(
             .group
             .clone()
             .unwrap_or_else(|| String::from("root"));
-        let (origin, size) = java_to_bedrock_box(element.from, element.to);
+        let (mut origin, size) = java_to_bedrock_box(element.from, element.to);
+        if y_offset != 0.0 {
+            origin[1] = clean_zero(origin[1] + y_offset);
+        }
 
         let (pivot, rotation) = match &element.rotation {
-            Some(rot) => (
-                Some(java_to_bedrock_pivot(rot.origin)),
-                Some(
-                    rot.extra_bedrock_euler
-                        .unwrap_or_else(|| java_to_bedrock_rotation(rot.axis, rot.angle)),
-                ),
-            ),
+            Some(rot) => {
+                let mut b_pivot = java_to_bedrock_pivot(rot.origin);
+                if y_offset != 0.0 {
+                    b_pivot[1] = clean_zero(b_pivot[1] + y_offset);
+                }
+                (
+                    Some(b_pivot),
+                    Some(
+                        rot.extra_bedrock_euler
+                            .unwrap_or_else(|| java_to_bedrock_rotation(rot.axis, rot.angle)),
+                    ),
+                )
+            }
             None => (None, None),
         };
 
@@ -520,16 +550,33 @@ pub fn model_asset_to_bedrock_geo_versioned(
         );
     }
 
-    let bones = bone_map
-        .into_iter()
-        .map(|(name, cubes)| BedrockBone {
-            name,
+    let mut bones = Vec::new();
+    if bind_to_head && !bone_map.contains_key("head") {
+        bones.push(BedrockBone {
+            name: String::from("head"),
             parent: None,
-            pivot: Some([0.0, 0.0, 0.0]),
+            pivot: Some([0.0, 24.0, 0.0]),
+            rotation: None,
+            cubes: Vec::new(),
+        });
+    }
+    for (name, cubes) in bone_map {
+        let is_head_bone = name == "head";
+        let (parent, pivot) = if bind_to_head && !is_head_bone {
+            (Some(String::from("head")), Some([0.0, 24.0, 0.0]))
+        } else if bind_to_head {
+            (None, Some([0.0, 24.0, 0.0]))
+        } else {
+            (None, Some([0.0, 0.0, 0.0]))
+        };
+        bones.push(BedrockBone {
+            name,
+            parent,
+            pivot,
             rotation: None,
             cubes,
-        })
-        .collect();
+        });
+    }
 
     BedrockGeoFile {
         format_version: geo_version.as_str().to_string(),
@@ -598,8 +645,15 @@ pub fn bedrock_geo_to_model_assets_with_options(
 
         let mut elements = Vec::new();
         let mut textures = BTreeMap::new();
+        let parent_bone_names: BTreeSet<&str> = geo
+            .bones
+            .iter()
+            .filter_map(|b| b.parent.as_deref())
+            .collect();
 
         for bone in &geo.bones {
+            let is_parent_or_mixed = parent_bone_names.contains(bone.name.as_str())
+                || bone.cubes.iter().any(|c| c.rotation.is_some());
             for cube in &bone.cubes {
                 let (mut from, mut to) = bedrock_to_java_box(cube.origin, cube.size);
                 for axis in 0..3 {
@@ -609,7 +663,11 @@ pub fn bedrock_geo_to_model_assets_with_options(
                 }
 
                 let effective_pivot = cube.pivot.or(bone.pivot);
-                let effective_rot = cube.rotation.or(bone.rotation);
+                let effective_rot = if is_parent_or_mixed {
+                    cube.rotation
+                } else {
+                    cube.rotation.or(bone.rotation)
+                };
 
                 let rotation = effective_rot.and_then(|euler| {
                     bedrock_to_java_rotation_with_mode(
@@ -759,25 +817,32 @@ fn normalize_elements_to_java_bounds(
     }
 
     // Recenter entity wearables modeled relative to Bedrock's player head bone (pivot Y ~ 24).
-    if let Some(head_pivot_y) = geo
+    if geo
         .bones
         .iter()
-        .find(|b| b.name.eq_ignore_ascii_case("head"))
-        .and_then(|b| b.pivot)
-        .map(|p| p[1])
-        .filter(|&py| py >= 16.0)
+        .any(|b| b.name.eq_ignore_ascii_case("head") && b.pivot.is_some_and(|p| p[1] >= 16.0))
     {
         let max_y = elements
             .iter()
             .map(|e| e.to[1])
             .fold(f32::NEG_INFINITY, f32::max);
-        if max_y > 24.0 {
-            let dy = 8.0 - head_pivot_y;
-            for el in elements.iter_mut() {
-                el.from[1] = clean_zero(el.from[1] + dy);
-                el.to[1] = clean_zero(el.to[1] + dy);
-                if let Some(rot) = &mut el.rotation {
-                    rot.origin[1] = clean_zero(rot.origin[1] + dy);
+        if max_y > 20.0 {
+            let mut min_c = [f32::INFINITY; 3];
+            let mut max_c = [f32::NEG_INFINITY; 3];
+            for el in elements.iter() {
+                for i in 0..3 {
+                    min_c[i] = min_c[i].min(el.from[i]).min(el.to[i]);
+                    max_c[i] = max_c[i].max(el.from[i]).max(el.to[i]);
+                }
+            }
+            for i in 0..3 {
+                let shift = 8.0 - 0.5 * (min_c[i] + max_c[i]);
+                for el in elements.iter_mut() {
+                    el.from[i] = clean_zero(el.from[i] + shift);
+                    el.to[i] = clean_zero(el.to[i] + shift);
+                    if let Some(rot) = &mut el.rotation {
+                        rot.origin[i] = clean_zero(rot.origin[i] + shift);
+                    }
                 }
             }
         }
@@ -1080,8 +1145,8 @@ mod tests {
             &mut report,
         );
         let el = &models[0].elements[0];
-        assert!((el.from[1] - 4.0).abs() < 1e-4);
-        assert!((el.to[1] - 18.8).abs() < 1e-4);
+        assert!((el.from[1] - 0.6).abs() < 1e-4);
+        assert!((el.to[1] - 15.4).abs() < 1e-4);
         assert!(
             el.from
                 .iter()
