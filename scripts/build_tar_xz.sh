@@ -6,6 +6,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${TAR_ARCH:-$(uname -m)}"
+case "${ARCH}" in
+  x86_64|amd64) ARCH="x64" ;;
+  aarch64) ARCH="arm64" ;;
+  i686|i386) ARCH="x86" ;;
+esac
 VERSION="${RELEASE_VERSION:-0.2.2}"
 BINARY_PATH="${1:-${REPO_ROOT}/target/release/pack-studio-tauri}"
 OUT_DIR="${2:-${REPO_ROOT}/dist-tar}"
