@@ -19,7 +19,10 @@ pub use ir::{
     ModelElement, PackMetadata, ResourcePackIR, RotationAxis, RotationSnapMode, SoundAsset,
     SoundEntry, SoundEventDef, SoundRegistry, TextureAsset, TextureCategory, TexturePayload,
 };
-pub use jsonc::{sanitize_java_resource_path, sanitize_jsonc_bytes};
+pub use jsonc::{
+    decode_minecraft_text, sanitize_java_resource_path, sanitize_jsonc_bytes,
+    sanitize_minecraft_json, sanitize_minecraft_json_bytes,
+};
 pub use mapping::{BedrockTextureTarget, MappingTable, PackVersionEntry, TextureMappingEntry};
 pub use report::{
     ConversionReport, ConversionWarning, LossyConversion, SkippedAsset, WarningSeverity,

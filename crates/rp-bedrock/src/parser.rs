@@ -5,7 +5,7 @@ use rp_core::{
     AnimationSpec, AttachableAsset, BedrockGeoVersion, ConversionReport, DisplayTransform, Edition,
     MappingTable, ModelAsset, ModelCategory, PackMetadata, ResourcePackIR, RotationSnapMode,
     SoundAsset, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
-    sanitize_java_resource_path, sanitize_jsonc_bytes,
+    decode_minecraft_text, sanitize_java_resource_path, sanitize_minecraft_json_bytes,
 };
 use rp_io::PackContainer;
 use rp_transforms::locale::{normalize_locale_to_java, parse_bedrock_lang, transform_locale_keys};
@@ -41,9 +41,9 @@ pub fn parse_bedrock_pack_with_options(
     let manifest_bytes = container
         .get("manifest.json")
         .ok_or(BedrockPackError::MissingManifest)?;
-    let manifest_clean = sanitize_jsonc_bytes(manifest_bytes);
+    let manifest_clean = sanitize_minecraft_json_bytes(manifest_bytes);
     let manifest: BedrockManifest =
-        serde_json::from_slice(&manifest_clean).map_err(|err| BedrockPackError::ParseError {
+        serde_json::from_str(&manifest_clean).map_err(|err| BedrockPackError::ParseError {
             path: String::from("manifest.json"),
             detail: err.to_string(),
         })?;
@@ -78,9 +78,9 @@ pub fn parse_bedrock_pack_with_options(
     // Parse optional terrain_texture.json & item_texture.json for atlas key recovery.
     let mut atlas_lookup: HashMap<String, (String, TextureCategory)> = HashMap::new();
     if let Some(terrain_bytes) = container.get("textures/terrain_texture.json") {
-        let terrain_clean = sanitize_jsonc_bytes(terrain_bytes);
+        let terrain_clean = sanitize_minecraft_json_bytes(terrain_bytes);
         let terrain: TerrainTextureJson =
-            serde_json::from_slice(&terrain_clean).map_err(|err| BedrockPackError::ParseError {
+            serde_json::from_str(&terrain_clean).map_err(|err| BedrockPackError::ParseError {
                 path: String::from("textures/terrain_texture.json"),
                 detail: err.to_string(),
             })?;
@@ -94,9 +94,9 @@ pub fn parse_bedrock_pack_with_options(
         }
     }
     if let Some(item_bytes) = container.get("textures/item_texture.json") {
-        let item_clean = sanitize_jsonc_bytes(item_bytes);
+        let item_clean = sanitize_minecraft_json_bytes(item_bytes);
         let items: ItemTextureJson =
-            serde_json::from_slice(&item_clean).map_err(|err| BedrockPackError::ParseError {
+            serde_json::from_str(&item_clean).map_err(|err| BedrockPackError::ParseError {
                 path: String::from("textures/item_texture.json"),
                 detail: err.to_string(),
             })?;
@@ -112,13 +112,11 @@ pub fn parse_bedrock_pack_with_options(
 
     let mut pending_animations: BTreeMap<String, (AnimationSpec, Option<String>)> = BTreeMap::new();
     if let Some(flipbook_bytes) = container.get("textures/flipbook_textures.json") {
-        let flipbook_clean = sanitize_jsonc_bytes(flipbook_bytes);
+        let flipbook_clean = sanitize_minecraft_json_bytes(flipbook_bytes);
         let entries: Vec<FlipbookEntry> =
-            serde_json::from_slice(&flipbook_clean).map_err(|err| {
-                BedrockPackError::ParseError {
-                    path: String::from("textures/flipbook_textures.json"),
-                    detail: err.to_string(),
-                }
+            serde_json::from_str(&flipbook_clean).map_err(|err| BedrockPackError::ParseError {
+                path: String::from("textures/flipbook_textures.json"),
+                detail: err.to_string(),
             })?;
         for entry in entries {
             let norm_tex = normalize_bedrock_tex_key(&entry.flipbook_texture);
@@ -189,13 +187,14 @@ pub fn parse_bedrock_pack_with_options(
         }
 
         if path.starts_with("models/") && path.ends_with(".json") {
-            let model_clean = sanitize_jsonc_bytes(bytes);
-            let geo_file = BedrockGeoFile::from_json_slice(&model_clean).map_err(|err| {
-                BedrockPackError::ParseError {
-                    path: path.clone(),
-                    detail: err.to_string(),
-                }
-            })?;
+            let model_clean = sanitize_minecraft_json_bytes(bytes);
+            let geo_file =
+                BedrockGeoFile::from_json_slice(model_clean.as_bytes()).map_err(|err| {
+                    BedrockPackError::ParseError {
+                        path: path.clone(),
+                        detail: err.to_string(),
+                    }
+                })?;
             let (model_id_hint, category_hint) = infer_bedrock_model_id_and_category(path);
             let models = bedrock_geo_to_model_assets_with_options(
                 &geo_file,
@@ -216,8 +215,8 @@ pub fn parse_bedrock_pack_with_options(
         }
 
         if path == "sounds/sound_definitions.json" {
-            let sounds_clean = sanitize_jsonc_bytes(bytes);
-            let parsed: BedrockSoundDefinitionsInput = serde_json::from_slice(&sounds_clean)
+            let sounds_clean = sanitize_minecraft_json_bytes(bytes);
+            let parsed: BedrockSoundDefinitionsInput = serde_json::from_str(&sounds_clean)
                 .map_err(|err| BedrockPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
@@ -252,11 +251,8 @@ pub fn parse_bedrock_pack_with_options(
             .strip_prefix("texts/")
             .and_then(|s| s.strip_suffix(".lang"))
         {
-            let text = std::str::from_utf8(bytes).map_err(|err| BedrockPackError::ParseError {
-                path: path.clone(),
-                detail: format!("invalid UTF-8 in .lang file: {err}"),
-            })?;
-            let parsed_table = parse_bedrock_lang(text)?;
+            let text = decode_minecraft_text(bytes);
+            let parsed_table = parse_bedrock_lang(&text)?;
             let canonical_table = transform_locale_keys(&parsed_table, mappings, Edition::Java);
             let java_code = normalize_locale_to_java(raw_locale);
             ir.locales.insert(java_code, canonical_table);
@@ -267,9 +263,9 @@ pub fn parse_bedrock_pack_with_options(
             .strip_prefix("attachables/")
             .and_then(|s| s.strip_suffix(".json"))
         {
-            let att_clean = sanitize_jsonc_bytes(bytes);
+            let att_clean = sanitize_minecraft_json_bytes(bytes);
             let parsed: BedrockAttachableFile =
-                serde_json::from_slice(&att_clean).map_err(|err| BedrockPackError::ParseError {
+                serde_json::from_str(&att_clean).map_err(|err| BedrockPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;

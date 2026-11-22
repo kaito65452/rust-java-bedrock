@@ -44,6 +44,7 @@ impl JavaPackMcmeta {
     pub fn validate_and_extract(&self) -> Result<(u32, Option<[u32; 2]>, String), JavaPackError> {
         let max_fmt = parse_format_number(self.pack.max_format.as_ref());
         let min_fmt = parse_format_number(self.pack.min_format.as_ref());
+        let supported = parse_supported_formats(self.pack.supported_formats.as_ref());
         let pack_format = self
             .pack
             .pack_format
@@ -53,6 +54,11 @@ impl JavaPackMcmeta {
                     .or_else(|| min_fmt.filter(|&f| (1..=MAX_JAVA_PACK_FORMAT).contains(&f)))
                     .or(min_fmt)
                     .or(max_fmt)
+                    .or_else(|| {
+                        supported
+                            .map(|[lo, _]| lo)
+                            .filter(|&f| (1..=MAX_JAVA_PACK_FORMAT).contains(&f))
+                    })
             })
             .ok_or(JavaPackError::InvalidPackFormat(0))?;
 
@@ -62,7 +68,7 @@ impl JavaPackMcmeta {
 
         let range = match (min_fmt, max_fmt) {
             (Some(lo), Some(hi)) => Some([lo.min(hi), lo.max(hi)]),
-            _ => parse_supported_formats(self.pack.supported_formats.as_ref()),
+            _ => supported,
         };
 
         Ok((
@@ -96,6 +102,10 @@ fn parse_supported_formats(val: Option<&Value>) -> Option<[u32; 2]> {
             let v = n.as_u64().and_then(|x| u32::try_from(x).ok())?;
             Some([v, v])
         }
+        Value::Array(arr) if arr.len() == 1 => {
+            let a = arr[0].as_u64().and_then(|x| u32::try_from(x).ok())?;
+            Some([a, a])
+        }
         Value::Array(arr) if arr.len() >= 2 => {
             let a = arr[0].as_u64().and_then(|x| u32::try_from(x).ok())?;
             let b = arr[1].as_u64().and_then(|x| u32::try_from(x).ok())?;
@@ -109,7 +119,8 @@ fn parse_supported_formats(val: Option<&Value>) -> Option<[u32; 2]> {
             let max = obj
                 .get("max_inclusive")
                 .and_then(Value::as_u64)
-                .and_then(|x| u32::try_from(x).ok())?;
+                .and_then(|x| u32::try_from(x).ok())
+                .unwrap_or(min);
             Some([min.min(max), min.max(max)])
         }
         _ => None,

@@ -63,4 +63,33 @@ mod tests {
             Some([1, 20, 10])
         );
     }
+
+    #[test]
+    fn parses_bedrock_utf16_manifest_control_chars_and_latin1_lang() {
+        let mappings = MappingTable::default_embedded().expect("mappings");
+        let manifest_text = "{\r\n  \"format_version\": 2,\r\n  \"header\": {\r\n    \"name\": \"§b小困包\",\r\n    \"description\": \"Line1\r\nLine2\tTab\x00\",\r\n    \"uuid\": \"11111111-1111-4111-8111-111111111111\",\r\n    \"version\": [1, 0, 0],\r\n    \"min_engine_version\": [1, 20, 10],\r\n  },\r\n  \"modules\": [\r\n    {\r\n      \"type\": \"resources\",\r\n      \"uuid\": \"22222222-2222-4222-8222-222222222222\",\r\n      \"version\": [1, 0, 0],\r\n    },\r\n  ],\r\n}";
+        let mut manifest_utf16_be = vec![0xFE, 0xFF];
+        for u in manifest_text.encode_utf16() {
+            manifest_utf16_be.extend_from_slice(&u.to_be_bytes());
+        }
+
+        let mut container = rp_io::PackContainer::new();
+        container
+            .insert("manifest.json", manifest_utf16_be)
+            .expect("insert manifest");
+        container
+            .insert(
+                "texts/en_US.lang",
+                b"tile.stone.stone.name=\xA76Golden Stone\r\n".to_vec(),
+            )
+            .expect("insert lang");
+
+        let (ir, _) = parse_bedrock_pack(&container, &mappings).expect("parse bedrock");
+        assert_eq!(ir.metadata.name, "§b小困包");
+        assert_eq!(ir.metadata.description, "Line1\nLine2\tTab");
+        assert_eq!(
+            ir.locales["en_us"].entries["block.minecraft.stone"],
+            "§6Golden Stone"
+        );
+    }
 }

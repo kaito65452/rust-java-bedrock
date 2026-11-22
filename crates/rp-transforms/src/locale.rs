@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
-use rp_core::{CoreError, Edition, LocaleTable, MappingTable};
+use rp_core::{CoreError, Edition, LocaleTable, MappingTable, sanitize_minecraft_json};
 
 /// Parses a Java Edition `assets/minecraft/lang/*.json` file into `LocaleTable`.
 pub fn parse_java_locale_json(json_str: &str) -> Result<LocaleTable, CoreError> {
-    let trimmed = json_str.trim_start_matches('\u{feff}');
-    let map: BTreeMap<String, String> = serde_json::from_str(trimmed)?;
+    let sanitized = sanitize_minecraft_json(json_str);
+    let map: BTreeMap<String, String> = serde_json::from_str(&sanitized)?;
     let mut entries = HashMap::with_capacity(map.len());
     for (k, v) in map {
         entries.insert(k, v);

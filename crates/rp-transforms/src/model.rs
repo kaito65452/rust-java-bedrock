@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use rp_core::{
     BedrockGeoVersion, ConversionReport, ElementFace, ElementRotation, FaceDirection, MappingTable,
     ModelAsset, ModelCategory, ModelElement, RotationAxis, RotationSnapMode, WarningSeverity,
+    sanitize_minecraft_json_bytes,
 };
 
 /// Top-level Bedrock `*.geo.json` file (`format_version: "1.12.0"`+).
@@ -37,7 +38,8 @@ impl BedrockGeoFile {
     /// Parses either modern `1.12.0`+ (`minecraft:geometry`) or legacy `1.8.0`/`1.10.0`
     /// (`geometry.<id>` top-level keys) Bedrock geometry JSON.
     pub fn from_json_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        let clean = sanitize_minecraft_json_bytes(bytes);
+        let value: serde_json::Value = serde_json::from_str(&clean)?;
         let Some(obj) = value.as_object() else {
             return serde_json::from_value(value);
         };

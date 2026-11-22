@@ -4,7 +4,8 @@ use std::sync::Arc;
 use rp_core::{
     AnimationSpec, BedrockGeoVersion, ConversionReport, DisplayTransform, Edition, MappingTable,
     ModelAsset, ModelCategory, PackMetadata, ResourcePackIR, RotationSnapMode, SoundAsset,
-    TextureAsset, TextureCategory, TexturePayload, WarningSeverity, sanitize_jsonc_bytes,
+    TextureAsset, TextureCategory, TexturePayload, WarningSeverity, decode_minecraft_text,
+    sanitize_minecraft_json, sanitize_minecraft_json_bytes,
 };
 use rp_io::PackContainer;
 use rp_transforms::locale::{
@@ -26,10 +27,11 @@ pub fn parse_java_pack(
     let mcmeta_bytes = container
         .get("pack.mcmeta")
         .ok_or(JavaPackError::MissingPackMcmeta)?;
-    let mcmeta_clean = sanitize_jsonc_bytes(mcmeta_bytes);
+    let mcmeta_decoded = decode_minecraft_text(mcmeta_bytes);
+    let mcmeta_clean = sanitize_minecraft_json(&mcmeta_decoded);
     let overlay_dirs = extract_overlay_dirs(&mcmeta_clean);
     let mcmeta: JavaPackMcmeta =
-        serde_json::from_slice(&mcmeta_clean).map_err(|err| JavaPackError::ParseError {
+        serde_json::from_str(&mcmeta_clean).map_err(|err| JavaPackError::ParseError {
             path: String::from("pack.mcmeta"),
             detail: err.to_string(),
         })?;
@@ -107,9 +109,9 @@ pub fn parse_java_pack(
             .strip_prefix("assets/minecraft/textures/")
             .and_then(|s| s.strip_suffix(".png.mcmeta"))
         {
-            let mcmeta_clean = sanitize_jsonc_bytes(bytes);
+            let mcmeta_clean = sanitize_minecraft_json_bytes(bytes);
             let mcmeta: JavaAnimationMcmeta =
-                serde_json::from_slice(&mcmeta_clean).map_err(|err| JavaPackError::ParseError {
+                serde_json::from_str(&mcmeta_clean).map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -124,9 +126,9 @@ pub fn parse_java_pack(
             .strip_prefix("assets/minecraft/models/")
             .and_then(|s| s.strip_suffix(".json"))
         {
-            let model_clean = sanitize_jsonc_bytes(bytes);
+            let model_clean = sanitize_minecraft_json_bytes(bytes);
             let model_json: JavaModelJson =
-                serde_json::from_slice(&model_clean).map_err(|err| JavaPackError::ParseError {
+                serde_json::from_str(&model_clean).map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -184,9 +186,9 @@ pub fn parse_java_pack(
         }
 
         if path == "assets/minecraft/sounds.json" {
-            let sounds_clean = sanitize_jsonc_bytes(bytes);
-            let parsed: BTreeMap<String, JavaSoundEventJson> =
-                serde_json::from_slice(&sounds_clean).map_err(|err| JavaPackError::ParseError {
+            let sounds_clean = sanitize_minecraft_json_bytes(bytes);
+            let parsed: BTreeMap<String, JavaSoundEventJson> = serde_json::from_str(&sounds_clean)
+                .map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -220,11 +222,8 @@ pub fn parse_java_pack(
                 .and_then(|s| s.strip_suffix(".json"))
                 && !raw_locale.contains('/')
             {
-                let text = std::str::from_utf8(bytes).map_err(|err| JavaPackError::ParseError {
-                    path: path.clone(),
-                    detail: format!("invalid UTF-8 in lang file: {err}"),
-                })?;
-                let table = parse_java_locale_json(text)?;
+                let text = decode_minecraft_text(bytes);
+                let table = parse_java_locale_json(&text)?;
                 let code = normalize_locale_to_java(raw_locale);
                 let dest = ir.locales.entry(code).or_default();
                 dest.entries.extend(table.entries);
@@ -237,11 +236,8 @@ pub fn parse_java_pack(
                 .and_then(|s| s.strip_suffix(".lang"))
                 && !raw_locale.contains('/')
             {
-                let text = std::str::from_utf8(bytes).map_err(|err| JavaPackError::ParseError {
-                    path: path.clone(),
-                    detail: format!("invalid UTF-8 in legacy .lang file: {err}"),
-                })?;
-                let parsed = parse_bedrock_lang(text)?;
+                let text = decode_minecraft_text(bytes);
+                let parsed = parse_bedrock_lang(&text)?;
                 let table = transform_locale_keys(&parsed, mappings, Edition::Java);
                 let code = normalize_locale_to_java(raw_locale);
                 let dest = ir.locales.entry(code).or_default();
@@ -263,9 +259,9 @@ pub fn parse_java_pack(
         }
 
         if path.starts_with("assets/minecraft/items/") && path.ends_with(".json") {
-            let clean = sanitize_jsonc_bytes(bytes);
+            let clean = sanitize_minecraft_json_bytes(bytes);
             let _: serde_json::Value =
-                serde_json::from_slice(&clean).map_err(|err| JavaPackError::ParseError {
+                serde_json::from_str(&clean).map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -335,9 +331,9 @@ pub fn parse_java_pack(
     Ok((ir, report))
 }
 
-fn extract_overlay_dirs(mcmeta_bytes: &[u8]) -> BTreeSet<String> {
+fn extract_overlay_dirs(mcmeta_str: &str) -> BTreeSet<String> {
     let mut dirs = BTreeSet::new();
-    let Ok(val) = serde_json::from_slice::<serde_json::Value>(mcmeta_bytes) else {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(mcmeta_str) else {
         return dirs;
     };
     if let Some(entries) = val
