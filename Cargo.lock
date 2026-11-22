@@ -2912,9 +2912,13 @@ dependencies = [
  "egui",
  "image",
  "rfd",
+ "rp-bedrock",
  "rp-cli",
  "rp-core",
  "rp-io",
+ "rp-java",
+ "rp-transforms",
+ "serde",
  "serde_json",
  "tempfile",
 ]

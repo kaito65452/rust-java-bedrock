@@ -9,6 +9,7 @@ use egui::{
     TextureOptions, Ui, Vec2,
 };
 
+use rp_bedrock::emit_bedrock_pack;
 use rp_cli::manager::{
     AuditOutcome, DiscoveredPack, PackDiff, PackSortKey, audit_pack_roundtrip, diff_packs,
     export_audit_json, export_report_json, format_bytes, load_pack_ir, repack_dir_to_archive,
@@ -16,18 +17,32 @@ use rp_cli::manager::{
 };
 use rp_cli::{ConvertOptions, VersionSpecificOptions, convert_pack};
 use rp_core::{
-    BedrockGeoVersion, ConversionReport, Edition, MappingTable, ResourcePackIR, RotationSnapMode,
-    TextureAsset,
+    BedrockGeoVersion, ConversionReport, Edition, ElementRotation, FaceDirection, MappingTable,
+    ResourcePackIR, RotationAxis, RotationSnapMode, TextureAsset, TextureCategory,
 };
 use rp_io::IoLimits;
+use rp_java::emit_java_pack;
+use rp_transforms::model::java_to_bedrock_box;
 
+use crate::diagnostics::{DiagnosticFilter, DiagnosticKind, NeedsReviewIndex};
+use crate::file_picker::{FilePickerResult, FilePickerTarget, InAppFileBrowser};
+use crate::studio::{
+    ActivitySection, ManualOverrideStore, SideBarFilter, StudioEditorTab, TextAssetTarget,
+    validate_json_str,
+};
 use crate::viewport3d::ModelViewportState;
 
-/// Navigation pages inside `rp-gui`.
+/// Top-level workspace mode: streamlined Quick Manager or VS Code-style Studio Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceMode {
+    Quick,
+    Studio,
+}
+
+/// Navigation pages inside Quick Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiPage {
     Packs,
-    Explorer,
     Convert,
     BatchAudit,
     Compare,
@@ -35,23 +50,19 @@ pub enum GuiPage {
 }
 
 impl GuiPage {
-    /// All pages in sidebar order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Packs,
-        Self::Explorer,
         Self::Convert,
         Self::BatchAudit,
         Self::Compare,
         Self::VersionsLogs,
     ];
 
-    /// Display label.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Packs => "Packs Manager",
-            Self::Explorer => "Explorer & 3D",
-            Self::Convert => "Converter",
+            Self::Convert => "Quick Convert",
             Self::BatchAudit => "Batch & Audit",
             Self::Compare => "Compare (Diff)",
             Self::VersionsLogs => "Versions & Logs",
@@ -59,84 +70,7 @@ impl GuiPage {
     }
 }
 
-/// Asset filter pills inside Explorer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssetCategory {
-    All,
-    Textures,
-    Models,
-    Attachables,
-    Sounds,
-    Locales,
-    Passthrough,
-}
-
-impl AssetCategory {
-    pub const ALL: [Self; 7] = [
-        Self::All,
-        Self::Textures,
-        Self::Models,
-        Self::Attachables,
-        Self::Sounds,
-        Self::Locales,
-        Self::Passthrough,
-    ];
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::All => "All",
-            Self::Textures => "Textures",
-            Self::Models => "3D Models",
-            Self::Attachables => "Attachables",
-            Self::Sounds => "Sounds",
-            Self::Locales => "Locales",
-            Self::Passthrough => "Raw",
-        }
-    }
-}
-
-/// Flattened explorer asset reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AssetRef {
-    Texture(String),
-    Model(String),
-    Attachable(String),
-    SoundFile(String),
-    SoundEvent(String),
-    Locale(String),
-    Passthrough(String),
-}
-
-impl AssetRef {
-    #[must_use]
-    pub const fn badge(&self) -> &'static str {
-        match self {
-            Self::Texture(_) => "TEX",
-            Self::Model(_) => "3D",
-            Self::Attachable(_) => "ATT",
-            Self::SoundFile(_) => "OGG",
-            Self::SoundEvent(_) => "SFX",
-            Self::Locale(_) => "LNG",
-            Self::Passthrough(_) => "RAW",
-        }
-    }
-
-    #[must_use]
-    pub fn id(&self) -> &str {
-        match self {
-            Self::Texture(s)
-            | Self::Model(s)
-            | Self::Attachable(s)
-            | Self::SoundFile(s)
-            | Self::SoundEvent(s)
-            | Self::Locale(s)
-            | Self::Passthrough(s) => s.as_str(),
-        }
-    }
-}
-
-/// Deep-loaded pack inside Explorer.
+/// Deep-loaded pack inside Studio Mode.
 #[derive(Debug, Clone)]
 pub struct LoadedPack {
     pub path: PathBuf,
@@ -155,7 +89,6 @@ pub struct ConversionOutcome {
     pub elapsed_ms: u128,
 }
 
-/// Background thread messages.
 #[derive(Debug)]
 enum WorkerMsg {
     ScanDone {
@@ -178,7 +111,6 @@ enum WorkerMsg {
     BatchDone(String),
 }
 
-/// Cached GPU texture preview (single frame or animated strip frames).
 struct CachedTexPreview {
     asset_id: String,
     dims: (u32, u32),
@@ -186,16 +118,23 @@ struct CachedTexPreview {
     frametime_ticks: u32,
 }
 
-/// Desktop GUI application state implementing `eframe::App`.
+/// Desktop GUI Studio implementing `eframe::App`.
 pub struct RpGuiApp {
+    pub mode: WorkspaceMode,
     pub page: GuiPage,
     pub dark_mode: bool,
 
     pub scan_dir: PathBuf,
     pub scan_dir_input: String,
+    pub recent_paths: Vec<PathBuf>,
     pub mapping_file: Option<PathBuf>,
     pub mappings: MappingTable,
     pub limits: IoLimits,
+
+    // Non-blocking file browser & async OS picker channel
+    pub file_browser: InAppFileBrowser,
+    picker_tx: Sender<FilePickerResult>,
+    picker_rx: Receiver<FilePickerResult>,
 
     // Packs Manager
     pub packs: Vec<DiscoveredPack>,
@@ -204,17 +143,30 @@ pub struct RpGuiApp {
     pub pending_delete: Option<(PathBuf, bool)>,
     icon_cache: HashMap<PathBuf, TextureHandle>,
 
-    // Explorer & 3D Studio
+    // Studio Mode Workbench (VS Code layout + Blockbench 3D)
+    pub activity_section: ActivitySection,
+    pub show_sidebar: bool,
+    pub show_bottom_panel: bool,
+    pub sidebar_filter: SideBarFilter,
+    pub studio_search: String,
+    pub open_tabs: Vec<StudioEditorTab>,
+    pub active_tab_idx: usize,
     pub loaded_pack: Option<LoadedPack>,
-    pub asset_category: AssetCategory,
-    pub asset_filter: String,
-    pub selected_asset: Option<AssetRef>,
+    pub overrides: ManualOverrideStore,
+    pub review_index: NeedsReviewIndex,
+    pub diagnostic_filter: DiagnosticFilter,
+
+    // Blockbench 3D & Texture Inspector state
+    pub viewport_3d: ModelViewportState,
+    pub selected_element_idx: Option<usize>,
+    pub selected_face_dir: FaceDirection,
     pub tex_zoom: f32,
+    pub tex_pixel_grid: bool,
     pub anim_playing: bool,
     pub anim_frame_idx: usize,
     pub anim_last_step: Instant,
+    pub custom_mapping_input: String,
     tex_preview: Option<CachedTexPreview>,
-    pub viewport_3d: ModelViewportState,
 
     // Converter
     pub input_path: String,
@@ -253,30 +205,47 @@ impl RpGuiApp {
     #[must_use]
     pub fn new(scan_dir: PathBuf, mapping_file: Option<PathBuf>, mappings: MappingTable) -> Self {
         let (tx, rx) = mpsc::channel();
+        let (picker_tx, picker_rx) = mpsc::channel();
         let scan_dir_input = scan_dir.display().to_string();
         let mut app = Self {
+            mode: WorkspaceMode::Quick,
             page: GuiPage::Packs,
             dark_mode: true,
             scan_dir: scan_dir.clone(),
             scan_dir_input,
+            recent_paths: vec![scan_dir.clone()],
             mapping_file,
             mappings,
             limits: IoLimits::default(),
+            file_browser: InAppFileBrowser::default(),
+            picker_tx,
+            picker_rx,
             packs: Vec::new(),
             pack_filter: String::new(),
             pack_sort: PackSortKey::Name,
             pending_delete: None,
             icon_cache: HashMap::new(),
+            activity_section: ActivitySection::Explorer,
+            show_sidebar: true,
+            show_bottom_panel: true,
+            sidebar_filter: SideBarFilter::All,
+            studio_search: String::new(),
+            open_tabs: Vec::new(),
+            active_tab_idx: 0,
             loaded_pack: None,
-            asset_category: AssetCategory::All,
-            asset_filter: String::new(),
-            selected_asset: None,
-            tex_zoom: 4.0,
+            overrides: ManualOverrideStore::default(),
+            review_index: NeedsReviewIndex::default(),
+            diagnostic_filter: DiagnosticFilter::All,
+            viewport_3d: ModelViewportState::default(),
+            selected_element_idx: Some(0),
+            selected_face_dir: FaceDirection::North,
+            tex_zoom: 6.0,
+            tex_pixel_grid: true,
             anim_playing: true,
             anim_frame_idx: 0,
             anim_last_step: Instant::now(),
+            custom_mapping_input: String::new(),
             tex_preview: None,
-            viewport_3d: ModelViewportState::default(),
             input_path: String::new(),
             output_path: String::new(),
             target_edition: None,
@@ -299,11 +268,103 @@ impl RpGuiApp {
             tx,
             rx,
         };
-        app.push_log(format!("Launched rp-gui in {}", app.scan_dir.display()));
+        app.push_log(format!(
+            "Launched rp-gui Studio in {}",
+            app.scan_dir.display()
+        ));
         app
     }
 
-    /// Starts scanning the configured directory asynchronously.
+    fn record_recent(&mut self, path: &Path) {
+        self.recent_paths.retain(|p| p != path);
+        self.recent_paths.insert(0, path.to_path_buf());
+        if self.recent_paths.len() > 8 {
+            self.recent_paths.truncate(8);
+        }
+    }
+
+    fn push_log(&mut self, msg: impl Into<String>) {
+        self.logs.push(msg.into());
+        if self.logs.len() > 250 {
+            let excess = self.logs.len() - 250;
+            self.logs.drain(0..excess);
+        }
+    }
+
+    fn rebuild_review_index(&mut self) {
+        let mut reports: Vec<&ConversionReport> = Vec::new();
+        if let Some(loaded) = &self.loaded_pack {
+            reports.push(&loaded.report);
+        }
+        if let Some(Ok(conv)) = &self.last_conversion {
+            reports.push(&conv.report);
+        }
+        self.review_index = NeedsReviewIndex::from_reports(reports);
+    }
+
+    fn open_or_focus_tab(&mut self, tab: StudioEditorTab) {
+        if let Some(pos) = self.open_tabs.iter().position(|t| *t == tab) {
+            self.active_tab_idx = pos;
+        } else {
+            self.open_tabs.push(tab);
+            self.active_tab_idx = self.open_tabs.len().saturating_sub(1);
+        }
+        self.mode = WorkspaceMode::Studio;
+        self.selected_element_idx = Some(0);
+        self.custom_mapping_input.clear();
+    }
+
+    fn open_asset_by_report_hint(&mut self, raw_asset: &str) {
+        let Some(loaded) = &self.loaded_pack else {
+            return;
+        };
+        let norm = crate::diagnostics::normalize_asset_key(raw_asset);
+        if let Some(id) = loaded
+            .ir
+            .models
+            .keys()
+            .find(|k| crate::diagnostics::normalize_asset_key(k) == norm || k.ends_with(&norm))
+            .cloned()
+        {
+            self.open_or_focus_tab(StudioEditorTab::Model(id));
+            return;
+        }
+        if let Some(id) = loaded
+            .ir
+            .textures
+            .keys()
+            .find(|k| crate::diagnostics::normalize_asset_key(k) == norm || k.ends_with(&norm))
+            .cloned()
+        {
+            self.open_or_focus_tab(StudioEditorTab::Texture(id));
+            return;
+        }
+        if let Some(id) = loaded
+            .ir
+            .attachables
+            .keys()
+            .find(|k| {
+                raw_asset
+                    .to_ascii_lowercase()
+                    .contains(&k.to_ascii_lowercase())
+            })
+            .cloned()
+        {
+            self.open_or_focus_tab(StudioEditorTab::Text(TextAssetTarget::AttachableJson(id)));
+            return;
+        }
+        if let Some(p) = loaded
+            .ir
+            .passthrough_files
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(raw_asset) || k.ends_with(raw_asset))
+            .cloned()
+        {
+            self.open_or_focus_tab(StudioEditorTab::Text(TextAssetTarget::Passthrough(p)));
+        }
+    }
+
+    /// Starts scanning `self.scan_dir` asynchronously.
     pub fn start_scan(&mut self) {
         if self.busy_message.is_some() {
             return;
@@ -321,14 +382,6 @@ impl RpGuiApp {
         });
     }
 
-    fn push_log(&mut self, msg: impl Into<String>) {
-        self.logs.push(msg.into());
-        if self.logs.len() > 250 {
-            let excess = self.logs.len() - 250;
-            self.logs.drain(0..excess);
-        }
-    }
-
     fn version_options(&self) -> VersionSpecificOptions {
         VersionSpecificOptions {
             supported_formats: None,
@@ -339,16 +392,18 @@ impl RpGuiApp {
         }
     }
 
-    fn start_load_explorer(&mut self, path: PathBuf) {
+    /// Loads `path` into Studio Mode asynchronously.
+    pub fn start_load_studio(&mut self, path: PathBuf) {
         if self.busy_message.is_some() {
             return;
         }
+        self.record_recent(&path);
         let mappings = self.mappings.clone();
         let limits = self.limits;
         let tx = self.tx.clone();
-        self.page = GuiPage::Explorer;
-        self.busy_message = Some(format!("Loading {}...", path.display()));
-        self.push_log(format!("Exploring {}", path.display()));
+        self.mode = WorkspaceMode::Studio;
+        self.busy_message = Some(format!("Opening {} in Studio...", path.display()));
+        self.push_log(format!("Studio open: {}", path.display()));
         thread::spawn(move || {
             let res = load_pack_ir(&path, &mappings, limits)
                 .map(|(edition, ir, report)| {
@@ -375,6 +430,7 @@ impl RpGuiApp {
         };
         self.target_edition = Some(target);
         self.output_path = suggest_output_path(&pack.path, target);
+        self.mode = WorkspaceMode::Quick;
         self.page = GuiPage::Convert;
     }
 
@@ -383,7 +439,7 @@ impl RpGuiApp {
             return;
         }
         if self.input_path.trim().is_empty() || self.output_path.trim().is_empty() {
-            self.status_banner = String::from("Select both input and output paths first");
+            self.status_banner = String::from("Select both Input Pack and Output Path first");
             return;
         }
         let options = ConvertOptions {
@@ -421,6 +477,91 @@ impl RpGuiApp {
         });
     }
 
+    /// Exports the currently edited Studio `ResourcePackIR` (with all manual overrides preserved)
+    /// into the chosen target edition and output archive path!
+    fn start_export_studio_ir(&mut self) {
+        if self.busy_message.is_some() {
+            return;
+        }
+        let Some(loaded) = self.loaded_pack.clone() else {
+            self.status_banner = String::from("No pack loaded in Studio to export");
+            return;
+        };
+        let target = self.target_edition.unwrap_or(match loaded.edition {
+            Edition::Java => Edition::Bedrock,
+            Edition::Bedrock => Edition::Java,
+        });
+        let out_path = if self.output_path.trim().is_empty() {
+            PathBuf::from(suggest_output_path(&loaded.path, target))
+        } else {
+            PathBuf::from(self.output_path.trim())
+        };
+        let mut ir = loaded.ir;
+        let applied = self.overrides.apply_to_ir(&mut ir);
+        let mut mappings = self.mappings.clone();
+        if let Ok((java_fmt, bver)) = mappings.resolve_target_version(target, &self.target_version)
+        {
+            if let Some(f) = java_fmt {
+                ir.metadata.java_pack_format = Some(f);
+            }
+            if let Some(b) = bver {
+                ir.metadata.bedrock_min_engine_version = Some(b);
+                if self.bedrock_geo_version.is_none() {
+                    ir.metadata.bedrock_geo_version =
+                        Some(BedrockGeoVersion::for_engine_version(b));
+                }
+            }
+        }
+        // Apply any custom texture mapping rules from Studio
+        if !self.overrides.custom_texture_mappings.is_empty() {
+            let tex_entries: Vec<serde_json::Value> = self
+                .overrides
+                .custom_texture_mappings
+                .iter()
+                .map(|(j, b)| serde_json::json!({ "java": j, "bedrock": b }))
+                .collect();
+            let raw = serde_json::json!({ "schema_version": "1.0", "textures": tex_entries });
+            if let Ok(ov) = MappingTable::from_json_str(&raw.to_string()) {
+                mappings.merge_override(ov);
+            }
+        }
+
+        let source_ed = loaded.edition;
+        let tx = self.tx.clone();
+        self.busy_message = Some(format!(
+            "Exporting Studio pack ({applied} manual override(s))..."
+        ));
+        self.push_log(format!(
+            "Exporting Studio IR ({applied} manual overrides) -> {}",
+            out_path.display()
+        ));
+
+        thread::spawn(move || {
+            let start = Instant::now();
+            let res: Result<ConversionOutcome, String> = (|| {
+                let (container, report) = match target {
+                    Edition::Java => emit_java_pack(&ir, &mappings).map_err(|e| format!("{e}"))?,
+                    Edition::Bedrock => {
+                        emit_bedrock_pack(&ir, &mappings).map_err(|e| format!("{e}"))?
+                    }
+                };
+                let bytes = container
+                    .write_to_zip_bytes()
+                    .map_err(|e| format!("zip encode: {e}"))?;
+                std::fs::write(&out_path, bytes)
+                    .map_err(|e| format!("write '{}': {e}", out_path.display()))?;
+                Ok(ConversionOutcome {
+                    source: source_ed,
+                    target,
+                    output_path: out_path,
+                    report,
+                    elapsed_ms: start.elapsed().as_millis(),
+                })
+            })();
+            let _ = tx.send(WorkerMsg::ConvertDone(res));
+        });
+    }
+
     fn start_diff(&mut self, a: PathBuf, b: PathBuf) {
         if self.busy_message.is_some() {
             return;
@@ -428,9 +569,9 @@ impl RpGuiApp {
         let mappings = self.mappings.clone();
         let limits = self.limits;
         let tx = self.tx.clone();
+        self.mode = WorkspaceMode::Quick;
         self.page = GuiPage::Compare;
         self.busy_message = Some(String::from("Comparing packs..."));
-        self.push_log(format!("Diff '{}' vs '{}'", a.display(), b.display()));
         thread::spawn(move || {
             let res = diff_packs(&a, &b, &mappings, limits)
                 .map(Box::new)
@@ -502,7 +643,6 @@ impl RpGuiApp {
         let ver_opts = self.version_options();
         let tx = self.tx.clone();
 
-        self.page = GuiPage::BatchAudit;
         self.audit_outcomes.clear();
         self.batch_progress = Some((0, total, String::from("Starting round-trip audit...")));
         self.busy_message = Some(format!("Auditing {total} pack(s)..."));
@@ -562,14 +702,9 @@ impl RpGuiApp {
         let limits = self.limits;
         let tx = self.tx.clone();
 
-        self.page = GuiPage::BatchAudit;
         self.audit_outcomes.clear();
         self.batch_progress = Some((0, total, String::from("Starting batch convert...")));
         self.busy_message = Some(format!("Batch converting {total} pack(s)..."));
-        self.push_log(format!(
-            "Batch converting {total} pack(s) -> {}",
-            out_dir.display()
-        ));
 
         thread::spawn(move || {
             let _ = std::fs::create_dir_all(&out_dir);
@@ -649,7 +784,47 @@ impl RpGuiApp {
         });
     }
 
-    fn poll_worker(&mut self) {
+    fn apply_picked_path(&mut self, target: FilePickerTarget, path: PathBuf) {
+        self.record_recent(&path);
+        match target {
+            FilePickerTarget::WorkspaceDir => {
+                self.scan_dir = path.clone();
+                self.scan_dir_input = path.display().to_string();
+                self.start_scan();
+            }
+            FilePickerTarget::ConvertInput => {
+                self.input_path = path.display().to_string();
+                let ed = self.target_edition.unwrap_or(Edition::Java);
+                self.output_path = suggest_output_path(&path, ed);
+            }
+            FilePickerTarget::ConvertOutput => {
+                self.output_path = path.display().to_string();
+            }
+            FilePickerTarget::DiffPackA => {
+                self.diff_path_a = path.display().to_string();
+            }
+            FilePickerTarget::DiffPackB => {
+                self.diff_path_b = path.display().to_string();
+            }
+            FilePickerTarget::ExportOverrides => match self.overrides.export_json(&path) {
+                Ok(()) => {
+                    self.status_banner = format!("Exported overrides -> {}", path.display());
+                    self.push_log(self.status_banner.clone());
+                }
+                Err(err) => {
+                    self.status_banner = format!("Export overrides failed: {err:#}");
+                }
+            },
+        }
+    }
+
+    fn poll_workers(&mut self) {
+        while let Ok(pick) = self.picker_rx.try_recv() {
+            if let Some(p) = pick.path {
+                self.apply_picked_path(pick.target, p);
+            }
+        }
+
         let mut need_rescan = false;
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
@@ -662,8 +837,11 @@ impl RpGuiApp {
                             if self.input_path.is_empty()
                                 && let Some(first) = packs.first()
                             {
+                                let prev_mode = self.mode;
+                                let prev_page = self.page;
                                 self.load_pack_into_converter(first);
-                                self.page = GuiPage::Packs;
+                                self.mode = prev_mode;
+                                self.page = prev_page;
                             }
                             if self.diff_path_a.is_empty() && packs.len() >= 2 {
                                 self.diff_path_a = packs[0].path.display().to_string();
@@ -686,32 +864,50 @@ impl RpGuiApp {
                         Ok(loaded) => {
                             let loaded = *loaded;
                             self.status_banner = format!(
-                                "Loaded {} ({} textures, {} models)",
+                                "Studio loaded {} ({}, {} tex, {} 3D models)",
                                 loaded.ir.metadata.name,
+                                loaded.edition,
                                 loaded.ir.textures.len(),
                                 loaded.ir.models.len()
                             );
                             self.push_log(self.status_banner.clone());
-                            self.selected_asset = loaded
+                            self.overrides.clear();
+                            self.open_tabs.clear();
+                            self.active_tab_idx = 0;
+                            self.tex_preview = None;
+                            self.selected_element_idx = Some(0);
+
+                            // Auto-open first 3D model (or first texture, or metadata)
+                            let default_tab = loaded
                                 .ir
                                 .models
-                                .keys()
-                                .next()
-                                .map(|k| AssetRef::Model(k.clone()))
+                                .iter()
+                                .find(|(_, m)| !m.elements.is_empty())
+                                .map(|(id, _)| StudioEditorTab::Model(id.clone()))
                                 .or_else(|| {
                                     loaded
                                         .ir
                                         .textures
                                         .keys()
                                         .next()
-                                        .map(|k| AssetRef::Texture(k.clone()))
-                                });
+                                        .map(|id| StudioEditorTab::Texture(id.clone()))
+                                })
+                                .unwrap_or(StudioEditorTab::Text(TextAssetTarget::MetadataJson));
+                            self.open_tabs.push(default_tab);
+
+                            let target = match loaded.edition {
+                                Edition::Java => Edition::Bedrock,
+                                Edition::Bedrock => Edition::Java,
+                            };
+                            self.input_path = loaded.path.display().to_string();
+                            self.target_edition = Some(target);
+                            self.output_path = suggest_output_path(&loaded.path, target);
+
                             self.loaded_pack = Some(loaded);
-                            self.tex_preview = None;
-                            self.anim_frame_idx = 0;
+                            self.rebuild_review_index();
                         }
                         Err(err) => {
-                            self.status_banner = format!("Load error: {err}");
+                            self.status_banner = format!("Studio load error: {err}");
                             self.push_log(self.status_banner.clone());
                         }
                     }
@@ -721,12 +917,13 @@ impl RpGuiApp {
                     match &res {
                         Ok(ok) => {
                             self.status_banner = format!(
-                                "Converted {} -> {} in {}ms ({} converted, {} lossy)",
+                                "Converted {} -> {} in {}ms ({} converted, {} lossy, {} warnings)",
                                 ok.source,
                                 ok.target,
                                 ok.elapsed_ms,
                                 ok.report.converted_count,
-                                ok.report.lossy_count
+                                ok.report.lossy_count,
+                                ok.report.warnings.len()
                             );
                             self.push_log(format!(
                                 "OK: {} -> {}",
@@ -740,6 +937,7 @@ impl RpGuiApp {
                         }
                     }
                     self.last_conversion = Some(res);
+                    self.rebuild_review_index();
                 }
                 WorkerMsg::DiffDone(res) => {
                     self.busy_message = None;
@@ -747,15 +945,13 @@ impl RpGuiApp {
                         Ok(diff) => {
                             let d = *diff;
                             self.status_banner = format!(
-                                "Compared {} vs {} ({} shared tex, {} shared models)",
+                                "Compared {} vs {} ({} shared tex, {} shared 3D)",
                                 d.name_a, d.name_b, d.textures.shared_count, d.models.shared_count
                             );
-                            self.push_log(self.status_banner.clone());
                             self.pack_diff = Some(Ok(d));
                         }
                         Err(err) => {
                             self.status_banner = format!("Diff failed: {err}");
-                            self.push_log(self.status_banner.clone());
                             self.pack_diff = Some(Err(err));
                         }
                     }
@@ -871,9 +1067,9 @@ impl RpGuiApp {
         });
     }
 
-    /// Renders the full GUI frame (exposed as public for headless `egui::Context` tests).
+    /// Renders the entire desktop UI frame (public for headless unit testing).
     pub fn render_ui(&mut self, ctx: &Context) {
-        self.poll_worker();
+        self.poll_workers();
 
         if self.dark_mode {
             ctx.set_visuals(egui::Visuals::dark());
@@ -881,7 +1077,7 @@ impl RpGuiApp {
             ctx.set_visuals(egui::Visuals::light());
         }
 
-        // Handle drag-and-drop .zip / .mcpack files directly onto window
+        // Drag-and-drop .zip / .mcpack / folder anywhere in the window
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -890,12 +1086,15 @@ impl RpGuiApp {
                 .collect()
         });
         if let Some(first_drop) = dropped.first() {
-            if first_drop.is_dir() {
+            if first_drop.is_dir()
+                && !first_drop.join("pack.mcmeta").is_file()
+                && !first_drop.join("manifest.json").is_file()
+            {
                 self.scan_dir = first_drop.clone();
                 self.scan_dir_input = first_drop.display().to_string();
                 self.start_scan();
             } else {
-                self.start_load_explorer(first_drop.clone());
+                self.start_load_studio(first_drop.clone());
             }
         }
 
@@ -903,40 +1102,69 @@ impl RpGuiApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
 
-        // Top bar
+        // Top Bar: Mode Switcher (Quick <-> Studio) + Workspace Path Bar (Non-blocking!)
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(3.0);
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("mc-rp-converter Studio")
+                    RichText::new("mc-rp-converter")
                         .strong()
-                        .size(16.0)
+                        .size(15.0)
                         .color(Color32::from_rgb(90, 210, 255)),
                 );
                 ui.separator();
-                ui.label("Workspace:");
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.scan_dir_input)
-                        .desired_width(280.0)
-                        .hint_text("/path/to/resource-packs"),
-                );
+
+                if ui
+                    .selectable_label(
+                        self.mode == WorkspaceMode::Quick,
+                        RichText::new("📦 Quick Manager").strong(),
+                    )
+                    .clicked()
+                {
+                    self.mode = WorkspaceMode::Quick;
+                }
+                let studio_badge = if self.overrides.total_override_count() > 0 {
+                    format!("🛠 Studio ({})", self.overrides.total_override_count())
+                } else {
+                    String::from("🛠 Studio Mode")
+                };
+                if ui
+                    .selectable_label(
+                        self.mode == WorkspaceMode::Studio,
+                        RichText::new(studio_badge).strong(),
+                    )
+                    .clicked()
+                {
+                    self.mode = WorkspaceMode::Studio;
+                }
+
+                ui.separator();
+                let path_w = (ui.available_width() - 280.0).clamp(140.0, 360.0);
+                let resp = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.scan_dir_input)
+                            .desired_width(path_w)
+                            .hint_text("/path/to/packs"),
+                    )
+                    .on_hover_text(self.scan_dir_input.as_str());
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     let p = PathBuf::from(self.scan_dir_input.trim());
                     if p.is_dir() {
                         self.scan_dir = p;
                         self.start_scan();
                     } else {
-                        self.status_banner = format!("Not a directory: {}", self.scan_dir_input);
+                        self.status_banner =
+                            format!("Directory not found: {}", self.scan_dir_input);
                     }
                 }
-                if ui.button("Browse...").clicked()
-                    && let Some(folder) = rfd::FileDialog::new()
-                        .set_directory(&self.scan_dir)
-                        .pick_folder()
+                if ui
+                    .button("Browse")
+                    .on_hover_text("Non-blocking in-app folder browser (no X11 freeze)")
+                    .clicked()
                 {
-                    self.scan_dir = folder.clone();
-                    self.scan_dir_input = folder.display().to_string();
-                    self.start_scan();
+                    let start = self.scan_dir.clone();
+                    self.file_browser
+                        .open_for(FilePickerTarget::WorkspaceDir, &start, "");
                 }
                 if ui.button("Rescan").clicked() {
                     let p = PathBuf::from(self.scan_dir_input.trim());
@@ -947,25 +1175,24 @@ impl RpGuiApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let theme_label = if self.dark_mode {
-                        "Light Mode"
-                    } else {
-                        "Dark Mode"
-                    };
-                    if ui.button(theme_label).clicked() {
+                    if ui
+                        .button(if self.dark_mode { "☀" } else { "🌙" })
+                        .on_hover_text("Toggle Dark/Light Theme")
+                        .clicked()
+                    {
                         self.dark_mode = !self.dark_mode;
                     }
                     if let Some(busy) = &self.busy_message {
                         ui.spinner();
-                        ui.label(RichText::new(busy).color(Color32::YELLOW));
+                        ui.label(RichText::new(busy).color(Color32::YELLOW).small());
                     }
                 });
             });
-            ui.add_space(4.0);
+            ui.add_space(3.0);
         });
 
-        // Bottom status bar
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+        // Bottom Status Strip
+        egui::TopBottomPanel::bottom("status_strip").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(&self.status_banner)
@@ -973,65 +1200,37 @@ impl RpGuiApp {
                         .small(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ov = self.overrides.total_override_count();
+                    let rev = self
+                        .review_index
+                        .count_matching(DiagnosticFilter::NeedsReview);
                     ui.label(
-                        RichText::new(
-                            "Drag & drop .zip/.mcpack anywhere | Java 1.6.1–26.3 <-> Bedrock",
-                        )
-                        .weak()
-                        .small(),
+                        RichText::new(format!(
+                            "Needs Review: {rev} | Manual Overrides: {ov} | Target: {}",
+                            self.target_version
+                        ))
+                        .small()
+                        .weak(),
                     );
                 });
             });
         });
 
-        // Left navigation rail
-        egui::SidePanel::left("nav_rail")
-            .resizable(false)
-            .default_width(165.0)
-            .show(ctx, |ui| {
-                ui.add_space(8.0);
-                for page in GuiPage::ALL {
-                    let selected = self.page == page;
-                    let btn = ui.add_sized(
-                        Vec2::new(ui.available_width(), 32.0),
-                        egui::Button::new(RichText::new(page.label()).strong()).selected(selected),
-                    );
-                    if btn.clicked() {
-                        self.page = page;
-                    }
-                    ui.add_space(4.0);
-                }
-                ui.separator();
-                ui.label(RichText::new(format!("Packs: {}", self.packs.len())).small());
-                let checked = self.packs.iter().filter(|p| p.selected).count();
-                ui.label(RichText::new(format!("Selected: {checked}")).small());
-                if let Some(loaded) = &self.loaded_pack {
-                    ui.separator();
-                    ui.label(RichText::new("Loaded Pack:").small().strong());
-                    ui.label(RichText::new(&loaded.ir.metadata.name).small());
-                    ui.label(
-                        RichText::new(format!(
-                            "{} tex | {} 3D",
-                            loaded.ir.textures.len(),
-                            loaded.ir.models.len()
-                        ))
-                        .small()
-                        .weak(),
-                    );
-                }
-            });
+        // Render active workspace mode
+        match self.mode {
+            WorkspaceMode::Quick => self.render_quick_mode(ctx),
+            WorkspaceMode::Studio => self.render_studio_mode(ctx),
+        }
 
-        // Central view
-        egui::CentralPanel::default().show(ctx, |ui| match self.page {
-            GuiPage::Packs => self.show_packs_page(ctx, ui),
-            GuiPage::Explorer => self.show_explorer_page(ctx, ui),
-            GuiPage::Convert => self.show_convert_page(ui),
-            GuiPage::BatchAudit => self.show_batch_page(ui),
-            GuiPage::Compare => self.show_compare_page(ui),
-            GuiPage::VersionsLogs => self.show_versions_page(ui),
-        });
+        // Non-blocking In-App File Browser Modal (zero X11 freeze!)
+        let picked = self
+            .file_browser
+            .show(ctx, &self.recent_paths, &self.picker_tx);
+        if let Some((target, path)) = picked {
+            self.apply_picked_path(target, path);
+        }
 
-        // Delete confirmation dialog
+        // Safe Delete Confirmation Modal
         if let Some((del_path, is_dir)) = self.pending_delete.clone() {
             egui::Window::new("Confirm Delete")
                 .collapsible(false)
@@ -1073,23 +1272,59 @@ impl RpGuiApp {
         }
     }
 
+    // =========================================================================
+    // QUICK MODE (Streamlined Pack Manager + Clean Converter + Grouped Warnings)
+    // =========================================================================
+
+    fn render_quick_mode(&mut self, ctx: &Context) {
+        egui::SidePanel::left("quick_nav_rail")
+            .resizable(false)
+            .default_width(158.0)
+            .show(ctx, |ui| {
+                ui.add_space(6.0);
+                for page in GuiPage::ALL {
+                    let btn = ui.add_sized(
+                        Vec2::new(ui.available_width(), 30.0),
+                        egui::Button::new(RichText::new(page.label()).strong())
+                            .selected(self.page == page),
+                    );
+                    if btn.clicked() {
+                        self.page = page;
+                    }
+                    ui.add_space(3.0);
+                }
+                ui.separator();
+                ui.label(RichText::new(format!("Packs: {}", self.packs.len())).small());
+                let sel = self.packs.iter().filter(|p| p.selected).count();
+                ui.label(RichText::new(format!("Checked: {sel}")).small());
+            });
+
+        egui::CentralPanel::default().show(ctx, |ui| match self.page {
+            GuiPage::Packs => self.show_packs_page(ctx, ui),
+            GuiPage::Convert => self.show_convert_page(ui),
+            GuiPage::BatchAudit => self.show_batch_page(ui),
+            GuiPage::Compare => self.show_compare_page(ui),
+            GuiPage::VersionsLogs => self.show_versions_page(ui),
+        });
+    }
+
     fn show_packs_page(&mut self, ctx: &Context, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Search:");
-            ui.add(egui::TextEdit::singleline(&mut self.pack_filter).desired_width(200.0));
+            ui.add(egui::TextEdit::singleline(&mut self.pack_filter).desired_width(190.0));
             ui.separator();
             ui.label("Sort:");
             if ui.button(self.pack_sort.label()).clicked() {
                 self.pack_sort = self.pack_sort.next();
                 sort_discovered_packs(&mut self.packs, self.pack_sort);
             }
-            if ui.button("Toggle Select All").clicked() {
+            if ui.button("Select All").clicked() {
                 let any_unsel = self.packs.iter().any(|p| !p.selected);
                 for p in &mut self.packs {
                     p.selected = any_unsel;
                 }
             }
-            if ui.button("Compare Selected (2)").clicked() {
+            if ui.button("Compare Checked (2)").clicked() {
                 let marked: Vec<PathBuf> = self
                     .packs
                     .iter()
@@ -1101,21 +1336,20 @@ impl RpGuiApp {
                     self.diff_path_b = marked[1].display().to_string();
                     self.start_diff(marked[0].clone(), marked[1].clone());
                 } else {
-                    self.status_banner = String::from("Check 2 packs first to run Compare (Diff)");
+                    self.status_banner = String::from("Check 2 packs first to Compare");
                 }
             }
         });
         ui.separator();
 
         let needle = self.pack_filter.trim().to_ascii_lowercase();
-        let mut action_explore: Option<PathBuf> = None;
+        let mut action_studio: Option<PathBuf> = None;
         let mut action_convert: Option<usize> = None;
         let mut action_audit: Option<PathBuf> = None;
         let mut action_unpack: Option<PathBuf> = None;
         let mut action_repack: Option<PathBuf> = None;
         let mut action_delete: Option<(PathBuf, bool)> = None;
 
-        // Pre-warm icons cleanly without overlapping borrows
         let icon_jobs: Vec<(PathBuf, Vec<u8>)> = self
             .packs
             .iter()
@@ -1133,7 +1367,7 @@ impl RpGuiApp {
 
         ScrollArea::vertical().show(ui, |ui| {
             if self.packs.is_empty() {
-                ui.label("No resource packs found in this folder. Click 'Browse...' or drop a .zip/.mcpack file.");
+                ui.label("No resource packs found here. Click 'Browse' or drag & drop a .zip/.mcpack.");
                 return;
             }
             for (idx, pack) in self.packs.iter_mut().enumerate() {
@@ -1176,7 +1410,7 @@ impl RpGuiApp {
                                         let ver = match s.edition {
                                             Edition::Java => s
                                                 .java_pack_format
-                                                .map(|f| format!("pack_format {f}"))
+                                                .map(|f| format!("fmt {f}"))
                                                 .unwrap_or_default(),
                                             Edition::Bedrock => s
                                                 .bedrock_min_engine_version
@@ -1196,13 +1430,13 @@ impl RpGuiApp {
                             if let Ok(s) = &pack.summary {
                                 ui.label(
                                     RichText::new(format!(
-                                        "{} | {} tex ({} anim) | {} 3D models | {} sounds | {} locales | {}",
-                                        s.description.lines().next().unwrap_or(""),
+                                        "{} tex ({} anim) | {} 3D | {} sounds | {} locales | {} warnings | {}",
                                         s.texture_count,
                                         s.animated_texture_count,
                                         s.model_count,
                                         s.sound_file_count,
                                         s.locale_count,
+                                        s.warnings.len(),
                                         format_bytes(pack.size_bytes)
                                     ))
                                     .small()
@@ -1231,8 +1465,11 @@ impl RpGuiApp {
                             if ui.button("Convert").clicked() {
                                 action_convert = Some(idx);
                             }
-                            if ui.button("Explore").clicked() {
-                                action_explore = Some(pack.path.clone());
+                            if ui
+                                .button(RichText::new("Open Studio").color(Color32::from_rgb(120, 220, 255)))
+                                .clicked()
+                            {
+                                action_studio = Some(pack.path.clone());
                             }
                         });
                     });
@@ -1241,13 +1478,14 @@ impl RpGuiApp {
             }
         });
 
-        if let Some(p) = action_explore {
-            self.start_load_explorer(p);
+        if let Some(p) = action_studio {
+            self.start_load_studio(p);
         } else if let Some(idx) = action_convert {
             if let Some(pack) = self.packs.get(idx).cloned() {
                 self.load_pack_into_converter(&pack);
             }
         } else if let Some(p) = action_audit {
+            self.page = GuiPage::BatchAudit;
             self.start_audit(vec![p]);
         } else if let Some(p) = action_unpack {
             self.start_unpack(p);
@@ -1258,576 +1496,372 @@ impl RpGuiApp {
         }
     }
 
-    fn show_explorer_page(&mut self, ctx: &Context, ui: &mut Ui) {
-        let Some(loaded) = self.loaded_pack.clone() else {
-            ui.centered_and_justified(|ui| {
-                ui.label("No pack loaded. Open Packs Manager and click 'Explore' on any pack, or drag & drop a .zip/.mcpack here.");
-            });
-            return;
-        };
-
-        ui.horizontal_wrapped(|ui| {
-            for cat in AssetCategory::ALL {
-                if ui
-                    .selectable_label(self.asset_category == cat, cat.label())
-                    .clicked()
-                {
-                    self.asset_category = cat;
-                }
-            }
-            ui.separator();
-            ui.label("Search:");
-            ui.add(egui::TextEdit::singleline(&mut self.asset_filter).desired_width(180.0));
-        });
-        ui.separator();
-
-        // Build filtered asset list
-        let needle = self.asset_filter.trim().to_ascii_lowercase();
-        let matches = |id: &str| needle.is_empty() || id.to_ascii_lowercase().contains(&needle);
-        let mut items: Vec<AssetRef> = Vec::new();
-        if matches!(
-            self.asset_category,
-            AssetCategory::All | AssetCategory::Textures
-        ) {
-            for id in loaded.ir.textures.keys() {
-                if matches(id) {
-                    items.push(AssetRef::Texture(id.clone()));
-                }
-            }
-        }
-        if matches!(
-            self.asset_category,
-            AssetCategory::All | AssetCategory::Models
-        ) {
-            for id in loaded.ir.models.keys() {
-                if matches(id) {
-                    items.push(AssetRef::Model(id.clone()));
-                }
-            }
-        }
-        if matches!(
-            self.asset_category,
-            AssetCategory::All | AssetCategory::Attachables
-        ) {
-            for id in loaded.ir.attachables.keys() {
-                if matches(id) {
-                    items.push(AssetRef::Attachable(id.clone()));
-                }
-            }
-        }
-        if matches!(
-            self.asset_category,
-            AssetCategory::All | AssetCategory::Sounds
-        ) {
-            for id in loaded.ir.sounds.files.keys() {
-                if matches(id) {
-                    items.push(AssetRef::SoundFile(id.clone()));
-                }
-            }
-            for id in loaded.ir.sounds.events.keys() {
-                if matches(id) {
-                    items.push(AssetRef::SoundEvent(id.clone()));
-                }
-            }
-        }
-        if matches!(
-            self.asset_category,
-            AssetCategory::All | AssetCategory::Locales
-        ) {
-            for id in loaded.ir.locales.keys() {
-                if matches(id) {
-                    items.push(AssetRef::Locale(id.clone()));
-                }
-            }
-        }
-        if matches!(
-            self.asset_category,
-            AssetCategory::All | AssetCategory::Passthrough
-        ) {
-            for id in loaded.ir.passthrough_files.keys() {
-                if matches(id) {
-                    items.push(AssetRef::Passthrough(id.clone()));
-                }
-            }
-        }
+    fn show_convert_page(&mut self, ui: &mut Ui) {
+        let mut jump_to_studio_asset: Option<String> = None;
 
         ui.columns(2, |cols| {
-            // Left column: Scrollable asset list
-            cols[0].label(RichText::new(format!("Assets ({})", items.len())).strong());
+            // Left column: Streamlined stacked full-width inputs (no clipping!) + Collapsible Advanced
             ScrollArea::vertical()
-                .id_salt("explorer_asset_list")
+                .id_salt("convert_form_scroll")
                 .show(&mut cols[0], |ui| {
-                    for item in &items {
-                        let is_sel = self.selected_asset.as_ref() == Some(item);
-                        let label = format!("[{}] {}", item.badge(), item.id());
-                        if ui.selectable_label(is_sel, label).clicked() {
-                            self.selected_asset = Some(item.clone());
-                        }
-                    }
-                });
+                    ui.heading("Quick Convert");
+                    ui.add_space(6.0);
 
-            // Right column: Visual Inspector / 3D Viewport / Texture Preview
-            ScrollArea::vertical()
-                .id_salt("explorer_asset_detail")
-                .show(&mut cols[1], |ui| {
-                    match self.selected_asset.clone() {
-                        Some(AssetRef::Texture(id)) => {
-                            if let Some(tex) = loaded.ir.textures.get(&id) {
-                                self.ensure_asset_texture_preview(ctx, tex);
-                                ui.heading(&tex.id);
-                                if let Some(prev) = &self.tex_preview {
-                                    ui.label(format!(
-                                        "Dimensions: {}x{} | Category: {:?} | Frames: {}",
-                                        prev.dims.0,
-                                        prev.dims.1,
-                                        tex.category,
-                                        prev.frames.len()
-                                    ));
-                                    ui.horizontal(|ui| {
-                                        ui.add(
-                                            egui::Slider::new(&mut self.tex_zoom, 1.0..=16.0)
-                                                .text("Zoom"),
+                    // Stacked Input Pack field — full width + hover tooltip
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Input Pack").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Browse...").clicked() {
+                                let start = PathBuf::from(&self.input_path);
+                                self.file_browser.open_for(
+                                    FilePickerTarget::ConvertInput,
+                                    if start.exists() {
+                                        &start
+                                    } else {
+                                        &self.scan_dir
+                                    },
+                                    "",
+                                );
+                            }
+                        });
+                    });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.input_path)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("/path/to/input.zip or .mcpack"),
+                    )
+                    .on_hover_text(self.input_path.as_str());
+
+                    ui.add_space(6.0);
+
+                    // Stacked Output Path field — full width + hover tooltip
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Output Path").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Save As...").clicked() {
+                                let out_p = PathBuf::from(&self.output_path);
+                                let fname = out_p
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("converted-pack.zip")
+                                    .to_string();
+                                self.file_browser.open_for(
+                                    FilePickerTarget::ConvertOutput,
+                                    out_p.parent().unwrap_or(&self.scan_dir),
+                                    &fname,
+                                );
+                            }
+                        });
+                    });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.output_path)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("/path/to/output.zip or .mcpack"),
+                    )
+                    .on_hover_text(self.output_path.as_str());
+
+                    ui.add_space(8.0);
+                    egui::Grid::new("convert_primary_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Target Edition:");
+                            egui::ComboBox::from_id_salt("target_ed")
+                                .selected_text(match self.target_edition {
+                                    None => "Auto (Flip)",
+                                    Some(Edition::Java) => "Java Edition",
+                                    Some(Edition::Bedrock) => "Bedrock Edition",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.target_edition,
+                                        None,
+                                        "Auto (Flip)",
+                                    );
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.target_edition,
+                                            Some(Edition::Java),
+                                            "Java Edition",
+                                        )
+                                        .clicked()
+                                        && !self.input_path.is_empty()
+                                    {
+                                        self.output_path = suggest_output_path(
+                                            Path::new(&self.input_path),
+                                            Edition::Java,
                                         );
-                                        if prev.frames.len() > 1 {
-                                            if ui
-                                                .button(if self.anim_playing { "Pause" } else { "Play" })
-                                                .clicked()
-                                            {
-                                                self.anim_playing = !self.anim_playing;
-                                            }
-                                            let max_f = prev.frames.len() - 1;
-                                            ui.add(
-                                                egui::Slider::new(&mut self.anim_frame_idx, 0..=max_f)
-                                                    .text("Frame"),
+                                    }
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.target_edition,
+                                            Some(Edition::Bedrock),
+                                            "Bedrock Edition",
+                                        )
+                                        .clicked()
+                                        && !self.input_path.is_empty()
+                                    {
+                                        self.output_path = suggest_output_path(
+                                            Path::new(&self.input_path),
+                                            Edition::Bedrock,
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+
+                            ui.label("Target Version:");
+                            egui::ComboBox::from_id_salt("target_ver")
+                                .selected_text(&self.target_version)
+                                .show_ui(ui, |ui| {
+                                    for v in self.mappings.pack_format_versions().iter().rev() {
+                                        ui.selectable_value(
+                                            &mut self.target_version,
+                                            v.minecraft_version.clone(),
+                                            format!(
+                                                "{} (Java {} / Bedrock {}.{}.{})",
+                                                v.minecraft_version,
+                                                v.java_pack_format,
+                                                v.bedrock_min_engine_version[0],
+                                                v.bedrock_min_engine_version[1],
+                                                v.bedrock_min_engine_version[2]
+                                            ),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                        });
+
+                    ui.add_space(6.0);
+                    // Collapsible Advanced Options so browsing/conversion stays uncluttered
+                    egui::CollapsingHeader::new(
+                        "Advanced Options (Rotation / Geo / Manifest / Strict)",
+                    )
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        egui::Grid::new("convert_adv_grid")
+                            .num_columns(2)
+                            .spacing([12.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label("Rotation Mode:");
+                                egui::ComboBox::from_id_salt("rot_mode")
+                                    .selected_text(format!("{:?}", self.rotation_mode))
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.rotation_mode,
+                                            RotationSnapMode::Preserve,
+                                            "Preserve (Exact / 26.x {x,y,z})",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.rotation_mode,
+                                            RotationSnapMode::Snap22_5,
+                                            "Snap 22.5° (Legacy)",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.rotation_mode,
+                                            RotationSnapMode::Clamp45,
+                                            "Clamp [-45..45]",
+                                        );
+                                    });
+                                ui.end_row();
+
+                                ui.label("Bedrock Geo Ver:");
+                                egui::ComboBox::from_id_salt("geo_ver")
+                                    .selected_text(
+                                        self.bedrock_geo_version
+                                            .map_or("Auto", BedrockGeoVersion::as_str),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.bedrock_geo_version,
+                                            None,
+                                            "Auto",
+                                        );
+                                        for v in [
+                                            BedrockGeoVersion::V1_21_0,
+                                            BedrockGeoVersion::V1_16_0,
+                                            BedrockGeoVersion::V1_12_0,
+                                            BedrockGeoVersion::V1_10_0,
+                                        ] {
+                                            ui.selectable_value(
+                                                &mut self.bedrock_geo_version,
+                                                Some(v),
+                                                v.as_str(),
                                             );
                                         }
                                     });
+                                ui.end_row();
 
-                                    // Advance animation playback
-                                    if prev.frames.len() > 1 && self.anim_playing {
-                                        let ms_per_frame =
-                                            u64::from(prev.frametime_ticks).saturating_mul(50).max(50);
-                                        if self.anim_last_step.elapsed().as_millis()
-                                            >= u128::from(ms_per_frame)
-                                        {
-                                            self.anim_frame_idx =
-                                                (self.anim_frame_idx + 1) % prev.frames.len();
-                                            self.anim_last_step = Instant::now();
-                                        }
-                                        ctx.request_repaint_after(
-                                            std::time::Duration::from_millis(ms_per_frame),
-                                        );
-                                    }
-
-                                    let frame_idx = self
-                                        .anim_frame_idx
-                                        .min(prev.frames.len().saturating_sub(1));
-                                    if let Some(handle) = prev.frames.get(frame_idx) {
-                                        let base = handle.size_vec2();
-                                        let disp = (base * self.tex_zoom)
-                                            .min(Vec2::new(420.0, 420.0));
-                                        let (rect, _) =
-                                            ui.allocate_exact_size(disp, egui::Sense::hover());
-                                        draw_checkerboard(ui, rect);
-                                        ui.painter().image(
-                                            handle.id(),
-                                            rect,
-                                            Rect::from_min_max(
-                                                Pos2::new(0.0, 0.0),
-                                                Pos2::new(1.0, 1.0),
-                                            ),
-                                            Color32::WHITE,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Some(AssetRef::Model(id)) => {
-                            if let Some(model) = loaded.ir.models.get(&id) {
-                                ui.heading(&model.id);
-                                self.viewport_3d.show(ui, model, 300.0);
-                                ui.add_space(6.0);
-                                ui.label(format!(
-                                    "Category: {:?} | Texture Size: {}x{} | Elements: {}",
-                                    model.category,
-                                    model.texture_size[0],
-                                    model.texture_size[1],
-                                    model.elements.len()
-                                ));
-                                if let Some(parent) = &model.parent {
-                                    ui.label(format!("Parent: {parent}"));
-                                }
-                                let multi_axis = model
-                                    .elements
-                                    .iter()
-                                    .filter(|e| {
-                                        e.rotation
-                                            .as_ref()
-                                            .is_some_and(|r| r.extra_bedrock_euler.is_some())
+                                ui.label("Bedrock Manifest:");
+                                egui::ComboBox::from_id_salt("manifest_ver")
+                                    .selected_text(match self.bedrock_manifest_version {
+                                        None => "Auto (v2)",
+                                        Some(3) => "v3 (SemVer)",
+                                        Some(2) => "v2",
+                                        Some(1) => "v1",
+                                        Some(_) => "Auto",
                                     })
-                                    .count();
-                                let shade_263 = model
-                                    .elements
-                                    .iter()
-                                    .filter(|e| e.shade_direction_override.is_some())
-                                    .count();
-                                ui.label(format!(
-                                    "Multi-axis {{x,y,z}} elements: {multi_axis} | 26.3 shade_direction_override: {shade_263}"
-                                ));
-                                if !model.textures.is_empty() {
-                                    ui.collapsing("Texture Bindings", |ui| {
-                                        for (k, v) in &model.textures {
-                                            ui.monospace(format!("#{k} -> {v}"));
-                                        }
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.bedrock_manifest_version,
+                                            None,
+                                            "Auto",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.bedrock_manifest_version,
+                                            Some(3),
+                                            "v3 (SemVer)",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.bedrock_manifest_version,
+                                            Some(2),
+                                            "v2",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.bedrock_manifest_version,
+                                            Some(1),
+                                            "v1",
+                                        );
                                     });
-                                }
-                                if !model.display.is_empty() {
-                                    ui.collapsing("Display Transforms", |ui| {
-                                        for (slot, dt) in &model.display {
-                                            ui.monospace(format!(
-                                                "{slot}: rot={:?} trans={:?} scale={:?}",
-                                                dt.rotation, dt.translation, dt.scale
-                                            ));
-                                        }
+                                ui.end_row();
+
+                                ui.label("Java items/*.json:");
+                                egui::ComboBox::from_id_salt("items_def")
+                                    .selected_text(match self.emit_java_items {
+                                        None => "Auto (1.21.4+)",
+                                        Some(true) => "Force On",
+                                        Some(false) => "Force Off",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.emit_java_items,
+                                            None,
+                                            "Auto (1.21.4+)",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.emit_java_items,
+                                            Some(true),
+                                            "Force On",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.emit_java_items,
+                                            Some(false),
+                                            "Force Off",
+                                        );
                                     });
-                                }
-                                if !model.elements.is_empty() {
-                                    ui.collapsing(
-                                        format!("Elements ({})", model.elements.len()),
-                                        |ui| {
-                                            for (i, el) in model.elements.iter().take(40).enumerate() {
-                                                let grp = el.group.as_deref().unwrap_or("-");
-                                                ui.monospace(format!(
-                                                    "[{i:02}] {grp} [{:.1},{:.1},{:.1}]..[{:.1},{:.1},{:.1}] faces={}",
-                                                    el.from[0],
-                                                    el.from[1],
-                                                    el.from[2],
-                                                    el.to[0],
-                                                    el.to[1],
-                                                    el.to[2],
-                                                    el.faces.len()
-                                                ));
-                                            }
-                                        },
-                                    );
-                                }
-                            }
+                                ui.end_row();
+
+                                ui.label("Strict Mode:");
+                                ui.checkbox(&mut self.strict_mode, "Fail on warnings / lossy");
+                                ui.end_row();
+                            });
+                    });
+
+                    ui.add_space(10.0);
+                    let can_run = self.busy_message.is_none();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                can_run,
+                                egui::Button::new(
+                                    RichText::new("Convert Pack").strong().size(14.0),
+                                )
+                                .min_size(Vec2::new(150.0, 34.0)),
+                            )
+                            .clicked()
+                        {
+                            self.start_convert();
                         }
-                        Some(AssetRef::Attachable(id)) => {
-                            if let Some(att) = loaded.ir.attachables.get(&id) {
-                                ui.heading(&att.id);
-                                ui.monospace(format!("item:     {}", att.item_identifier));
-                                ui.monospace(format!(
-                                    "texture:  {}",
-                                    att.default_texture.as_deref().unwrap_or("-")
-                                ));
-                                ui.monospace(format!(
-                                    "geometry: {}",
-                                    att.default_geometry.as_deref().unwrap_or("-")
-                                ));
-                            }
+                        if !self.input_path.trim().is_empty()
+                            && ui
+                                .add_enabled(
+                                    can_run,
+                                    egui::Button::new("Inspect in Studio")
+                                        .min_size(Vec2::new(130.0, 34.0)),
+                                )
+                                .clicked()
+                        {
+                            let p = PathBuf::from(self.input_path.trim());
+                            self.start_load_studio(p);
                         }
-                        Some(AssetRef::SoundFile(id)) => {
-                            if let Some(sf) = loaded.ir.sounds.files.get(&id) {
-                                ui.heading(&sf.id);
-                                ui.label(format!("OGG size: {}", format_bytes(sf.data.len() as u64)));
-                            }
-                        }
-                        Some(AssetRef::SoundEvent(id)) => {
-                            if let Some(ev) = loaded.ir.sounds.events.get(&id) {
-                                ui.heading(&id);
-                                ui.label(format!("Variants: {}", ev.sounds.len()));
-                                for s in &ev.sounds {
-                                    ui.monospace(format!(
-                                        "{} (vol={}, pitch={}, w={})",
-                                        s.name, s.volume, s.pitch, s.weight
-                                    ));
-                                }
-                            }
-                        }
-                        Some(AssetRef::Locale(code)) => {
-                            if let Some(tbl) = loaded.ir.locales.get(&code) {
-                                ui.heading(format!("{code} ({} keys)", tbl.entries.len()));
-                                let mut pairs: Vec<(&String, &String)> = tbl.entries.iter().collect();
-                                pairs.sort_by(|a, b| a.0.cmp(b.0));
-                                for (k, v) in pairs.into_iter().take(60) {
-                                    ui.monospace(format!("{k} = {v}"));
-                                }
-                            }
-                        }
-                        Some(AssetRef::Passthrough(path)) => {
-                            if let Some(bytes) = loaded.ir.passthrough_files.get(&path) {
-                                ui.heading(&path);
-                                ui.label(format!("Size: {}", format_bytes(bytes.len() as u64)));
-                                if let Ok(txt) = std::str::from_utf8(bytes) {
-                                    ui.code(txt.chars().take(2000).collect::<String>());
-                                }
-                            }
-                        }
-                        None => {
-                            ui.label("Select an asset on the left to inspect it.");
+                    });
+                });
+
+            // Right column: Grouped Diagnostics & Conversion Report
+            cols[1].heading("Conversion Report & Grouped Warnings");
+            cols[1].add_space(4.0);
+
+            if let Some(Ok(res)) = &self.last_conversion {
+                cols[1].colored_label(
+                    Color32::LIGHT_GREEN,
+                    format!(
+                        "SUCCESS: {} -> {} ({} ms)",
+                        res.source, res.target, res.elapsed_ms
+                    ),
+                );
+                cols[1]
+                    .monospace(res.output_path.display().to_string())
+                    .on_hover_text(res.output_path.display().to_string());
+                cols[1].horizontal_wrapped(|ui| {
+                    ui.label(format!("Converted: {}", res.report.converted_count));
+                    ui.separator();
+                    ui.label(format!("Pass-through: {}", res.report.passthrough_count));
+                    ui.separator();
+                    ui.colored_label(
+                        Color32::YELLOW,
+                        format!("Lossy: {}", res.report.lossy_count),
+                    );
+                    ui.separator();
+                    ui.colored_label(
+                        Color32::LIGHT_RED,
+                        format!("Skipped: {}", res.report.skipped_count),
+                    );
+                    if ui.small_button("Export JSON").clicked() {
+                        let out = self.scan_dir.join("conversion_report.json");
+                        if let Ok(()) = export_report_json(&res.report, &out) {
+                            self.status_banner = format!("Exported -> {}", out.display());
                         }
                     }
                 });
-        });
-    }
-
-    fn show_convert_page(&mut self, ui: &mut Ui) {
-        ui.columns(2, |cols| {
-            // Left: Conversion Form
-            cols[0].heading("Conversion Configuration");
-            cols[0].add_space(6.0);
-
-            cols[0].horizontal(|ui| {
-                ui.label("Input Pack: ");
-                ui.add(egui::TextEdit::singleline(&mut self.input_path).desired_width(240.0));
-                if ui.button("File...").clicked()
-                    && let Some(file) = rfd::FileDialog::new()
-                        .set_directory(&self.scan_dir)
-                        .add_filter("Minecraft Pack", &["zip", "mcpack"])
-                        .pick_file()
-                {
-                    self.input_path = file.display().to_string();
-                }
-            });
-
-            cols[0].horizontal(|ui| {
-                ui.label("Output Path:");
-                ui.add(egui::TextEdit::singleline(&mut self.output_path).desired_width(240.0));
-                if ui.button("Save As...").clicked()
-                    && let Some(file) = rfd::FileDialog::new()
-                        .set_directory(&self.scan_dir)
-                        .save_file()
-                {
-                    self.output_path = file.display().to_string();
-                }
-            });
-
-            cols[0].add_space(6.0);
-            egui::Grid::new("convert_opts_grid")
-                .num_columns(2)
-                .spacing([12.0, 8.0])
-                .show(&mut cols[0], |ui| {
-                    ui.label("Target Edition:");
-                    egui::ComboBox::from_id_salt("target_ed")
-                        .selected_text(match self.target_edition {
-                            None => "Auto (Flip)",
-                            Some(Edition::Java) => "Java Edition",
-                            Some(Edition::Bedrock) => "Bedrock Edition",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.target_edition, None, "Auto (Flip)");
-                            if ui
-                                .selectable_value(
-                                    &mut self.target_edition,
-                                    Some(Edition::Java),
-                                    "Java Edition",
-                                )
-                                .clicked()
-                                && !self.input_path.is_empty()
-                            {
-                                self.output_path =
-                                    suggest_output_path(Path::new(&self.input_path), Edition::Java);
-                            }
-                            if ui
-                                .selectable_value(
-                                    &mut self.target_edition,
-                                    Some(Edition::Bedrock),
-                                    "Bedrock Edition",
-                                )
-                                .clicked()
-                                && !self.input_path.is_empty()
-                            {
-                                self.output_path = suggest_output_path(
-                                    Path::new(&self.input_path),
-                                    Edition::Bedrock,
-                                );
-                            }
-                        });
-                    ui.end_row();
-
-                    ui.label("Target Version:");
-                    egui::ComboBox::from_id_salt("target_ver")
-                        .selected_text(&self.target_version)
-                        .show_ui(ui, |ui| {
-                            for v in self.mappings.pack_format_versions().iter().rev() {
-                                ui.selectable_value(
-                                    &mut self.target_version,
-                                    v.minecraft_version.clone(),
-                                    format!(
-                                        "{} (Java {} / Bedrock {}.{}.{})",
-                                        v.minecraft_version,
-                                        v.java_pack_format,
-                                        v.bedrock_min_engine_version[0],
-                                        v.bedrock_min_engine_version[1],
-                                        v.bedrock_min_engine_version[2]
-                                    ),
-                                );
-                            }
-                        });
-                    ui.end_row();
-
-                    ui.label("Rotation Mode:");
-                    egui::ComboBox::from_id_salt("rot_mode")
-                        .selected_text(format!("{:?}", self.rotation_mode))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.rotation_mode,
-                                RotationSnapMode::Preserve,
-                                "Preserve (Exact / 26.x {x,y,z})",
-                            );
-                            ui.selectable_value(
-                                &mut self.rotation_mode,
-                                RotationSnapMode::Snap22_5,
-                                "Snap 22.5° (Legacy)",
-                            );
-                            ui.selectable_value(
-                                &mut self.rotation_mode,
-                                RotationSnapMode::Clamp45,
-                                "Clamp [-45..45]",
-                            );
-                        });
-                    ui.end_row();
-
-                    ui.label("Bedrock Geo Ver:");
-                    egui::ComboBox::from_id_salt("geo_ver")
-                        .selected_text(
-                            self.bedrock_geo_version
-                                .map_or("Auto", BedrockGeoVersion::as_str),
-                        )
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.bedrock_geo_version, None, "Auto");
-                            for v in [
-                                BedrockGeoVersion::V1_21_0,
-                                BedrockGeoVersion::V1_16_0,
-                                BedrockGeoVersion::V1_12_0,
-                                BedrockGeoVersion::V1_10_0,
-                            ] {
-                                ui.selectable_value(
-                                    &mut self.bedrock_geo_version,
-                                    Some(v),
-                                    v.as_str(),
-                                );
-                            }
-                        });
-                    ui.end_row();
-
-                    ui.label("Bedrock Manifest:");
-                    egui::ComboBox::from_id_salt("manifest_ver")
-                        .selected_text(match self.bedrock_manifest_version {
-                            None => "Auto (v2)",
-                            Some(3) => "v3 (SemVer)",
-                            Some(2) => "v2",
-                            Some(1) => "v1",
-                            Some(_) => "Auto",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.bedrock_manifest_version, None, "Auto");
-                            ui.selectable_value(
-                                &mut self.bedrock_manifest_version,
-                                Some(3),
-                                "v3 (SemVer)",
-                            );
-                            ui.selectable_value(&mut self.bedrock_manifest_version, Some(2), "v2");
-                            ui.selectable_value(&mut self.bedrock_manifest_version, Some(1), "v1");
-                        });
-                    ui.end_row();
-
-                    ui.label("Java items/*.json:");
-                    egui::ComboBox::from_id_salt("items_def")
-                        .selected_text(match self.emit_java_items {
-                            None => "Auto (1.21.4+)",
-                            Some(true) => "Force On",
-                            Some(false) => "Force Off",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.emit_java_items, None, "Auto (1.21.4+)");
-                            ui.selectable_value(&mut self.emit_java_items, Some(true), "Force On");
-                            ui.selectable_value(
-                                &mut self.emit_java_items,
-                                Some(false),
-                                "Force Off",
-                            );
-                        });
-                    ui.end_row();
-
-                    ui.label("Strict Mode:");
-                    ui.checkbox(&mut self.strict_mode, "Fail on warnings / lossy");
-                    ui.end_row();
-                });
-
-            cols[0].add_space(12.0);
-            let can_run = self.busy_message.is_none();
-            if cols[0]
-                .add_enabled(
-                    can_run,
-                    egui::Button::new(RichText::new("Convert Pack").strong().size(15.0))
-                        .min_size(Vec2::new(180.0, 36.0)),
-                )
-                .clicked()
-            {
-                self.start_convert();
+                cols[1].separator();
+            } else if let Some(Err(err)) = &self.last_conversion {
+                cols[1].colored_label(Color32::LIGHT_RED, format!("Failed: {err}"));
+                cols[1].separator();
             }
 
-            // Right: Conversion Report
-            cols[1].heading("Conversion Report");
-            cols[1].add_space(6.0);
+            // Severity filter pills
+            cols[1].horizontal_wrapped(|ui| {
+                for f in DiagnosticFilter::ALL {
+                    let count = self.review_index.count_matching(f);
+                    let label = format!("{} ({count})", f.label());
+                    if ui
+                        .selectable_label(self.diagnostic_filter == f, label)
+                        .clicked()
+                    {
+                        self.diagnostic_filter = f;
+                    }
+                }
+            });
+            cols[1].add_space(4.0);
+
             ScrollArea::vertical()
-                .id_salt("convert_report_scroll")
-                .show(&mut cols[1], |ui| match &self.last_conversion {
-                    None => {
-                        ui.label("Run a conversion on the left to view diagnostics.");
-                    }
-                    Some(Err(err)) => {
-                        ui.colored_label(Color32::LIGHT_RED, format!("Failed: {err}"));
-                    }
-                    Some(Ok(res)) => {
-                        ui.colored_label(
-                            Color32::LIGHT_GREEN,
-                            format!(
-                                "SUCCESS: {} -> {} ({} ms)",
-                                res.source, res.target, res.elapsed_ms
-                            ),
+                .id_salt("grouped_diag_scroll")
+                .show(&mut cols[1], |ui| {
+                    if self.review_index.groups.is_empty() {
+                        ui.label("No diagnostics yet. Run a conversion or open a pack in Studio.");
+                    } else {
+                        jump_to_studio_asset = render_grouped_diagnostics(
+                            ui,
+                            &self.review_index,
+                            self.diagnostic_filter,
+                            self.loaded_pack.is_some(),
                         );
-                        ui.monospace(format!("Output: {}", res.output_path.display()));
-                        ui.add_space(4.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(format!("Converted: {}", res.report.converted_count));
-                            ui.separator();
-                            ui.label(format!("Pass-through: {}", res.report.passthrough_count));
-                            ui.separator();
-                            ui.label(format!("Lossy: {}", res.report.lossy_count));
-                            ui.separator();
-                            ui.label(format!("Skipped: {}", res.report.skipped_count));
-                            ui.separator();
-                            ui.label(format!("Warnings: {}", res.report.warnings.len()));
-                        });
-                        if ui.button("Export Report JSON").clicked() {
-                            let out = self.scan_dir.join("conversion_report.json");
-                            if let Ok(()) = export_report_json(&res.report, &out) {
-                                self.status_banner = format!("Exported -> {}", out.display());
-                            }
-                        }
-                        if !res.report.lossy_conversions.is_empty() {
-                            ui.add_space(6.0);
-                            ui.label(RichText::new("Lossy Conversions:").color(Color32::YELLOW));
-                            for item in &res.report.lossy_conversions {
-                                ui.monospace(format!("• [{}] {}", item.asset, item.detail));
-                            }
-                        }
-                        if !res.report.warnings.is_empty() {
-                            ui.add_space(6.0);
-                            ui.label(RichText::new("Warnings:").color(Color32::LIGHT_BLUE));
-                            for w in &res.report.warnings {
-                                ui.monospace(format!(
-                                    "• [{:?}] {}: {}",
-                                    w.severity, w.asset, w.message
-                                ));
-                            }
-                        }
                     }
                 });
         });
+
+        if let Some(asset) = jump_to_studio_asset {
+            self.open_asset_by_report_hint(&asset);
+        }
     }
 
     fn show_batch_page(&mut self, ui: &mut Ui) {
@@ -1907,16 +1941,28 @@ impl RpGuiApp {
     }
 
     fn show_compare_page(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             ui.label("Pack A:");
-            ui.add(egui::TextEdit::singleline(&mut self.diff_path_a).desired_width(230.0));
+            ui.add(egui::TextEdit::singleline(&mut self.diff_path_a).desired_width(240.0))
+                .on_hover_text(self.diff_path_a.as_str());
+            if ui.small_button("Browse A").clicked() {
+                let start = self.scan_dir.clone();
+                self.file_browser
+                    .open_for(FilePickerTarget::DiffPackA, &start, "");
+            }
             ui.label("Pack B:");
-            ui.add(egui::TextEdit::singleline(&mut self.diff_path_b).desired_width(230.0));
+            ui.add(egui::TextEdit::singleline(&mut self.diff_path_b).desired_width(240.0))
+                .on_hover_text(self.diff_path_b.as_str());
+            if ui.small_button("Browse B").clicked() {
+                let start = self.scan_dir.clone();
+                self.file_browser
+                    .open_for(FilePickerTarget::DiffPackB, &start, "");
+            }
             let enabled = self.busy_message.is_none()
                 && !self.diff_path_a.trim().is_empty()
                 && !self.diff_path_b.trim().is_empty();
             if ui
-                .add_enabled(enabled, egui::Button::new("Compare Packs"))
+                .add_enabled(enabled, egui::Button::new("Compare"))
                 .clicked()
             {
                 self.start_diff(
@@ -1929,7 +1975,7 @@ impl RpGuiApp {
 
         ScrollArea::vertical().show(ui, |ui| match &self.pack_diff {
             None => {
-                ui.label("Choose Pack A and Pack B (or check 2 packs in Packs Manager and click 'Compare Selected').");
+                ui.label("Select Pack A and Pack B (or check 2 packs in Packs Manager and click 'Compare Checked').");
             }
             Some(Err(err)) => {
                 ui.colored_label(Color32::LIGHT_RED, format!("Diff error: {err}"));
@@ -1985,7 +2031,7 @@ impl RpGuiApp {
 
         let needle = self.version_filter.trim().to_ascii_lowercase();
         ScrollArea::vertical()
-            .max_height(260.0)
+            .max_height(250.0)
             .id_salt("versions_scroll")
             .show(ui, |ui| {
                 egui::Grid::new("versions_grid")
@@ -2024,12 +2070,1139 @@ impl RpGuiApp {
                 }
             });
     }
+
+    // =========================================================================
+    // STUDIO MODE (VS Code Workbench + Blockbench 3D Model/Asset Inspector)
+    // =========================================================================
+
+    fn render_studio_mode(&mut self, ctx: &Context) {
+        // 1. VS Code-style Compact Left Activity Bar
+        egui::SidePanel::left("studio_activity_bar")
+            .resizable(false)
+            .exact_width(44.0)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(6.0);
+                    for sec in ActivitySection::ALL {
+                        let active = self.show_sidebar && self.activity_section == sec;
+                        let btn = ui
+                            .add_sized(
+                                Vec2::splat(34.0),
+                                egui::Button::new(RichText::new(sec.icon()).size(16.0))
+                                    .selected(active),
+                            )
+                            .on_hover_text(sec.tooltip());
+                        if btn.clicked() {
+                            if self.activity_section == sec {
+                                self.show_sidebar = !self.show_sidebar;
+                            } else {
+                                self.activity_section = sec;
+                                self.show_sidebar = true;
+                            }
+                        }
+                        ui.add_space(4.0);
+                    }
+
+                    ui.separator();
+                    if ui
+                        .add_sized(
+                            Vec2::splat(34.0),
+                            egui::Button::new(RichText::new("⬓").size(15.0))
+                                .selected(self.show_bottom_panel),
+                        )
+                        .on_hover_text("Toggle Bottom Panel (Summary, Warnings, Export)")
+                        .clicked()
+                    {
+                        self.show_bottom_panel = !self.show_bottom_panel;
+                    }
+                });
+            });
+
+        // 2. Collapsible Left Side Bar (Explorer Tree / Grouped Warnings / Batch & Presets)
+        if self.show_sidebar {
+            egui::SidePanel::left("studio_sidebar")
+                .resizable(true)
+                .default_width(250.0)
+                .min_width(180.0)
+                .max_width(420.0)
+                .show(ctx, |ui| match self.activity_section {
+                    ActivitySection::Explorer => self.show_studio_explorer_sidebar(ui),
+                    ActivitySection::Warnings => self.show_studio_warnings_sidebar(ui),
+                    ActivitySection::BatchPresets => self.show_studio_presets_sidebar(ui),
+                });
+        }
+
+        // 3. Collapsible Bottom Panel (Summary Cards, Grouped Warnings, Manual Override Export)
+        if self.show_bottom_panel {
+            egui::TopBottomPanel::bottom("studio_bottom_panel")
+                .resizable(true)
+                .default_height(150.0)
+                .min_height(90.0)
+                .max_height(320.0)
+                .show(ctx, |ui| {
+                    self.show_studio_bottom_panel(ui);
+                });
+        }
+
+        // 4. Central Tabbed Workbench (Model 3D + Inspector / Texture + Grid / Text + JSON Editor)
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.show_studio_editor_area(ctx, ui);
+        });
+    }
+
+    fn show_studio_explorer_sidebar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.strong("EXPLORER");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Open Pack...").clicked() {
+                    let start = self.scan_dir.clone();
+                    self.file_browser
+                        .open_for(FilePickerTarget::ConvertInput, &start, "");
+                }
+            });
+        });
+
+        // Filter pills: All vs Needs Review vs Manual Overrides
+        ui.horizontal_wrapped(|ui| {
+            for f in SideBarFilter::ALL {
+                if ui
+                    .selectable_label(self.sidebar_filter == f, f.label())
+                    .clicked()
+                {
+                    self.sidebar_filter = f;
+                }
+            }
+        });
+        ui.add(
+            egui::TextEdit::singleline(&mut self.studio_search)
+                .desired_width(f32::INFINITY)
+                .hint_text("Search assets..."),
+        );
+        ui.separator();
+
+        let Some(loaded) = self.loaded_pack.clone() else {
+            ui.label("No pack open in Studio.");
+            ui.add_space(6.0);
+            if !self.packs.is_empty() {
+                ui.label(RichText::new("Workspace Packs:").strong().small());
+                let mut open_p: Option<PathBuf> = None;
+                for p in &self.packs {
+                    if ui
+                        .selectable_label(false, format!("📦 {}", p.file_name))
+                        .clicked()
+                    {
+                        open_p = Some(p.path.clone());
+                    }
+                }
+                if let Some(path) = open_p {
+                    self.start_load_studio(path);
+                }
+            }
+            return;
+        };
+
+        let needle = self.studio_search.trim().to_ascii_lowercase();
+        let filter = self.sidebar_filter;
+        let mut clicked_tab: Option<StudioEditorTab> = None;
+
+        ScrollArea::vertical()
+            .id_salt("studio_tree_scroll")
+            .show(ui, |ui| {
+                // Pack Metadata / Manifest
+                let meta_ov = self
+                    .overrides
+                    .is_text_overridden(&TextAssetTarget::MetadataJson.key());
+                if filter != SideBarFilter::NeedsReview
+                    && (filter != SideBarFilter::ManualOverrides || meta_ov)
+                {
+                    let label = if meta_ov {
+                        "📝 metadata.json  ✎"
+                    } else {
+                        "📝 metadata.json"
+                    };
+                    if ui.selectable_label(false, label).clicked() {
+                        clicked_tab = Some(StudioEditorTab::Text(TextAssetTarget::MetadataJson));
+                    }
+                }
+
+                // 3D Models tree
+                let model_ids: Vec<String> = loaded
+                    .ir
+                    .models
+                    .keys()
+                    .filter(|id| {
+                        let m_search =
+                            needle.is_empty() || id.to_ascii_lowercase().contains(&needle);
+                        let m_filter = match filter {
+                            SideBarFilter::All => true,
+                            SideBarFilter::NeedsReview => self.review_index.asset_needs_review(id),
+                            SideBarFilter::ManualOverrides => {
+                                self.overrides.is_model_overridden(id)
+                            }
+                        };
+                        m_search && m_filter
+                    })
+                    .cloned()
+                    .collect();
+
+                egui::CollapsingHeader::new(format!("🧊 3D Models ({})", model_ids.len()))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for id in &model_ids {
+                            let warn = self.review_index.asset_needs_review(id);
+                            let edited = self.overrides.is_model_overridden(id);
+                            let mut text = id.clone();
+                            if warn {
+                                text.push_str(" ⚠");
+                            }
+                            if edited {
+                                text.push_str(" ✎");
+                            }
+                            let rt = if edited {
+                                RichText::new(text).color(Color32::from_rgb(100, 225, 255))
+                            } else if warn {
+                                RichText::new(text).color(Color32::YELLOW)
+                            } else {
+                                RichText::new(text)
+                            };
+                            if ui.selectable_label(false, rt).clicked() {
+                                clicked_tab = Some(StudioEditorTab::Model(id.clone()));
+                            }
+                        }
+                    });
+
+                // Textures tree
+                let tex_ids: Vec<String> = loaded
+                    .ir
+                    .textures
+                    .keys()
+                    .filter(|id| {
+                        let m_search =
+                            needle.is_empty() || id.to_ascii_lowercase().contains(&needle);
+                        let m_filter = match filter {
+                            SideBarFilter::All => true,
+                            SideBarFilter::NeedsReview => self.review_index.asset_needs_review(id),
+                            SideBarFilter::ManualOverrides => {
+                                self.overrides.is_texture_overridden(id)
+                            }
+                        };
+                        m_search && m_filter
+                    })
+                    .cloned()
+                    .collect();
+
+                egui::CollapsingHeader::new(format!("🖼 Textures ({})", tex_ids.len()))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for id in &tex_ids {
+                            let warn = self.review_index.asset_needs_review(id);
+                            let edited = self.overrides.is_texture_overridden(id);
+                            let mut text = id.clone();
+                            if warn {
+                                text.push_str(" ⚠");
+                            }
+                            if edited {
+                                text.push_str(" ✎");
+                            }
+                            let rt = if edited {
+                                RichText::new(text).color(Color32::from_rgb(100, 225, 255))
+                            } else if warn {
+                                RichText::new(text).color(Color32::YELLOW)
+                            } else {
+                                RichText::new(text)
+                            };
+                            if ui.selectable_label(false, rt).clicked() {
+                                clicked_tab = Some(StudioEditorTab::Texture(id.clone()));
+                            }
+                        }
+                    });
+
+                // Attachables tree
+                if !loaded.ir.attachables.is_empty() {
+                    let att_ids: Vec<String> = loaded
+                        .ir
+                        .attachables
+                        .keys()
+                        .filter(|id| needle.is_empty() || id.to_ascii_lowercase().contains(&needle))
+                        .cloned()
+                        .collect();
+                    egui::CollapsingHeader::new(format!("🎭 Attachables ({})", att_ids.len()))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for id in &att_ids {
+                                if ui.selectable_label(false, id).clicked() {
+                                    clicked_tab = Some(StudioEditorTab::Text(
+                                        TextAssetTarget::AttachableJson(id.clone()),
+                                    ));
+                                }
+                            }
+                        });
+                }
+
+                // Locales tree
+                if !loaded.ir.locales.is_empty() {
+                    let loc_ids: Vec<String> = loaded
+                        .ir
+                        .locales
+                        .keys()
+                        .filter(|id| needle.is_empty() || id.to_ascii_lowercase().contains(&needle))
+                        .cloned()
+                        .collect();
+                    egui::CollapsingHeader::new(format!("🌐 Locales ({})", loc_ids.len()))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for code in &loc_ids {
+                                if ui.selectable_label(false, format!("{code}.json")).clicked() {
+                                    clicked_tab = Some(StudioEditorTab::Text(
+                                        TextAssetTarget::LocaleJson(code.clone()),
+                                    ));
+                                }
+                            }
+                        });
+                }
+
+                // Raw / Passthrough files
+                if !loaded.ir.passthrough_files.is_empty() {
+                    let raw_ids: Vec<String> = loaded
+                        .ir
+                        .passthrough_files
+                        .keys()
+                        .filter(|id| needle.is_empty() || id.to_ascii_lowercase().contains(&needle))
+                        .cloned()
+                        .collect();
+                    egui::CollapsingHeader::new(format!("📄 Raw / JSON ({})", raw_ids.len()))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for p in &raw_ids {
+                                if ui.selectable_label(false, p).clicked() {
+                                    clicked_tab = Some(StudioEditorTab::Text(
+                                        TextAssetTarget::Passthrough(p.clone()),
+                                    ));
+                                }
+                            }
+                        });
+                }
+            });
+
+        if let Some(tab) = clicked_tab {
+            self.open_or_focus_tab(tab);
+        }
+    }
+
+    fn show_studio_warnings_sidebar(&mut self, ui: &mut Ui) {
+        ui.strong("WARNINGS & NEEDS REVIEW");
+        ui.horizontal_wrapped(|ui| {
+            for f in [
+                DiagnosticFilter::NeedsReview,
+                DiagnosticFilter::Lossy,
+                DiagnosticFilter::All,
+            ] {
+                let count = self.review_index.count_matching(f);
+                if ui
+                    .selectable_label(
+                        self.diagnostic_filter == f,
+                        format!("{} ({count})", f.label()),
+                    )
+                    .clicked()
+                {
+                    self.diagnostic_filter = f;
+                }
+            }
+        });
+        ui.separator();
+
+        let mut open_asset: Option<String> = None;
+        ScrollArea::vertical()
+            .id_salt("studio_warn_sidebar")
+            .show(ui, |ui| {
+                open_asset = render_grouped_diagnostics(
+                    ui,
+                    &self.review_index,
+                    self.diagnostic_filter,
+                    self.loaded_pack.is_some(),
+                );
+            });
+        if let Some(asset) = open_asset {
+            self.open_asset_by_report_hint(&asset);
+        }
+    }
+
+    fn show_studio_presets_sidebar(&mut self, ui: &mut Ui) {
+        ui.strong("PRESETS & BATCH");
+        ui.separator();
+
+        ui.label(RichText::new("Quick Target Presets:").small().strong());
+        if ui.button("Java 26.3 (97.1 + Euler + Shade)").clicked() {
+            self.target_edition = Some(Edition::Java);
+            self.target_version = String::from("26.3");
+            self.rotation_mode = RotationSnapMode::Preserve;
+            self.status_banner = String::from("Preset: Java 26.3 (pack_format 97.1)");
+        }
+        if ui.button("Java 26.2 (88 + Multi-Axis)").clicked() {
+            self.target_edition = Some(Edition::Java);
+            self.target_version = String::from("26.2");
+            self.rotation_mode = RotationSnapMode::Preserve;
+            self.status_banner = String::from("Preset: Java 26.2 (pack_format 88)");
+        }
+        if ui.button("Bedrock 26.50 (v3 SemVer + 1.21)").clicked() {
+            self.target_edition = Some(Edition::Bedrock);
+            self.target_version = String::from("26.50");
+            self.bedrock_manifest_version = Some(3);
+            self.bedrock_geo_version = Some(BedrockGeoVersion::V1_21_0);
+            self.status_banner = String::from("Preset: Bedrock 26.50 (v3 + 1.21.0 geo)");
+        }
+        if ui.button("Legacy Java 1.8.9 (Snap 22.5°)").clicked() {
+            self.target_edition = Some(Edition::Java);
+            self.target_version = String::from("1.8.9");
+            self.rotation_mode = RotationSnapMode::Snap22_5;
+            self.status_banner = String::from("Preset: Legacy Java 1.8.9");
+        }
+
+        ui.separator();
+        ui.label(RichText::new("Workspace Actions:").small().strong());
+        let enabled = self.busy_message.is_none();
+        if ui
+            .add_enabled(enabled, egui::Button::new("Run Round-Trip Audit"))
+            .clicked()
+        {
+            let paths: Vec<PathBuf> = self
+                .selected_or_all_pack_paths()
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
+            self.mode = WorkspaceMode::Quick;
+            self.page = GuiPage::BatchAudit;
+            self.start_audit(paths);
+        }
+        if ui
+            .add_enabled(enabled, egui::Button::new("Batch Convert All"))
+            .clicked()
+        {
+            self.mode = WorkspaceMode::Quick;
+            self.page = GuiPage::BatchAudit;
+            self.start_batch_convert();
+        }
+    }
+
+    fn show_studio_bottom_panel(&mut self, ui: &mut Ui) {
+        let mut open_asset: Option<String> = None;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("STUDIO CONSOLE");
+            ui.separator();
+            let lossy = self.review_index.count_matching(DiagnosticFilter::Lossy);
+            let warn = self.review_index.count_matching(DiagnosticFilter::Warning);
+            let ov_count = self.overrides.total_override_count();
+            ui.colored_label(Color32::YELLOW, format!("Lossy: {lossy}"));
+            ui.colored_label(Color32::LIGHT_RED, format!("Warnings/Skip: {warn}"));
+            ui.colored_label(
+                Color32::from_rgb(100, 225, 255),
+                format!("Manual Overrides: {ov_count}"),
+            );
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let enabled = self.busy_message.is_none() && self.loaded_pack.is_some();
+                if ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new(
+                            RichText::new("Export Pack (with Overrides)")
+                                .strong()
+                                .color(Color32::LIGHT_GREEN),
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.start_export_studio_ir();
+                }
+                if ui
+                    .add_enabled(ov_count > 0, egui::Button::new("Export Overrides JSON"))
+                    .clicked()
+                {
+                    let start = self.scan_dir.clone();
+                    self.file_browser.open_for(
+                        FilePickerTarget::ExportOverrides,
+                        &start,
+                        "studio_overrides.json",
+                    );
+                }
+            });
+        });
+        ui.separator();
+
+        ScrollArea::vertical()
+            .id_salt("studio_bottom_diag")
+            .show(ui, |ui| {
+                if !self.review_index.groups.is_empty() {
+                    open_asset = render_grouped_diagnostics(
+                        ui,
+                        &self.review_index,
+                        DiagnosticFilter::NeedsReview,
+                        self.loaded_pack.is_some(),
+                    );
+                } else {
+                    for line in self.logs.iter().rev().take(8) {
+                        ui.monospace(line);
+                    }
+                }
+            });
+
+        if let Some(asset) = open_asset {
+            self.open_asset_by_report_hint(&asset);
+        }
+    }
+
+    fn show_studio_editor_area(&mut self, ctx: &Context, ui: &mut Ui) {
+        if self.loaded_pack.is_none() {
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Welcome to mc-rp-converter Studio");
+                    ui.add_space(6.0);
+                    ui.label("Open any Java or Bedrock pack from the left Explorer, Quick Manager, or drag & drop a .zip / .mcpack onto this window.");
+                });
+            });
+            return;
+        }
+
+        // VS Code-style Editor Tab Bar
+        let mut close_idx: Option<usize> = None;
+        ui.horizontal_wrapped(|ui| {
+            for (idx, tab) in self.open_tabs.iter().enumerate() {
+                let active = idx == self.active_tab_idx;
+                let key = tab.override_key();
+                let is_mod = match tab {
+                    StudioEditorTab::Model(id) => self.overrides.is_model_overridden(id),
+                    StudioEditorTab::Texture(id) => self.overrides.is_texture_overridden(id),
+                    StudioEditorTab::Text(_) => self.overrides.is_text_overridden(&key),
+                };
+                let label = if is_mod {
+                    format!("{} ●", tab.title())
+                } else {
+                    tab.title()
+                };
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(active, label).clicked() {
+                            self.active_tab_idx = idx;
+                            self.selected_element_idx = Some(0);
+                        }
+                        if ui.small_button("×").clicked() {
+                            close_idx = Some(idx);
+                        }
+                    });
+                });
+            }
+        });
+        if let Some(idx) = close_idx {
+            self.open_tabs.remove(idx);
+            if self.active_tab_idx >= self.open_tabs.len() {
+                self.active_tab_idx = self.open_tabs.len().saturating_sub(1);
+            }
+        }
+        ui.separator();
+
+        let Some(active_tab) = self.open_tabs.get(self.active_tab_idx).cloned() else {
+            ui.centered_and_justified(|ui| {
+                ui.label("Click any 3D model, texture, locale, or JSON file in the left Explorer to open a tab.");
+            });
+            return;
+        };
+
+        match active_tab {
+            StudioEditorTab::Model(model_id) => self.show_studio_model_tab(ui, &model_id),
+            StudioEditorTab::Texture(tex_id) => self.show_studio_texture_tab(ctx, ui, &tex_id),
+            StudioEditorTab::Text(target) => self.show_studio_text_tab(ui, &target),
+        }
+    }
+
+    fn show_studio_model_tab(&mut self, ui: &mut Ui, model_id: &str) {
+        let Some(orig_model) = self
+            .loaded_pack
+            .as_ref()
+            .and_then(|l| l.ir.models.get(model_id))
+            .cloned()
+        else {
+            ui.label(format!("Model '{model_id}' not found."));
+            return;
+        };
+
+        let mut model = orig_model.clone();
+        let is_overridden = self.overrides.is_model_overridden(model_id);
+        let mut modified = false;
+        let mut reset_requested = false;
+
+        // Top model status bar (Manual Override badge + Reset to Auto)
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(model_id).strong().size(14.0));
+            if is_overridden {
+                ui.colored_label(Color32::from_rgb(100, 225, 255), "✎ MANUAL OVERRIDE");
+                if ui.small_button("Reset to Auto").clicked() {
+                    reset_requested = true;
+                }
+            } else {
+                ui.label(RichText::new("Auto-Converted").small().weak());
+            }
+            ui.separator();
+            ui.label(
+                RichText::new(format!(
+                    "Tex: {}x{} | Category: {:?}",
+                    model.texture_size[0], model.texture_size[1], model.category
+                ))
+                .small()
+                .weak(),
+            );
+        });
+
+        if reset_requested {
+            if let Some(reverted) = self.overrides.reset_model_to_auto(model_id)
+                && let Some(loaded) = &mut self.loaded_pack
+            {
+                loaded.ir.models.insert(model_id.to_string(), reverted);
+                self.status_banner = format!("Reset model '{model_id}' to auto-converted state");
+            }
+            return;
+        }
+
+        // Top half: Interactive Blockbench-style 3D Viewport
+        let sel_idx = self
+            .selected_element_idx
+            .filter(|&i| i < model.elements.len());
+        self.viewport_3d.show(ui, &model, sel_idx, 270.0);
+        ui.add_space(4.0);
+
+        // Bottom half: Left = Bone/Element Outliner | Right = Live Coordinate/Rotation/UV Inspector
+        ui.columns(2, |cols| {
+            // Bone / Element Outliner
+            cols[0].strong(format!("Outliner ({} cubes)", model.elements.len()));
+            ScrollArea::vertical()
+                .id_salt("model_outliner_scroll")
+                .max_height(240.0)
+                .show(&mut cols[0], |ui| {
+                    for (idx, el) in model.elements.iter().enumerate() {
+                        let grp = el.group.as_deref().unwrap_or("root");
+                        let rot_tag = if el.rotation.is_some() { " ⟳" } else { "" };
+                        let label = format!("[{idx:02}] {grp}{rot_tag}");
+                        let selected = self.selected_element_idx == Some(idx);
+                        if ui.selectable_label(selected, label).clicked() {
+                            self.selected_element_idx = Some(idx);
+                        }
+                    }
+                });
+
+            // Blockbench-style Live Property Inspector
+            cols[1].strong("Cube Property Inspector");
+            ScrollArea::vertical()
+                .id_salt("model_props_scroll")
+                .max_height(240.0)
+                .show(&mut cols[1], |ui| {
+                    let Some(idx) = self
+                        .selected_element_idx
+                        .filter(|&i| i < model.elements.len())
+                    else {
+                        ui.label("Select a cube in the Outliner to inspect or edit.");
+                        return;
+                    };
+                    let el = &mut model.elements[idx];
+                    let (b_orig, b_size) = java_to_bedrock_box(el.from, el.to);
+
+                    // Java From / To
+                    ui.horizontal(|ui| {
+                        ui.label("From (Java):");
+                        for axis in 0..3 {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut el.from[axis])
+                                        .speed(0.1)
+                                        .range(-16.0..=32.0),
+                                )
+                                .changed()
+                            {
+                                modified = true;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("To   (Java):");
+                        for axis in 0..3 {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut el.to[axis])
+                                        .speed(0.1)
+                                        .range(-16.0..=32.0),
+                                )
+                                .changed()
+                            {
+                                modified = true;
+                            }
+                        }
+                    });
+                    ui.label(
+                        RichText::new(format!(
+                            "Bedrock Origin: [{:.2}, {:.2}, {:.2}] | Size: [{:.2}, {:.2}, {:.2}]",
+                            b_orig[0], b_orig[1], b_orig[2], b_size[0], b_size[1], b_size[2]
+                        ))
+                        .small()
+                        .weak(),
+                    );
+
+                    ui.separator();
+
+                    // Pivot & 3-axis Euler Rotation (Java 1.21.11+ / 26.x {x,y,z})
+                    let mut has_rot = el.rotation.is_some();
+                    if ui.checkbox(&mut has_rot, "Element Rotation").changed() {
+                        if has_rot {
+                            let c = [
+                                0.5 * (el.from[0] + el.to[0]),
+                                0.5 * (el.from[1] + el.to[1]),
+                                0.5 * (el.from[2] + el.to[2]),
+                            ];
+                            el.rotation = Some(ElementRotation {
+                                origin: c,
+                                axis: RotationAxis::Y,
+                                angle: 0.0,
+                                rescale: false,
+                                extra_bedrock_euler: Some([0.0, 0.0, 0.0]),
+                            });
+                        } else {
+                            el.rotation = None;
+                        }
+                        modified = true;
+                    }
+                    if let Some(rot) = &mut el.rotation {
+                        ui.horizontal(|ui| {
+                            ui.label("Pivot:      ");
+                            for axis in 0..3 {
+                                if ui
+                                    .add(egui::DragValue::new(&mut rot.origin[axis]).speed(0.1))
+                                    .changed()
+                                {
+                                    modified = true;
+                                }
+                            }
+                        });
+                        let mut euler_java = if let Some(b) = rot.extra_bedrock_euler {
+                            [-b[0], -b[1], b[2]]
+                        } else {
+                            match rot.axis {
+                                RotationAxis::X => [rot.angle, 0.0, 0.0],
+                                RotationAxis::Y => [0.0, rot.angle, 0.0],
+                                RotationAxis::Z => [0.0, 0.0, rot.angle],
+                            }
+                        };
+                        let mut rot_changed = false;
+                        ui.horizontal(|ui| {
+                            ui.label("Rot (X/Y/Z):");
+                            for v in &mut euler_java {
+                                if ui
+                                    .add(egui::DragValue::new(v).speed(0.5).range(-180.0..=180.0))
+                                    .changed()
+                                {
+                                    rot_changed = true;
+                                }
+                            }
+                        });
+                        if rot_changed {
+                            let ax = euler_java[0].abs();
+                            let ay = euler_java[1].abs();
+                            let az = euler_java[2].abs();
+                            if ax >= ay && ax >= az {
+                                rot.axis = RotationAxis::X;
+                                rot.angle = euler_java[0];
+                            } else if ay >= ax && ay >= az {
+                                rot.axis = RotationAxis::Y;
+                                rot.angle = euler_java[1];
+                            } else {
+                                rot.axis = RotationAxis::Z;
+                                rot.angle = euler_java[2];
+                            }
+                            rot.extra_bedrock_euler =
+                                Some([-euler_java[0], -euler_java[1], euler_java[2]]);
+                            modified = true;
+                        }
+                    }
+
+                    ui.separator();
+
+                    // Per-face UV inspector & live editor
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Face UV:");
+                        for dir in FaceDirection::ALL {
+                            if ui
+                                .selectable_label(self.selected_face_dir == dir, dir.as_str())
+                                .clicked()
+                            {
+                                self.selected_face_dir = dir;
+                            }
+                        }
+                    });
+                    if let Some(face) = el.faces.get_mut(&self.selected_face_dir) {
+                        let mut uv = face.uv.unwrap_or([0.0, 0.0, 16.0, 16.0]);
+                        let mut uv_changed = false;
+                        ui.horizontal(|ui| {
+                            ui.label("UV [u1,v1,u2,v2]:");
+                            for c in &mut uv {
+                                if ui
+                                    .add(egui::DragValue::new(c).speed(0.25).range(0.0..=16.0))
+                                    .changed()
+                                {
+                                    uv_changed = true;
+                                }
+                            }
+                        });
+                        if uv_changed {
+                            face.uv = Some(uv);
+                            modified = true;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("UV Rot:");
+                            for deg in [0u16, 90, 180, 270] {
+                                if ui
+                                    .selectable_label(face.rotation == deg, format!("{deg}°"))
+                                    .clicked()
+                                {
+                                    face.rotation = deg;
+                                    modified = true;
+                                }
+                            }
+                            ui.label(format!("Tex: {}", face.texture));
+                        });
+                    } else {
+                        ui.label(
+                            RichText::new("Face not defined on this cube")
+                                .small()
+                                .weak(),
+                        );
+                    }
+
+                    // Shading & 26.3 properties
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut el.shade, "Shade").changed() {
+                            modified = true;
+                        }
+                        let mut le = el.light_emission.unwrap_or(0);
+                        ui.label("Light:");
+                        if ui
+                            .add(egui::DragValue::new(&mut le).range(0..=15))
+                            .changed()
+                        {
+                            el.light_emission = if le == 0 { None } else { Some(le) };
+                            modified = true;
+                        }
+                    });
+                });
+        });
+
+        if modified {
+            self.overrides
+                .record_model_edit(model_id, &orig_model, model.clone());
+            if let Some(loaded) = &mut self.loaded_pack {
+                loaded.ir.models.insert(model_id.to_string(), model);
+            }
+            self.status_banner = format!("Manual override saved on model '{model_id}'");
+        }
+    }
+
+    fn show_studio_texture_tab(&mut self, ctx: &Context, ui: &mut Ui, tex_id: &str) {
+        let Some(tex) = self
+            .loaded_pack
+            .as_ref()
+            .and_then(|l| l.ir.textures.get(tex_id))
+            .cloned()
+        else {
+            ui.label(format!("Texture '{tex_id}' not found."));
+            return;
+        };
+
+        self.ensure_asset_texture_preview(ctx, &tex);
+
+        let mapped_bedrock = self.mappings.java_texture_to_bedrock(&tex.id);
+        let is_overridden = self.overrides.is_texture_overridden(&tex.id);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(&tex.id).strong().size(15.0));
+            if is_overridden {
+                ui.colored_label(Color32::from_rgb(100, 225, 255), "✎ CUSTOM MAPPING");
+            }
+            ui.separator();
+            ui.checkbox(&mut self.tex_pixel_grid, "Pixel Grid");
+            ui.add(egui::Slider::new(&mut self.tex_zoom, 1.0..=16.0).text("Zoom"));
+        });
+
+        // Bedrock & Java Atlas Index Status
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            let atlas_file = match tex.category {
+                TextureCategory::Block => "terrain_texture.json",
+                TextureCategory::Item => "item_texture.json",
+                _ => "atlases/blocks.json + items.json",
+            };
+            let flip_status = if tex.animation.is_some() {
+                "flipbook_textures.json (Animated)"
+            } else {
+                "Static PNG"
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Index:").strong());
+                ui.monospace(atlas_file);
+                ui.separator();
+                ui.label(RichText::new("Strip:").strong());
+                ui.monospace(flip_status);
+                ui.separator();
+                ui.label(RichText::new("Bedrock Path:").strong());
+                ui.monospace(&mapped_bedrock.path);
+            });
+
+            // Editable Custom Mapping Rule Override
+            if self.custom_mapping_input.is_empty() {
+                self.custom_mapping_input = self
+                    .overrides
+                    .custom_texture_mappings
+                    .get(&tex.id)
+                    .cloned()
+                    .unwrap_or_else(|| mapped_bedrock.path.clone());
+            }
+            ui.horizontal(|ui| {
+                ui.label("Override Bedrock Path:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.custom_mapping_input).desired_width(260.0),
+                );
+                if ui.small_button("Save Mapping Override").clicked() {
+                    let val = self.custom_mapping_input.trim().to_string();
+                    if !val.is_empty() {
+                        self.overrides
+                            .custom_texture_mappings
+                            .insert(tex.id.clone(), val.clone());
+                        self.status_banner = format!("Saved mapping override: {} -> {val}", tex.id);
+                    }
+                }
+                if is_overridden && ui.small_button("Reset to Auto").clicked() {
+                    self.overrides.custom_texture_mappings.remove(&tex.id);
+                    self.custom_mapping_input = mapped_bedrock.path.clone();
+                    self.status_banner = format!("Reset texture mapping for '{}'", tex.id);
+                }
+            });
+        });
+
+        ui.add_space(6.0);
+
+        if let Some(prev) = &self.tex_preview {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "PNG: {}×{} | Frames: {}",
+                    prev.dims.0,
+                    prev.dims.1,
+                    prev.frames.len()
+                ));
+                if prev.frames.len() > 1 {
+                    if ui
+                        .button(if self.anim_playing { "Pause" } else { "Play" })
+                        .clicked()
+                    {
+                        self.anim_playing = !self.anim_playing;
+                    }
+                    let max_f = prev.frames.len() - 1;
+                    ui.add(egui::Slider::new(&mut self.anim_frame_idx, 0..=max_f).text("Frame"));
+                }
+            });
+
+            if prev.frames.len() > 1 && self.anim_playing {
+                let ms_per_frame = u64::from(prev.frametime_ticks).saturating_mul(50).max(50);
+                if self.anim_last_step.elapsed().as_millis() >= u128::from(ms_per_frame) {
+                    self.anim_frame_idx = (self.anim_frame_idx + 1) % prev.frames.len();
+                    self.anim_last_step = Instant::now();
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(ms_per_frame));
+            }
+
+            let idx = self.anim_frame_idx.min(prev.frames.len().saturating_sub(1));
+            if let Some(handle) = prev.frames.get(idx) {
+                let base = handle.size_vec2();
+                let disp = (base * self.tex_zoom).min(Vec2::new(480.0, 480.0));
+                ScrollArea::both().show(ui, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(disp, egui::Sense::hover());
+                    draw_checkerboard(ui, rect);
+                    ui.painter().image(
+                        handle.id(),
+                        rect,
+                        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    // Optional crisp pixel grid when zoomed >= 4x
+                    if self.tex_pixel_grid && self.tex_zoom >= 4.0 {
+                        let px_w = base.x.max(1.0);
+                        let px_h = base.y.max(1.0);
+                        let step_x = rect.width() / px_w;
+                        let step_y = rect.height() / px_h;
+                        if step_x >= 3.5 && step_y >= 3.5 {
+                            let p = ui.painter_at(rect);
+                            let grid_stroke = Stroke::new(
+                                0.6,
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 45),
+                            );
+                            for x in 1..(px_w as i32) {
+                                let gx = rect.left() + x as f32 * step_x;
+                                p.line_segment(
+                                    [Pos2::new(gx, rect.top()), Pos2::new(gx, rect.bottom())],
+                                    grid_stroke,
+                                );
+                            }
+                            for y in 1..(px_h as i32) {
+                                let gy = rect.top() + y as f32 * step_y;
+                                p.line_segment(
+                                    [Pos2::new(rect.left(), gy), Pos2::new(rect.right(), gy)],
+                                    grid_stroke,
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    fn show_studio_text_tab(&mut self, ui: &mut Ui, target: &TextAssetTarget) {
+        let Some(ir) = self.loaded_pack.as_ref().map(|l| &l.ir) else {
+            return;
+        };
+        let key = target.key();
+        let is_overridden = self.overrides.is_text_overridden(&key);
+        let expects_json = target.expects_json();
+        let buf = self.overrides.ensure_text_buffer(target, ir);
+        let json_status = if expects_json {
+            Some(validate_json_str(buf))
+        } else {
+            None
+        };
+
+        let mut do_apply = false;
+        let mut do_reset = false;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(target.title()).strong().size(14.0));
+            if is_overridden {
+                ui.colored_label(Color32::from_rgb(100, 225, 255), "✎ MANUAL OVERRIDE");
+            }
+            if let Some(res) = &json_status {
+                match res {
+                    Ok(()) => {
+                        ui.colored_label(Color32::LIGHT_GREEN, "✓ Valid JSON");
+                    }
+                    Err(e) => {
+                        ui.colored_label(Color32::LIGHT_RED, format!("✗ {e}"));
+                    }
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let can_apply = json_status.as_ref().is_none_or(Result::is_ok);
+                if ui
+                    .add_enabled(can_apply, egui::Button::new("Apply Edit"))
+                    .clicked()
+                {
+                    do_apply = true;
+                }
+                if is_overridden && ui.button("Reset to Auto").clicked() {
+                    do_reset = true;
+                }
+            });
+        });
+        ui.separator();
+
+        ScrollArea::vertical()
+            .id_salt(format!("text_editor_{key}"))
+            .show(ui, |ui| {
+                if let Some(buf_mut) = self.overrides.text_buffers.get_mut(&key) {
+                    ui.add(
+                        egui::TextEdit::multiline(buf_mut)
+                            .code_editor()
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(22),
+                    );
+                }
+            });
+
+        if do_apply && let Some(loaded) = &mut self.loaded_pack {
+            match self.overrides.commit_text_edit(target, &mut loaded.ir) {
+                Ok(()) => {
+                    self.status_banner = format!("Applied manual edit to '{}'", target.title());
+                    self.push_log(self.status_banner.clone());
+                }
+                Err(err) => {
+                    self.status_banner = format!("Cannot apply edit: {err}");
+                }
+            }
+        } else if do_reset && let Some(loaded) = &mut self.loaded_pack {
+            match self.overrides.reset_text_to_auto(target, &mut loaded.ir) {
+                Ok(()) => {
+                    self.status_banner =
+                        format!("Reset '{}' to auto-loaded content", target.title());
+                }
+                Err(err) => {
+                    self.status_banner = format!("Reset error: {err}");
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for RpGuiApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.render_ui(ctx);
     }
+}
+
+/// Renders collapsed diagnostic clusters filtered by `filter`; returns an asset ID if clicked.
+fn render_grouped_diagnostics(
+    ui: &mut Ui,
+    index: &NeedsReviewIndex,
+    filter: DiagnosticFilter,
+    can_open_in_studio: bool,
+) -> Option<String> {
+    let mut clicked_asset: Option<String> = None;
+    let mut shown = 0usize;
+
+    for (g_idx, group) in index.groups.iter().enumerate() {
+        if !group.kind.matches_filter(filter) {
+            continue;
+        }
+        shown += 1;
+        let color = match group.kind {
+            DiagnosticKind::Error | DiagnosticKind::Skipped => Color32::LIGHT_RED,
+            DiagnosticKind::Lossy | DiagnosticKind::Warning => Color32::YELLOW,
+            DiagnosticKind::Info => Color32::from_rgb(140, 190, 230),
+        };
+        let header = RichText::new(format!(
+            "[{}] ×{} — {}",
+            group.kind.badge(),
+            group.assets.len(),
+            group.message
+        ))
+        .color(color);
+
+        egui::CollapsingHeader::new(header)
+            .id_salt(format!("diag_grp_{g_idx}"))
+            .default_open(group.assets.len() <= 3 && group.kind.needs_review())
+            .show(ui, |ui| {
+                for asset in group.assets.iter().take(30) {
+                    ui.horizontal(|ui| {
+                        ui.monospace(asset);
+                        if can_open_in_studio && ui.small_button("Inspect").clicked() {
+                            clicked_asset = Some(asset.clone());
+                        }
+                    });
+                }
+                if group.assets.len() > 30 {
+                    ui.label(
+                        RichText::new(format!("... and {} more asset(s)", group.assets.len() - 30))
+                            .small()
+                            .weak(),
+                    );
+                }
+            });
+    }
+
+    if shown == 0 {
+        ui.label(RichText::new("No diagnostics matching this filter.").weak());
+    }
+    clicked_asset
 }
 
 fn draw_checkerboard(ui: &Ui, rect: Rect) {
@@ -2084,13 +3257,13 @@ mod tests {
     }
 
     #[test]
-    fn headless_egui_renders_all_six_desktop_pages_and_3d_viewport() {
+    fn headless_quick_mode_and_studio_workbench_render_cleanly() {
         let dir = tempdir().expect("tempdir");
         let mut container = PackContainer::new();
         container
             .insert(
                 "pack.mcmeta",
-                br#"{"pack":{"description":"GUI Test Pack","min_format":[97,0],"max_format":[97,1]}}"#
+                br#"{"pack":{"description":"Studio Test Pack","min_format":[97,0],"max_format":[97,1]}}"#
                     .to_vec(),
             )
             .expect("mcmeta");
@@ -2116,23 +3289,22 @@ mod tests {
                     .to_vec(),
             )
             .expect("model");
+        container
+            .insert(
+                "assets/minecraft/lang/en_us.json",
+                br#"{"block.minecraft.glow": "Glow Block"}"#.to_vec(),
+            )
+            .expect("lang");
 
-        let zip_path = dir.path().join("gui_sample.zip");
+        let zip_path = dir.path().join("studio_sample.zip");
         std::fs::write(&zip_path, container.write_to_zip_bytes().expect("zip")).expect("save");
 
         let mappings = MappingTable::default_embedded().expect("mappings");
         let packs =
             scan_directory_for_packs(dir.path(), &mappings, IoLimits::default()).expect("scan");
-        let (ed, ir, rep) = load_pack_ir(&zip_path, &mappings, IoLimits::default()).expect("ir");
-        let diff = diff_packs(&zip_path, &zip_path, &mappings, IoLimits::default()).expect("diff");
-        let audit = audit_pack_roundtrip(
-            &zip_path,
-            Some("26.3"),
-            &VersionSpecificOptions::default(),
-            &mappings,
-            IoLimits::default(),
-        );
-        assert!(audit.passed);
+        let (ed, ir, mut rep) =
+            load_pack_ir(&zip_path, &mappings, IoLimits::default()).expect("ir");
+        rep.record_lossy("block/glow", "Sample lossy warning for Needs Review test");
 
         let mut app = RpGuiApp::new(dir.path().to_path_buf(), None, mappings);
         app.packs = packs;
@@ -2142,22 +3314,43 @@ mod tests {
             ir,
             report: rep,
         });
-        app.selected_asset = Some(AssetRef::Model(String::from("block/glow")));
-        app.pack_diff = Some(Ok(diff));
-        app.audit_outcomes.push(audit);
+        app.rebuild_review_index();
+        assert!(app.review_index.asset_needs_review("block/glow"));
 
         let ctx = Context::default();
+
+        // 1. Render all Quick Mode pages + non-blocking in-app file browser
+        app.mode = WorkspaceMode::Quick;
         for page in GuiPage::ALL {
             app.page = page;
             let _ = ctx.run(egui::RawInput::default(), |c| {
                 app.render_ui(c);
             });
         }
-        // Also render animated texture preview path
-        app.page = GuiPage::Explorer;
-        app.selected_asset = Some(AssetRef::Texture(String::from("block/glow")));
+        app.file_browser
+            .open_for(FilePickerTarget::WorkspaceDir, dir.path(), "");
         let _ = ctx.run(egui::RawInput::default(), |c| {
             app.render_ui(c);
         });
+        app.file_browser.open = false;
+
+        // 2. Render Studio Mode: all 3 ActivityBar sections + Model, Texture, and Text/JSON tabs
+        app.mode = WorkspaceMode::Studio;
+        app.open_tabs = vec![
+            StudioEditorTab::Model(String::from("block/glow")),
+            StudioEditorTab::Texture(String::from("block/glow")),
+            StudioEditorTab::Text(TextAssetTarget::LocaleJson(String::from("en_us"))),
+            StudioEditorTab::Text(TextAssetTarget::MetadataJson),
+        ];
+
+        for sec in ActivitySection::ALL {
+            app.activity_section = sec;
+            for tab_idx in 0..app.open_tabs.len() {
+                app.active_tab_idx = tab_idx;
+                let _ = ctx.run(egui::RawInput::default(), |c| {
+                    app.render_ui(c);
+                });
+            }
+        }
     }
 }

@@ -12,9 +12,13 @@ eframe.workspace = true
 egui.workspace = true
 image.workspace = true
 rfd.workspace = true
+rp-bedrock.workspace = true
 rp-cli.workspace = true
 rp-core.workspace = true
 rp-io.workspace = true
+rp-java.workspace = true
+rp-transforms.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
