@@ -1,0 +1,378 @@
+name: Release — Windows, Debian (.deb), Portable (.tar.xz) & Pre-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "GitHub Pre-release tag name (e.g. v0.2.2-pre)"
+        type: string
+        default: "v0.2.2-pre"
+      version:
+        description: "Package semantic version (e.g. 0.2.2)"
+        type: string
+        default: "0.2.2"
+
+concurrency:
+  group: release-prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-meta-and-blockbench:
+    name: Prepare Version & Blockbench Web Bundle
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      deb_version: ${{ steps.meta.outputs.deb_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute Release Tag & Version
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            VER="${TAG#v}"
+          else
+            TAG="${{ inputs.tag || 'v0.2.2-pre' }}"
+            VER="${{ inputs.version || '0.2.2' }}"
+          fi
+          DEB_VER="${VER//-/\~}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VER}" >> "${GITHUB_OUTPUT}"
+          echo "deb_version=${DEB_VER}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved release: tag=${TAG} version=${VER} deb_version=${DEB_VER}"
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Build Blockbench Web Bundle
+        run: |
+          bash scripts/build_blockbench.sh
+          SIZE=$(stat -c '%s' assets/vendor/blockbench-web.tar.zst)
+          test "${SIZE}" -lt 10485760
+          zstd -dc assets/vendor/blockbench-web.tar.zst | tar -tf - | grep -q "LICENSE.MD"
+          zstd -dc assets/vendor/blockbench-web.tar.zst | tar -tf - | grep -q "studio_bridge.js"
+
+      - name: Upload Blockbench Vendor Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: blockbench-web-vendor-release
+          path: |
+            assets/vendor/blockbench-web.tar.zst
+            assets/vendor/blockbench-web.sha256
+          retention-days: 7
+
+  build-linux:
+    name: Build Linux (.deb + .tar.xz) [${{ matrix.arch_label }}]
+    needs: prepare-meta-and-blockbench
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            deb_arch: amd64
+            arch_label: x86_64
+          - runner: ubuntu-24.04-arm
+            deb_arch: arm64
+            arch_label: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor-release
+          path: assets/vendor
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build Frontend (Vite + TypeScript)
+        working-directory: apps/pack-studio
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Verify Built Frontend & Tauri Config
+        run: |
+          test -f apps/pack-studio/dist/index.html
+          ! grep -q "PackStudio frontend placeholder" apps/pack-studio/dist/index.html
+          grep -q '"frontendDist":[[:space:]]*"../dist"' apps/pack-studio/src-tauri/tauri.conf.json
+
+      - name: Install Linux GTK3 & WebKitGTK 4.1 Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            dpkg-dev \
+            xz-utils \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-release-${{ matrix.arch_label }}"
+
+      - name: Build pack-studio-tauri Release Binary (custom-protocol + embed-blockbench)
+        run: |
+          test -f apps/pack-studio/dist/index.html
+          cargo build --release -p pack-studio-tauri --features "embed-blockbench,custom-protocol"
+          ls -lh target/release/pack-studio-tauri
+
+      - name: Package Debian (.deb) & Verify apt Installation
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          DEB_VERSION: ${{ needs.prepare-meta-and-blockbench.outputs.deb_version }}
+        run: |
+          chmod +x scripts/build_deb_arm64.sh
+          bash scripts/build_deb_arm64.sh target/release/pack-studio-tauri dist-release
+          DEB_FILE="$(ls dist-release/pack-studio_*_${{ matrix.deb_arch }}.deb | head -n 1)"
+          sudo apt-get install -y "./${DEB_FILE}"
+          which pack-studio
+          cat /usr/bin/pack-studio
+
+      - name: Package Portable Tarball (.tar.xz) & Verify Archive
+        env:
+          TAR_ARCH: ${{ matrix.arch_label }}
+          RELEASE_VERSION: ${{ needs.prepare-meta-and-blockbench.outputs.version }}
+        run: |
+          chmod +x scripts/build_tar_xz.sh
+          bash scripts/build_tar_xz.sh target/release/pack-studio-tauri dist-release
+          TAR_FILE="$(ls dist-release/pack-studio-*-linux-${{ matrix.arch_label }}.tar.xz | head -n 1)"
+          tar -tJf "${TAR_FILE}"
+
+      - name: Upload Linux Artifacts (${{ matrix.arch_label }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch_label }}
+          path: |
+            dist-release/*.deb
+            dist-release/*.tar.xz
+            dist-release/*.sha256
+          retention-days: 14
+
+  build-windows:
+    name: Build Windows (x86_64 .exe + .zip)
+    needs: prepare-meta-and-blockbench
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor-release
+          path: assets/vendor
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build Frontend (Vite + TypeScript)
+        working-directory: apps/pack-studio
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Verify Built Frontend & Tauri Config
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "apps/pack-studio/dist/index.html")) { throw "Missing dist/index.html" }
+          $html = Get-Content "apps/pack-studio/dist/index.html" -Raw
+          if ($html -match "PackStudio frontend placeholder") { throw "Placeholder HTML detected" }
+          $conf = Get-Content "apps/pack-studio/src-tauri/tauri.conf.json" -Raw
+          if ($conf -notmatch '"frontendDist"\s*:\s*"\.\./dist"') { throw "frontendDist mismatch" }
+
+      - name: Install Rust Stable (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Build (Windows)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-release-windows-x86_64"
+
+      - name: Build pack-studio-tauri Release Binary (Windows + custom-protocol + embed-blockbench)
+        run: cargo build --release -p pack-studio-tauri --features "embed-blockbench,custom-protocol"
+
+      - name: Package Windows Portable Archive (.zip) & Standalone Binary (.exe)
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-meta-and-blockbench.outputs.version }}
+        run: |
+          $ver = $env:RELEASE_VERSION
+          New-Item -ItemType Directory -Force -Path "dist-release" | Out-Null
+          $stage = ".cache/win-stage/pack-studio-$ver-windows-x86_64"
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $exeSrc = "target/release/pack-studio-tauri.exe"
+          if (-not (Test-Path $exeSrc)) { throw "Missing $exeSrc" }
+
+          Copy-Item $exeSrc "dist-release/pack-studio-$ver-windows-x86_64.exe"
+          Copy-Item $exeSrc "$stage/pack-studio.exe"
+          if (Test-Path "THIRD_PARTY_LICENSES.md") { Copy-Item "THIRD_PARTY_LICENSES.md" "$stage/THIRD_PARTY_LICENSES.md" }
+          if (Test-Path "assets/vendor/blockbench-web.sha256") { Copy-Item "assets/vendor/blockbench-web.sha256" "$stage/blockbench-web.sha256" }
+
+          @(
+            "PackStudio $ver (Windows x86_64)"
+            "================================="
+            "Requirements:"
+            "- Windows 10/11 (64-bit) with Microsoft Edge WebView2 Runtime installed"
+            "- Optional: yazi on PATH for interactive TUI file picking"
+            ""
+            "Run:"
+            "  pack-studio.exe"
+          ) | Set-Content -Encoding UTF8 "$stage/README-WINDOWS.txt"
+
+          $zipOut = "dist-release/pack-studio-$ver-windows-x86_64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zipOut -Force
+
+          Get-ChildItem "dist-release" -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)" | Set-Content -Encoding ASCII "$($_.FullName).sha256"
+          }
+          Get-ChildItem "dist-release"
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: |
+            dist-release/*.exe
+            dist-release/*.zip
+            dist-release/*.sha256
+          retention-days: 14
+
+  publish-prerelease:
+    name: Publish GitHub Pre-release
+    needs: [prepare-meta-and-blockbench, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download All Platform Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-staging
+          merge-multiple: true
+
+      - name: Consolidate SHA256SUMS & Generate English Pre-release Notes
+        env:
+          TAG: ${{ needs.prepare-meta-and-blockbench.outputs.tag }}
+          VER: ${{ needs.prepare-meta-and-blockbench.outputs.version }}
+        run: |
+          mkdir -p release-final
+          find release-staging -type f \( -name "*.deb" -o -name "*.tar.xz" -o -name "*.zip" -o -name "*.exe" \) -exec cp {} release-final/ \;
+          (cd release-final && sha256sum * > SHA256SUMS.txt)
+          ls -lh release-final
+          cat release-final/SHA256SUMS.txt
+
+          python3 - <<'PY'
+          import os, textwrap
+
+          tag = os.environ["TAG"]
+          ver = os.environ["VER"]
+
+          notes = textwrap.dedent(f"""\
+          # PackStudio {ver} ({tag}) — Pre-release
+
+          Cross-platform pre-release build of **PackStudio** (Tauri v2 + Rust VS Code-style Resource Pack Workbench for Minecraft Java & Bedrock) with bundled offline Blockbench Web Studio 2-way bridge.
+
+          ## Included Artifacts
+          - **Windows (`x86_64`):** `pack-studio-{ver}-windows-x86_64.zip` (portable bundle) & `pack-studio-{ver}-windows-x86_64.exe`
+          - **Debian / Ubuntu (`amd64`):** `pack-studio_*_amd64.deb`
+          - **Debian / Ubuntu / Proot (`arm64`):** `pack-studio_*_arm64.deb`
+          - **Portable Linux (`x86_64` & `aarch64`):** `pack-studio-{ver}-linux-*.tar.xz`
+          - **Checksums:** `SHA256SUMS.txt`
+
+          ---
+
+          ## Hard Limitations & Known Constraints
+
+          Please review these strict technical constraints before testing this pre-release:
+
+          1. **Active Display Server Required (No Headless GUI):**
+             - Linux builds require a running X11 (`DISPLAY`, e.g. `export DISPLAY=:0`) or Wayland (`WAYLAND_DISPLAY`) session. Launching `pack-studio` from a headless shell without an active display socket fails cleanly with an error prompt.
+             - In **Termux / ARM64 Linux proot**, Termux:X11 or a VNC server must be active with `/tmp/.X11-unix` mounted and `DISPLAY` exported.
+
+          2. **Linux Proot / Container Rendering & Sandbox Trade-off:**
+             - The Linux launcher wrapper (`/usr/bin/pack-studio` in `.deb` and `pack-studio` in `.tar.xz`) defaults to `NO_AT_BRIDGE=1`, `WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_COMPOSITING_MODE=1`, and `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`, and falls back to Mesa software rendering (`LIBGL_ALWAYS_SOFTWARE=1`, `GALLIUM_DRIVER=llvmpipe`) when `/dev/dri` nodes are missing.
+             - This prevents WebKitGTK segmentation faults in `proot`/VMs, **but disables WebKit's process sandbox and GPU hardware acceleration by default** unless overridden via environment variables.
+
+          3. **Platform Runtime Dependencies & Scope:**
+             - **Linux:** Requires GTK 3 (`libgtk-3-0` / `libgtk-3-0t64`) and WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`).
+             - **Windows:** Requires 64-bit Windows 10/11 with **Microsoft Edge WebView2 Runtime** installed.
+             - **macOS:** Not built or supported in this pre-release workflow.
+
+          4. **Pre-release & Unsigned Binaries:**
+             - All executables and packages are **unsigned pre-release builds**. Windows SmartScreen may prompt for confirmation on first launch. Always verify integrity with `SHA256SUMS.txt`.
+             - App uses a temporary Rust gear icon until custom branding artwork is supplied.
+
+          5. **Optional External Tools (`yazi` & Terminal Emulators):**
+             - Interactive TUI asset picking uses `yazi --chooser-file` inside an external terminal emulator or the integrated PTY panel when `yazi` is installed on `PATH`. If `yazi` or a terminal emulator is absent, PackStudio falls back to standard OS file dialogs.
+
+          6. **Embedded Blockbench Bundle (GPL-3.0) & Offline Loopback Bridge:**
+             - Bundles `JannisX11/blockbench` (**GPL-3.0**; attribution in `THIRD_PARTY_LICENSES.md` and `LICENSE.MD` inside the extracted cache).
+             - Extracts lazily to local user data storage (`~/.local/share/pack-studio/blockbench-web` on Linux, `%LOCALAPPDATA%\\pack-studio\\blockbench-web` on Windows) and communicates strictly over `127.0.0.1` loopback HTTP/WebSocket with path traversal validation.
+
+          7. **Minecraft Schema, Conversion & Packaging Guardrails:**
+             - Bedrock `manifest.json` `min_engine_version` major version is strictly normalized to `1` (`[1, x, x]`).
+             - The **Semantic Audit Gate** blocks `package_pack` (`.zip` / `.mcpack` / `.mcaddon`) if fatal schema or missing-reference errors exist (unless explicitly bypassed).
+             - Custom 3D models exceeding Bedrock UV-atlas constraints are handled according to the configured **3D UV-Atlas Guard** (`Safe Fallback 2D`, `Skip`, or `Warn`).
+          """)
+
+          with open("RELEASE_NOTES.md", "w", encoding="utf-8") as f:
+              f.write(notes)
+          PY
+
+      - name: Create or Update GitHub Pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-meta-and-blockbench.outputs.tag }}
+          VER: ${{ needs.prepare-meta-and-blockbench.outputs.version }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Updating existing pre-release ${TAG}..."
+            gh release edit "${TAG}" \
+              --title "PackStudio ${VER} (${TAG}) Pre-release" \
+              --notes-file RELEASE_NOTES.md \
+              --prerelease
+            gh release upload "${TAG}" release-final/* --clobber
+          else
+            echo "Creating new pre-release ${TAG}..."
+            gh release create "${TAG}" release-final/* \
+              --target "${GITHUB_SHA}" \
+              --title "PackStudio ${VER} (${TAG}) Pre-release" \
+              --notes-file RELEASE_NOTES.md \
+              --prerelease
+          fi

@@ -68,10 +68,22 @@ set -euo pipefail
 # Safe WebKitGTK defaults for Linux X11, Wayland, containers, and Termux proot
 # (existing environment variables are preserved if set by the user).
 export NO_AT_BRIDGE="${NO_AT_BRIDGE:-1}"
-export GDK_BACKEND="${GDK_BACKEND:-x11}"
+if [[ -z "${GDK_BACKEND:-}" ]]; then
+  if [[ -n "${DISPLAY:-}" ]]; then
+    export GDK_BACKEND="x11"
+  elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    export GDK_BACKEND="wayland"
+  fi
+fi
 export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 export WEBKIT_DISABLE_COMPOSITING_MODE="${WEBKIT_DISABLE_COMPOSITING_MODE:-1}"
 export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS="${WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS:-1}"
+
+if [[ -z "${DISPLAY:-}" ]] && [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+  echo "ERROR: No active X11 (DISPLAY) or Wayland (WAYLAND_DISPLAY) session detected." >&2
+  echo "Start Termux:X11 / VNC / desktop session and export DISPLAY (e.g. 'export DISPLAY=:0') before running PackStudio." >&2
+  exit 1
+fi
 
 if [[ ! -e /dev/dri/renderD128 ]] && [[ ! -e /dev/dri/card0 ]]; then
   export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
@@ -115,43 +127,8 @@ License: GPL-3.0
  Blockbench web runtime bundle and extracted into the user cache directory.
 EOF
 
-# Generate a clean 128x128 PNG application icon (VS Code Dark+ blue & Minecraft grass accent)
-python3 - "${STAGE_ROOT}/usr/share/icons/hicolor/128x128/apps/${PKG_NAME}.png" <<'PY'
-import struct, zlib, sys
-
-out_path = sys.argv[1]
-w, h = 128, 128
-raw = bytearray()
-for y in range(h):
-    raw.append(0)
-    for x in range(w):
-        if x < 6 or x >= w - 6 or y < 6 or y >= h - 6:
-            r, g, b, a = 0x00, 0x7A, 0xCC, 255
-        elif y < 44:
-            r, g, b, a = 0x59, 0xB8, 0x4C, 255
-        elif y < 52 and ((x // 8) % 2 == 0):
-            r, g, b, a = 0x45, 0x99, 0x3A, 255
-        else:
-            shade = 10 if ((x // 16 + y // 16) % 2 == 0) else 0
-            r, g, b, a = 0x7A - shade, 0x55 - shade, 0x38 - shade, 255
-        raw.extend((r, g, b, a))
-
-def chunk(kind, data):
-    return (
-        struct.pack(">I", len(data))
-        + kind
-        + data
-        + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    )
-
-png = bytearray(b"\x89PNG\r\n\x1a\n")
-png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
-png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-png += chunk(b"IEND", b"")
-
-with open(out_path, "wb") as f:
-    f.write(png)
-PY
+# Install application icon from Tauri app icons (single source of truth)
+cp "${REPO_ROOT}/apps/pack-studio/src-tauri/icons/icon.png" "${STAGE_ROOT}/usr/share/icons/hicolor/128x128/apps/${PKG_NAME}.png"
 
 cat > "${STAGE_ROOT}/usr/share/applications/${PKG_NAME}.desktop" <<'EOF'
 [Desktop Entry]
