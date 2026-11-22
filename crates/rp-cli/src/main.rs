@@ -53,6 +53,9 @@ enum Commands {
         /// Disable emitting Java 1.21.4+ client item definitions (`assets/minecraft/items/*.json`).
         #[arg(long = "no-items-model-defs", conflicts_with = "items_model_defs")]
         no_items_model_defs: bool,
+        /// Convert Java LabPBR (`_n.png` / `_s.png`) maps into Bedrock `*_mer.png` + `*.texture_set.json`.
+        #[arg(long = "convert-pbr")]
+        convert_pbr: bool,
         /// Optional external JSON mapping table override file.
         #[arg(long = "mapping")]
         mapping: Option<PathBuf>,
@@ -167,8 +170,9 @@ fn make_spinner(msg: &str) -> ProgressBar {
 }
 
 fn print_conversion_summary(source: Edition, target: Edition, report: &ConversionReport) {
+    let status = report.effective_status();
     println!();
-    println!("Conversion Summary ({source} -> {target})");
+    println!("Conversion Summary ({source} -> {target}) — Status: {status}");
     println!("+-------------------------+---------+");
     println!("| Metric                  | Count   |");
     println!("+-------------------------+---------+");
@@ -185,22 +189,72 @@ fn print_conversion_summary(source: Edition, target: Edition, report: &Conversio
     println!("| Diagnostic warnings     | {:>7} |", report.warnings.len());
     println!("+-------------------------+---------+");
 
+    if let Some(audit) = &report.semantic_audit {
+        println!();
+        println!("Bedrock Semantic Audit — {}", audit.status);
+        println!("+-----------------------------+---------+");
+        println!(
+            "| Input textures              | {:>7} |",
+            audit.total_input_textures
+        );
+        println!(
+            "| Output textures             | {:>7} |",
+            audit.total_output_textures
+        );
+        println!(
+            "| Semantically mapped         | {:>7} |",
+            audit.semantically_mapped_textures
+        );
+        println!(
+            "| Orphan textures             | {:>7} |",
+            audit.orphan_textures.len()
+        );
+        println!(
+            "| Forbidden entries           | {:>7} |",
+            audit.forbidden_entries.len()
+        );
+        println!(
+            "| Broken references           | {:>7} |",
+            audit.broken_references.len()
+        );
+        println!(
+            "| Manifest valid              | {:>7} |",
+            if audit.manifest_valid { "yes" } else { "NO" }
+        );
+        println!("+-----------------------------+---------+");
+        if !audit.category_breakdown.is_empty() {
+            println!("Issue Breakdown by Category:");
+            for (cat, cnt) in &audit.category_breakdown {
+                println!("  - {cat}: {cnt}");
+            }
+        }
+    }
+
     if !report.lossy_conversions.is_empty() {
         println!("\nLossy Conversions:");
         for item in &report.lossy_conversions {
-            println!("  - [{}] {}", item.asset, item.detail);
+            println!(
+                "  - [{}] ({}) {} | Fix: {}",
+                item.stage, item.source_path, item.detail, item.actionable_fix
+            );
         }
     }
     if !report.skipped_assets.is_empty() {
         println!("\nSkipped Assets:");
         for item in &report.skipped_assets {
-            println!("  - [{}] {}", item.asset, item.reason);
+            println!(
+                "  - [{}] ({}) {} | Fix: {}",
+                item.stage, item.source_path, item.reason, item.actionable_fix
+            );
         }
     }
     if !report.warnings.is_empty() {
-        println!("\nWarnings:");
+        println!("\nDiagnostics:");
         for w in &report.warnings {
-            println!("  - [{:?}] {}: {}", w.severity, w.asset, w.message);
+            println!(
+                "  - [{:?}|{}] {}: {} | Fix: {}",
+                w.severity, w.stage, w.source_path, w.reason, w.actionable_fix
+            );
         }
     }
 }
@@ -240,6 +294,7 @@ fn main() -> Result<()> {
             bedrock_manifest_version,
             items_model_defs,
             no_items_model_defs,
+            convert_pbr,
             mapping,
             strict,
             report_json,
@@ -273,6 +328,7 @@ fn main() -> Result<()> {
                     bedrock_geo_version: bedrock_geo_version.map(Into::into),
                     bedrock_manifest_version,
                     emit_java_items_definitions: emit_items_override,
+                    convert_pbr,
                 },
             };
             let res = convert_pack(&options);

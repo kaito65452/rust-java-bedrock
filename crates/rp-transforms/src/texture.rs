@@ -444,6 +444,14 @@ pub fn java_animation_to_flipbook(
                 WarningSeverity::Info,
                 "Expanded per-frame Java animation timings using frame index repetition",
             );
+            if spec.interpolate {
+                // Java blends frame i -> i+1 over the whole frame duration t. After repetition
+                // the blend only spans the last `tick_unit` ticks of that duration.
+                report.record_lossy(
+                    bedrock_texture_path,
+                    "Interpolated animation with per-frame timings: blend window shrinks from the frame duration to one tick after repetition",
+                );
+            }
             (tick_unit, Some(expanded))
         }
     };

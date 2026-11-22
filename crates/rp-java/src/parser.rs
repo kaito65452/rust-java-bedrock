@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use rp_core::{
     AnimationSpec, BedrockGeoVersion, ConversionReport, DisplayTransform, Edition, MappingTable,
-    ModelAsset, ModelCategory, PackMetadata, ResolutionTier, ResourcePackIR, RotationSnapMode,
-    SoundAsset, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
+    ModelAsset, ModelCategory, PackMetadata, PipelineStage, ResolutionTier, ResourcePackIR,
+    RotationSnapMode, SoundAsset, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
     decode_minecraft_text, parse_minecraft_json,
 };
-use rp_io::PackContainer;
+use rp_io::{PackContainer, is_os_junk};
 use rp_transforms::locale::{
     normalize_locale_to_java, parse_bedrock_lang, parse_java_locale_json, transform_locale_keys,
 };
@@ -78,6 +78,7 @@ pub fn parse_java_pack(
             bedrock_geo_version: Some(BedrockGeoVersion::for_engine_version(bedrock_ver)),
             bedrock_manifest_version: None,
             emit_java_items_definitions: None,
+            convert_pbr: false,
         },
         ..ResourcePackIR::default()
     };
@@ -89,11 +90,38 @@ pub fn parse_java_pack(
             continue;
         }
 
+        // Belt-and-suspenders OS junk filtering (even for in-memory containers constructed manually).
+        if is_os_junk(path) {
+            continue;
+        }
+
         if let Some(rel_tex) = path
             .strip_prefix("assets/minecraft/textures/")
             .and_then(|s| s.strip_suffix(".png"))
         {
             let id = normalize_pre_flattening_tex_id(rel_tex);
+
+            // Detect LabPBR sidecar normal (`_n`) and specular (`_s`) maps.
+            // Verified against Mojang bedrock-samples: 0 vanilla textures end in `_n` or `_s`.
+            if let Some(base_id) = id.strip_suffix("_n")
+                && !base_id.is_empty()
+                && !base_id.ends_with('/')
+            {
+                ir.pbr_maps.entry(base_id.to_string()).or_default().normal_png =
+                    Some((path.clone(), Arc::new(bytes.clone())));
+                continue;
+            }
+            if let Some(base_id) = id.strip_suffix("_s")
+                && !base_id.is_empty()
+                && !base_id.ends_with('/')
+            {
+                ir.pbr_maps
+                    .entry(base_id.to_string())
+                    .or_default()
+                    .specular_png = Some((path.clone(), Arc::new(bytes.clone())));
+                continue;
+            }
+
             let category = TextureCategory::infer_from_id(&id);
             let (width, height, resolution_tier) = match png_dims.get(path) {
                 Some(&(w, h)) => (
@@ -156,12 +184,14 @@ pub fn parse_java_pack(
             let overrides_count = model_json.overrides.as_ref().map_or(0, Vec::len);
             let has_overrides = overrides_count > 0;
             if has_overrides {
-                report.record_warning(
+                report.record_diagnostic(
                     path,
+                    PipelineStage::Scan,
                     WarningSeverity::Warning,
                     format!(
-                        "Model defines {overrides_count} item predicate override(s) which are unsupported in Bedrock Edition"
+                        "Model defines {overrides_count} Java item predicate override(s) which are unsupported in pure Bedrock Resource Packs"
                     ),
+                    "Use Bedrock Behavior Pack custom items or attachables with Molang render controllers to replicate conditional item visuals.",
                 );
             }
 
@@ -169,7 +199,10 @@ pub fn parse_java_pack(
                 .textures
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(k, v)| (k, v.strip_prefix("minecraft:").unwrap_or(&v).to_string()))
+                .map(|(k, v)| {
+                    let s = v.as_str();
+                    (k, s.strip_prefix("minecraft:").unwrap_or(s).to_string())
+                })
                 .collect();
 
             let display: BTreeMap<String, DisplayTransform> = model_json
@@ -197,6 +230,39 @@ pub fn parse_java_pack(
             continue;
         }
 
+        if let Some(block_id) = path
+            .strip_prefix("assets/minecraft/blockstates/")
+            .and_then(|s| s.strip_suffix(".json"))
+        {
+            let val: serde_json::Value =
+                parse_minecraft_json(bytes).map_err(|err| JavaPackError::ParseError {
+                    path: path.clone(),
+                    detail: err.to_string(),
+                })?;
+            let refs = extract_blockstate_models(&val);
+            if !refs.is_empty() {
+                ir.java_blockstates.insert(block_id.to_string(), refs);
+            }
+            continue;
+        }
+
+        if let Some(item_id) = path
+            .strip_prefix("assets/minecraft/items/")
+            .and_then(|s| s.strip_suffix(".json"))
+        {
+            let val: serde_json::Value =
+                parse_minecraft_json(bytes).map_err(|err| JavaPackError::ParseError {
+                    path: path.clone(),
+                    detail: err.to_string(),
+                })?;
+            let mut refs = Vec::new();
+            extract_item_def_models(&val, &mut refs);
+            if !refs.is_empty() {
+                ir.java_item_defs.insert(item_id.to_string(), refs);
+            }
+            continue;
+        }
+
         if path == "assets/minecraft/sounds.json" {
             let parsed: BTreeMap<String, JavaSoundEventJson> = parse_minecraft_json(bytes)
                 .map_err(|err| JavaPackError::ParseError {
@@ -221,6 +287,17 @@ pub fn parse_java_pack(
                     data: Arc::new(bytes.clone()),
                 },
             );
+            continue;
+        }
+
+        if path == "assets/minecraft/texts/splashes.txt" {
+            let text = decode_minecraft_text(bytes);
+            ir.splashes = text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(String::from)
+                .collect();
             continue;
         }
 
@@ -261,22 +338,32 @@ pub fn parse_java_pack(
                 || sub.starts_with("optifine/")
                 || sub.starts_with("mcpatcher/")
             {
-                report.record_skipped(
+                report.record_skipped_detailed(
                     path,
-                    "Java-only shader or OptiFine/MCPatcher extension has no Bedrock equivalent",
+                    PipelineStage::Scan,
+                    "Java-only shader or OptiFine/MCPatcher extension has no Bedrock Resource Pack equivalent",
+                    "Remove OptiFine/shader files or author equivalent Bedrock RenderDragon/Vibrant Visuals PBR definitions.",
                 );
                 continue;
             }
-        }
 
-        if path.starts_with("assets/minecraft/items/") && path.ends_with(".json") {
-            let _: serde_json::Value =
-                parse_minecraft_json(bytes).map_err(|err| JavaPackError::ParseError {
-                    path: path.clone(),
-                    detail: err.to_string(),
-                })?;
-            ir.passthrough_files.insert(path.clone(), bytes.clone());
-            report.record_passthrough();
+            if sub.starts_with("texts/") {
+                report.record_skipped_detailed(
+                    path,
+                    PipelineStage::Scan,
+                    "Java-only text file (credits.json / end.txt / postcredits.txt) has no pure Bedrock Resource Pack path and must not leak under assets/minecraft/",
+                    "Omit Java credits/end poem files when targeting Bedrock Edition; splashes.txt is automatically converted to Bedrock splashes.json.",
+                );
+                continue;
+            }
+
+            // Do not leak unrecognized `assets/<ns>/...` files into Bedrock archives.
+            report.record_skipped_detailed(
+                path,
+                PipelineStage::Scan,
+                "Unrecognized Java Edition asset under assets/ has no direct Bedrock Resource Pack equivalent",
+                "Verify whether this file is Java-specific (atlases/font/equipment/modded namespace) or provide an explicit mapping override.",
+            );
             continue;
         }
 
@@ -288,27 +375,9 @@ pub fn parse_java_pack(
             continue;
         }
 
-        if path.starts_with("assets/minecraft/blockstates/") {
-            report.record_warning(
-                path,
-                WarningSeverity::Info,
-                "Java blockstate definitions are not directly emitted to Bedrock",
-            );
-            continue;
-        }
-
-        if !path.starts_with("assets/") {
-            ir.passthrough_files.insert(path.clone(), bytes.clone());
-            report.record_passthrough();
-        } else {
-            report.record_warning(
-                path,
-                WarningSeverity::Info,
-                "Unrecognized Java asset path preserved as pass-through",
-            );
-            ir.passthrough_files.insert(path.clone(), bytes.clone());
-            report.record_passthrough();
-        }
+        // Root non-asset documentation (e.g. README.md, LICENSE.txt) preserved as safe pass-through.
+        ir.passthrough_files.insert(path.clone(), bytes.clone());
+        report.record_passthrough();
     }
 
     for (tex_id, mut spec) in pending_animations {
@@ -344,15 +413,73 @@ pub fn parse_java_pack(
                 tex.animation = Some(spec);
             }
         } else {
-            report.record_warning(
+            report.record_diagnostic(
                 format!("{png_path}.mcmeta"),
+                PipelineStage::Resolve,
                 WarningSeverity::Warning,
                 "Animation .png.mcmeta has no matching PNG texture file",
+                "Ensure a matching .png sprite strip exists alongside the .png.mcmeta file or remove the orphaned .mcmeta.",
             );
         }
     }
 
     Ok((ir, report))
+}
+
+fn extract_blockstate_models(val: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(variants) = val.get("variants").and_then(serde_json::Value::as_object) {
+        for v in variants.values() {
+            collect_model_field(v, &mut out);
+        }
+    }
+    if let Some(multipart) = val.get("multipart").and_then(serde_json::Value::as_array) {
+        for part in multipart {
+            if let Some(apply) = part.get("apply") {
+                collect_model_field(apply, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn collect_model_field(val: &serde_json::Value, out: &mut Vec<String>) {
+    match val {
+        serde_json::Value::Object(obj) => {
+            if let Some(m) = obj.get("model").and_then(serde_json::Value::as_str)
+                && !out.iter().any(|x| x == m)
+            {
+                out.push(m.to_string());
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                collect_model_field(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_item_def_models(val: &serde_json::Value, out: &mut Vec<String>) {
+    match val {
+        serde_json::Value::Object(obj) => {
+            if let Some(m) = obj.get("model").and_then(serde_json::Value::as_str)
+                && !out.iter().any(|x| x == m)
+            {
+                out.push(m.to_string());
+            }
+            for child in obj.values() {
+                extract_item_def_models(child, out);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                extract_item_def_models(item, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn extract_overlay_dirs(val: &serde_json::Value) -> BTreeSet<String> {

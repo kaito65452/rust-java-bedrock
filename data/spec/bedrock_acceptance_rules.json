@@ -1,0 +1,86 @@
+{
+  "schema_version": "2.0",
+  "sources": [
+    "https://minecraft.wiki/w/Resource_pack#Bedrock_Edition",
+    "https://minecraft.wiki/w/Manifest.json",
+    "https://minecraft.wiki/w/Model",
+    "https://minecraft.wiki/w/Vibrant_Visuals#Texture_sets",
+    "https://minecraft.wiki/w/Block_components"
+  ],
+  "required_root_files": [
+    "manifest.json"
+  ],
+  "manifest_rules": {
+    "allowed_format_versions": [
+      1,
+      2,
+      3
+    ],
+    "require_distinct_header_and_module_uuids": true,
+    "require_resources_module": true,
+    "v3_requires_metadata_authors": true,
+    "require_min_engine_major_eq_one": true,
+    "min_engine_version_pattern": "[1, minor, patch] for v1/v2 or '1.minor.patch' for v3 (major MUST be 1)"
+  },
+  "forbidden_path_patterns": [
+    {
+      "id": "leaked_java_assets",
+      "prefix": "assets/",
+      "reason": "Raw Java Edition assets/ directory is never read by Bedrock Edition and bloats/corrupts the archive.",
+      "actionable_fix": "Map Java assets to their Bedrock equivalents (textures/, sounds/, texts/) or skip unsupported Java-only files."
+    },
+    {
+      "id": "leaked_java_mcmeta",
+      "exact": "pack.mcmeta",
+      "reason": "Java pack.mcmeta is ignored by Bedrock Edition; Bedrock requires manifest.json.",
+      "actionable_fix": "Emit manifest.json instead of copying pack.mcmeta."
+    },
+    {
+      "id": "os_junk_files",
+      "names_or_prefixes": [
+        "desktop.ini",
+        ".ds_store",
+        "thumbs.db",
+        "__macosx/"
+      ],
+      "reason": "Operating system metadata/junk files should never be packaged into Bedrock resource packs.",
+      "actionable_fix": "Filter OS metadata files during archive/directory scanning."
+    },
+    {
+      "id": "invalid_bedrock_mob_effect_dir",
+      "prefix": "textures/mob_effect/",
+      "reason": "Bedrock Edition does not read textures/mob_effect/; status effect icons live at textures/ui/<id>_effect.png.",
+      "actionable_fix": "Remap assets/minecraft/textures/mob_effect/<id>.png to textures/ui/<id>_effect.png."
+    },
+    {
+      "id": "dead_vanilla_block_geo",
+      "prefix": "models/entity/block/",
+      "suffix": ".geo.json",
+      "reason": "Pure Bedrock Resource Packs CANNOT override vanilla 3D block geometry via models/entity/block/*.geo.json.",
+      "actionable_fix": "Extract the primary block texture into textures/blocks/ + terrain_texture.json and emit a structured warning; use a Behavior Pack custom block or item attachable for 3D geometry."
+    },
+    {
+      "id": "raw_unconverted_labpbr",
+      "suffixes": [
+        "_n.png",
+        "_s.png"
+      ],
+      "under_prefix": "textures/",
+      "unless_referenced_by_texture_set": true,
+      "reason": "Raw Java LabPBR normal (_n.png) / specular (_s.png) textures are ignored by Bedrock without a *.texture_set.json and bloat pack size.",
+      "actionable_fix": "Enable PBR conversion to generate *_mer.png + *.texture_set.json, or omit LabPBR maps when PBR conversion is disabled."
+    }
+  ],
+  "non_empty_stub_rules": [
+    "Do not emit textures/terrain_texture.json if texture_data is empty.",
+    "Do not emit textures/item_texture.json if texture_data is empty.",
+    "Do not emit texts/languages.json if no texts/*.lang files exist.",
+    "Every texture path referenced in terrain_texture.json, item_texture.json, flipbook_textures.json, *.texture_set.json, and attachables/*.json must exist inside the archive."
+  ],
+  "semantic_audit_verdict_rules": {
+    "fail_if_forbidden_entries_gt_zero": true,
+    "fail_if_input_textures_gt_zero_and_mapped_eq_zero": true,
+    "fail_if_broken_atlas_or_textureset_references": true,
+    "partial_if_orphan_textures_gt_zero_or_mapped_ratio_lt_half": true
+  }
+}

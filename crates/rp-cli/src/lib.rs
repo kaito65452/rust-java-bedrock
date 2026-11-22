@@ -8,9 +8,13 @@ pub mod manager;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use rp_bedrock::{emit_bedrock_pack, parse_bedrock_pack, parse_bedrock_pack_with_options};
+use rp_bedrock::{
+    audit_bedrock_container, emit_bedrock_pack, parse_bedrock_pack,
+    parse_bedrock_pack_with_options,
+};
 use rp_core::{
-    BedrockGeoVersion, ConversionReport, ConversionWarning, Edition, MappingTable, RotationSnapMode,
+    AuditStatus, BedrockGeoVersion, ConversionReport, ConversionWarning, Edition, MappingTable,
+    PipelineStage, RotationSnapMode, WarningSeverity,
 };
 use rp_io::{IoLimits, PackContainer};
 use rp_java::{emit_java_pack, parse_java_pack};
@@ -28,6 +32,8 @@ pub struct VersionSpecificOptions {
     pub bedrock_manifest_version: Option<u32>,
     /// Explicit override for Java `1.21.4+` `assets/minecraft/items/*.json` emission.
     pub emit_java_items_definitions: Option<bool>,
+    /// Convert Java LabPBR (`_n.png` / `_s.png`) maps into Bedrock `*_mer.png` + `*.texture_set.json`.
+    pub convert_pbr: bool,
 }
 
 /// Options controlling end-to-end pack conversion.
@@ -182,13 +188,13 @@ pub fn convert_container(
     )
 }
 
-/// Converts an in-memory `PackContainer` with explicit `VersionSpecificOptions`.
-pub fn convert_container_with_options(
+/// Converts an in-memory `PackContainer` and runs the Bedrock Semantic Audit, returning the output
+/// and full `ConversionReport` even when the semantic audit verdict is `AuditStatus::Failed`.
+pub fn convert_container_with_audit(
     input: &PackContainer,
     target_override: Option<Edition>,
     target_version: Option<&str>,
     mappings: &MappingTable,
-    strict: bool,
     version_options: &VersionSpecificOptions,
 ) -> Result<(PackContainer, Edition, Edition, ConversionReport)> {
     let source = detect_edition(input)?;
@@ -253,6 +259,9 @@ pub fn convert_container_with_options(
     if let Some(items_defs) = version_options.emit_java_items_definitions {
         ir.metadata.emit_java_items_definitions = Some(items_defs);
     }
+    ir.metadata.convert_pbr = version_options.convert_pbr;
+
+    let total_input_textures = ir.textures.len();
 
     let (output, emit_report) = match target {
         Edition::Bedrock => {
@@ -261,6 +270,80 @@ pub fn convert_container_with_options(
         Edition::Java => emit_java_pack(&ir, mappings).context("failed to emit Java pack")?,
     };
     report.merge(emit_report);
+
+    if target == Edition::Bedrock {
+        let audit = audit_bedrock_container(&output, total_input_textures, mappings);
+        for forb in &audit.forbidden_entries {
+            report.record_diagnostic(
+                forb.path.clone(),
+                PipelineStage::Audit,
+                WarningSeverity::Error,
+                format!("[{}] {}", forb.rule_id, forb.reason),
+                forb.actionable_fix.clone(),
+            );
+        }
+        for broken in &audit.broken_references {
+            report.record_diagnostic(
+                broken.source_file.clone(),
+                PipelineStage::Audit,
+                WarningSeverity::Error,
+                format!(
+                    "Broken reference in '{}': missing target '{}'",
+                    broken.source_file, broken.missing_path
+                ),
+                "Ensure every texture/locale/sound path referenced in JSON atlases or texture sets is emitted into the archive.",
+            );
+        }
+        for orphan in &audit.orphan_textures {
+            report.record_diagnostic(
+                orphan.clone(),
+                PipelineStage::Audit,
+                WarningSeverity::Warning,
+                "Orphan output texture will never be loaded by the Bedrock engine (not a vanilla path and not referenced in any atlas, texture_set, or attachable)",
+                "Bind the source texture through a vanilla Java model/blockstate or map it explicitly with --mapping.",
+            );
+        }
+        if audit.total_input_textures > 0 && audit.semantically_mapped_textures == 0 {
+            report.record_diagnostic(
+                "manifest.json",
+                PipelineStage::Audit,
+                WarningSeverity::Error,
+                format!(
+                    "0 of {} input texture(s) could be semantically mapped to any readable Bedrock texture or atlas entry",
+                    audit.total_input_textures
+                ),
+                "Verify the input pack uses valid vanilla texture paths, vanilla blockstates/models referencing custom textures, or supply a --mapping JSON file.",
+            );
+        }
+        report.semantic_audit = Some(audit);
+    }
+
+    Ok((output, source, target, report))
+}
+
+/// Converts an in-memory `PackContainer` with explicit `VersionSpecificOptions`, enforcing the
+/// post-conversion Bedrock Semantic Audit Gate and optional `--strict` mode.
+pub fn convert_container_with_options(
+    input: &PackContainer,
+    target_override: Option<Edition>,
+    target_version: Option<&str>,
+    mappings: &MappingTable,
+    strict: bool,
+    version_options: &VersionSpecificOptions,
+) -> Result<(PackContainer, Edition, Edition, ConversionReport)> {
+    let (output, source, target, report) = convert_container_with_audit(
+        input,
+        target_override,
+        target_version,
+        mappings,
+        version_options,
+    )?;
+
+    if let Some(audit) = &report.semantic_audit
+        && audit.status == AuditStatus::Failed
+    {
+        bail!("Bedrock Semantic Audit FAILED: {}", audit.summary);
+    }
 
     if strict && report.has_strict_issues() {
         bail!(
@@ -274,24 +357,20 @@ pub fn convert_container_with_options(
     Ok((output, source, target, report))
 }
 
-/// Executes full disk-to-disk conversion according to `options`.
+/// Executes full disk-to-disk conversion according to `options`, enforcing the Post-Conversion
+/// Semantic Audit Gate against the emitted archive before reporting final status.
 pub fn convert_pack(options: &ConvertOptions) -> Result<(Edition, Edition, ConversionReport)> {
     let mappings = load_mappings(options.mapping_file.as_deref())?;
     let input_container = PackContainer::read_from_path(&options.input, options.limits)
         .with_context(|| format!("failed to read input pack '{}'", options.input.display()))?;
 
-    let (output_container, source, target, report) = convert_container_with_options(
+    let (output_container, source, target, report) = convert_container_with_audit(
         &input_container,
         options.target,
         options.target_version.as_deref(),
         &mappings,
-        options.strict,
         &options.version_options,
     )?;
-
-    output_container
-        .write_to_path(&options.output)
-        .with_context(|| format!("failed to write output pack '{}'", options.output.display()))?;
 
     if let Some(report_path) = &options.report_json {
         if let Some(parent) = report_path.parent()
@@ -306,6 +385,48 @@ pub fn convert_pack(options: &ConvertOptions) -> Result<(Edition, Edition, Conve
                 report_path.display()
             )
         })?;
+    }
+
+    if let Some(audit) = &report.semantic_audit
+        && audit.status == AuditStatus::Failed
+    {
+        bail!("Bedrock Semantic Audit FAILED: {}", audit.summary);
+    }
+
+    if options.strict && report.has_strict_issues() {
+        bail!(
+            "Strict mode failed: {} skipped, {} lossy, {} warning(s)",
+            report.skipped_count,
+            report.lossy_count,
+            report.warnings.len()
+        );
+    }
+
+    output_container
+        .write_to_path(&options.output)
+        .with_context(|| format!("failed to write output pack '{}'", options.output.display()))?;
+
+    // Re-read & verify the written archive when targeting Bedrock so on-disk output is audited too.
+    if target == Edition::Bedrock {
+        let written = PackContainer::read_from_path(&options.output, options.limits)
+            .with_context(|| {
+                format!(
+                    "failed to re-read written Bedrock output '{}' for post-write semantic audit",
+                    options.output.display()
+                )
+            })?;
+        let input_tex_count = report
+            .semantic_audit
+            .as_ref()
+            .map_or(0, |a| a.total_input_textures);
+        let disk_audit = audit_bedrock_container(&written, input_tex_count, &mappings);
+        if disk_audit.status == AuditStatus::Failed {
+            bail!(
+                "Post-write Bedrock Semantic Audit FAILED on '{}': {}",
+                options.output.display(),
+                disk_audit.summary
+            );
+        }
     }
 
     Ok((source, target, report))

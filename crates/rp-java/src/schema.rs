@@ -278,6 +278,33 @@ impl From<&AnimationSpec> for JavaAnimationMcmeta {
     }
 }
 
+/// Java model texture entry (string path/`#var`, or Java 26.1+ `{ sprite, force_translucent }` object).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JavaModelTextureRef {
+    /// Standard texture path or `#variable` reference.
+    Simple(String),
+    /// Java 26.1+ object form (`minecraft.wiki/w/Model`).
+    Object {
+        /// Resource location of the texture sprite.
+        sprite: String,
+        /// Optional translucency override flag.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force_translucent: Option<bool>,
+    },
+}
+
+impl JavaModelTextureRef {
+    /// Returns the texture resource location or `#variable` string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Simple(s) => s.as_str(),
+            Self::Object { sprite, .. } => sprite.as_str(),
+        }
+    }
+}
+
 /// Java block/item JSON model (`assets/minecraft/models/**/*.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct JavaModelJson {
@@ -292,7 +319,7 @@ pub struct JavaModelJson {
     pub texture_size: Option<[u32; 2]>,
     /// Texture variable bindings.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub textures: Option<BTreeMap<String, String>>,
+    pub textures: Option<BTreeMap<String, JavaModelTextureRef>>,
     /// Cuboid elements.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elements: Option<Vec<JavaModelElementJson>>,

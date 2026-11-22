@@ -16,8 +16,8 @@ use rp_transforms::texture::render_model_to_humanoid_helmet_png;
 use crate::JavaPackError;
 use crate::schema::{
     JavaAnimationMcmeta, JavaDisplayTransformJson, JavaItemDefinitionJson, JavaItemModelDef,
-    JavaModelElementJson, JavaModelJson, JavaPackMcmeta, JavaPackSection, JavaSoundEventJson,
-    JavaSoundVariantJson, MAX_JAVA_PACK_FORMAT,
+    JavaModelElementJson, JavaModelJson, JavaModelTextureRef, JavaPackMcmeta, JavaPackSection,
+    JavaSoundEventJson, JavaSoundVariantJson, MAX_JAVA_PACK_FORMAT,
 };
 
 /// Emits a canonical `ResourcePackIR` into a Java Edition `PackContainer`.
@@ -202,7 +202,12 @@ pub fn emit_java_pack(
         let textures = if tex_map.is_empty() {
             None
         } else {
-            Some(tex_map)
+            Some(
+                tex_map
+                    .into_iter()
+                    .map(|(k, v)| (k, JavaModelTextureRef::Simple(v)))
+                    .collect(),
+            )
         };
 
         let model_json = JavaModelJson {

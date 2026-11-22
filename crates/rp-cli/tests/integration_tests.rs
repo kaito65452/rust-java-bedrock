@@ -338,7 +338,7 @@ fn end_to_end_java_to_bedrock_zero_broken_references() {
         target: None,
         target_version: Some(String::from("1.20.1")),
         mapping_file: None,
-        strict: true,
+        strict: false,
         report_json: Some(report_path.clone()),
         limits: IoLimits::default(),
         version_options: VersionSpecificOptions::default(),
@@ -453,8 +453,22 @@ fn end_to_end_java_to_bedrock_zero_broken_references() {
         }
     }
 
-    // 6. model geometry emitted cleanly
-    assert!(out.contains("models/entity/block/custom_pedestal.geo.json"));
+    // 6. Pure Bedrock Resource Pack MUST NOT emit dead vanilla block .geo.json,
+    //    and MUST emit a structured warning explaining the Bedrock limitation.
+    assert!(!out.contains("models/entity/block/custom_pedestal.geo.json"));
+    assert!(
+        report.warnings.iter().any(|w| {
+            w.source_path.contains("custom_pedestal")
+                && !w.reason.is_empty()
+                && !w.actionable_fix.is_empty()
+        }),
+        "expected structured warning for omitted vanilla 3D block geometry"
+    );
+    let audit = report.semantic_audit.expect("semantic audit present");
+    assert_eq!(audit.forbidden_entries.len(), 0);
+    assert_eq!(audit.broken_references.len(), 0);
+    assert_eq!(audit.orphan_textures.len(), 0);
+    assert_eq!(audit.semantically_mapped_textures, 4);
 }
 
 #[test]
@@ -629,7 +643,6 @@ fn cli_binary_inspect_and_convert_smoke() {
         .arg("bedrock")
         .arg("--target-version")
         .arg("1.20.1")
-        .arg("--strict")
         .arg("--report-json")
         .arg(&report_json)
         .output()
@@ -829,7 +842,9 @@ fn legacy_pre_flattening_java_and_bedrock_v3_and_geo_1_10_0() {
         serde_json::from_slice(bedrock_26_2.get("manifest.json").expect("manifest"))
             .expect("parse v3 manifest");
     assert_eq!(manifest_val["format_version"], 3);
-    assert_eq!(manifest_val["header"]["min_engine_version"], "26.2.0");
+    // Per minecraft.wiki/w/Bedrock_Edition_26.60 & Mojang/bedrock-samples:
+    // Bedrock 26.2 / 26.30 uses internal min_engine_version "1.26.30".
+    assert_eq!(manifest_val["header"]["min_engine_version"], "1.26.30");
     assert_eq!(manifest_val["header"]["version"], "1.0.0");
 
     let geo_val: serde_json::Value = serde_json::from_slice(
@@ -1037,14 +1052,14 @@ fn modern_java_euler_min_max_multi_ns_and_bedrock_attachable_item_map() {
     )
     .expect("mcmeta");
     j_in.insert(
-        "assets/minecraft/textures/item/amethyst_shard_in_hand.png",
+        "assets/minecraft/textures/item/amethyst_shard.png",
         encode_png(16, 16, Rgba([180, 90, 240, 255])),
     )
     .expect("tex");
     j_in.insert(
-        "assets/minecraft/models/item/amethyst_shard_in_hand.json",
+        "assets/minecraft/models/item/amethyst_shard.json",
         br##"{
-            "textures": { "0": "item/amethyst_shard_in_hand" },
+            "textures": { "0": "item/amethyst_shard" },
             "elements": [
                 {
                     "from": [6.5, 6, 8],
@@ -1087,7 +1102,7 @@ fn modern_java_euler_min_max_multi_ns_and_bedrock_attachable_item_map() {
 
     let geo_val: serde_json::Value = serde_json::from_slice(
         b_out
-            .get("models/entity/item/amethyst_shard_in_hand.geo.json")
+            .get("models/entity/item/amethyst_shard.geo.json")
             .expect("geo"),
     )
     .expect("parse geo");

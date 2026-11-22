@@ -9,7 +9,7 @@ use egui::{
     TextureOptions, Ui, Vec2,
 };
 
-use rp_bedrock::emit_bedrock_pack;
+use rp_bedrock::{audit_bedrock_container, emit_bedrock_pack};
 use rp_cli::manager::{
     AuditOutcome, DiscoveredPack, PackDiff, PackSortKey, audit_pack_roundtrip, diff_packs,
     export_audit_json, export_report_json, format_bytes, load_pack_ir, repack_dir_to_archive,
@@ -17,8 +17,8 @@ use rp_cli::manager::{
 };
 use rp_cli::{ConvertOptions, VersionSpecificOptions, convert_pack};
 use rp_core::{
-    BedrockGeoVersion, ConversionReport, Edition, ElementRotation, FaceDirection, MappingTable,
-    ResourcePackIR, RotationAxis, RotationSnapMode, TextureAsset, TextureCategory,
+    AuditStatus, BedrockGeoVersion, ConversionReport, Edition, ElementRotation, FaceDirection,
+    MappingTable, ResourcePackIR, RotationAxis, RotationSnapMode, TextureAsset, TextureCategory,
 };
 use rp_io::IoLimits;
 use rp_java::emit_java_pack;
@@ -416,6 +416,7 @@ impl RpGuiApp {
             bedrock_geo_version: self.bedrock_geo_version,
             bedrock_manifest_version: self.bedrock_manifest_version,
             emit_java_items_definitions: self.emit_java_items,
+            convert_pbr: false,
         }
     }
 
@@ -674,12 +675,22 @@ impl RpGuiApp {
         thread::spawn(move || {
             let start = Instant::now();
             let res: Result<ConversionOutcome, String> = (|| {
-                let (container, report) = match target {
+                let total_in_tex = ir.textures.len();
+                let (container, mut report) = match target {
                     Edition::Java => emit_java_pack(&ir, &mappings).map_err(|e| format!("{e}"))?,
                     Edition::Bedrock => {
                         emit_bedrock_pack(&ir, &mappings).map_err(|e| format!("{e}"))?
                     }
                 };
+                if target == Edition::Bedrock {
+                    let audit = audit_bedrock_container(&container, total_in_tex, &mappings);
+                    let failed_msg = (audit.status == AuditStatus::Failed)
+                        .then(|| format!("Bedrock Semantic Audit FAILED: {}", audit.summary));
+                    report.semantic_audit = Some(audit);
+                    if let Some(msg) = failed_msg {
+                        return Err(msg);
+                    }
+                }
                 let bytes = container
                     .write_to_zip_bytes()
                     .map_err(|e| format!("zip encode: {e}"))?;
@@ -882,15 +893,23 @@ impl RpGuiApp {
                 };
                 let outcome = match convert_pack(&options) {
                     Ok((source, target, report)) => {
-                        ok += 1;
+                        let status = report.effective_status();
+                        if status == AuditStatus::Passed {
+                            ok += 1;
+                        }
+                        let detail = match &report.semantic_audit {
+                            Some(a) => format!("{} | Saved -> {}", a.summary, out_file.display()),
+                            None => format!("Saved -> {}", out_file.display()),
+                        };
                         AuditOutcome {
                             pack_name,
                             path,
                             source_edition: source,
                             target_edition: target,
-                            passed: true,
+                            passed: status == AuditStatus::Passed,
+                            status,
                             forward_report: Some(report),
-                            detail: format!("Saved -> {}", out_file.display()),
+                            detail,
                             elapsed_ms: start.elapsed().as_millis(),
                         }
                     }
@@ -900,8 +919,9 @@ impl RpGuiApp {
                         source_edition: src_ed,
                         target_edition: target_ed,
                         passed: false,
+                        status: AuditStatus::Failed,
                         forward_report: None,
-                        detail: format!("Error: {err:#}"),
+                        detail: format!("FAILED: {err:#}"),
                         elapsed_ms: start.elapsed().as_millis(),
                     },
                 };
@@ -1999,13 +2019,22 @@ impl RpGuiApp {
             cols[1].add_space(4.0);
 
             if let Some(Ok(res)) = &self.last_conversion {
+                let status = res.report.effective_status();
+                let (status_color, status_label) = match status {
+                    AuditStatus::Passed => (Color32::LIGHT_GREEN, "PASSED"),
+                    AuditStatus::Partial => (Color32::YELLOW, "PARTIAL / WARNING"),
+                    AuditStatus::Failed => (Color32::LIGHT_RED, "FAILED"),
+                };
                 cols[1].colored_label(
-                    Color32::LIGHT_GREEN,
+                    status_color,
                     format!(
-                        "SUCCESS: {} -> {} ({} ms)",
+                        "{status_label}: {} -> {} ({} ms)",
                         res.source, res.target, res.elapsed_ms
                     ),
                 );
+                if let Some(audit) = &res.report.semantic_audit {
+                    cols[1].colored_label(status_color, &audit.summary);
+                }
                 cols[1]
                     .monospace(res.output_path.display().to_string())
                     .on_hover_text(res.output_path.display().to_string());
@@ -2032,7 +2061,7 @@ impl RpGuiApp {
                 });
                 cols[1].separator();
             } else if let Some(Err(err)) = &self.last_conversion {
-                cols[1].colored_label(Color32::LIGHT_RED, format!("Failed: {err}"));
+                cols[1].colored_label(Color32::LIGHT_RED, format!("FAILED: {err}"));
                 cols[1].separator();
             }
 
@@ -2128,10 +2157,16 @@ impl RpGuiApp {
                     ui.end_row();
 
                     for o in &self.audit_outcomes {
-                        if o.passed {
-                            ui.colored_label(Color32::LIGHT_GREEN, "PASS");
-                        } else {
-                            ui.colored_label(Color32::LIGHT_RED, "FAIL");
+                        match o.status {
+                            AuditStatus::Passed => {
+                                ui.colored_label(Color32::LIGHT_GREEN, "PASS");
+                            }
+                            AuditStatus::Partial => {
+                                ui.colored_label(Color32::YELLOW, "WARN");
+                            }
+                            AuditStatus::Failed => {
+                                ui.colored_label(Color32::LIGHT_RED, "FAIL");
+                            }
                         }
                         ui.label(&o.pack_name);
                         ui.label(format!("{} -> {}", o.source_edition, o.target_edition));
@@ -3873,5 +3908,51 @@ mod tests {
         app.fresh_refresh_studio();
         assert!(app.tex_preview.is_none());
         assert!(app.busy_message.is_some());
+    }
+
+    #[test]
+    fn gui_negative_test_renders_failed_status_not_passed() {
+        let dir = tempdir().expect("tempdir");
+        let mut bad = PackContainer::new();
+        bad.insert(
+            "pack.mcmeta",
+            br#"{"pack":{"pack_format":34,"description":"Unmappable GUI Pack"}}"#.to_vec(),
+        )
+        .expect("mcmeta");
+        bad.insert(
+            "assets/minecraft/textures/block/unmapped_custom_gui.png",
+            make_png(16, 16, Rgba([220, 30, 30, 255])),
+        )
+        .expect("tex");
+        let bad_zip = dir.path().join("bad_gui.zip");
+        std::fs::write(&bad_zip, bad.write_to_zip_bytes().expect("zip")).expect("save");
+
+        let mappings = MappingTable::default_embedded().expect("mappings");
+        let audit = audit_pack_roundtrip(
+            &bad_zip,
+            Some("26.60"),
+            &VersionSpecificOptions::default(),
+            &mappings,
+            IoLimits::default(),
+        );
+        assert!(!audit.passed);
+        assert_eq!(audit.status, AuditStatus::Failed);
+
+        let mut app = RpGuiApp::new(dir.path().to_path_buf(), None, mappings);
+        app.last_conversion = Some(Err(audit.detail.clone()));
+        app.audit_outcomes.push(audit);
+
+        let ctx = Context::default();
+        app.mode = WorkspaceMode::Quick;
+        app.page = GuiPage::Convert;
+        let _ = ctx.run(egui::RawInput::default(), |c| {
+            app.render_ui(c);
+        });
+        app.page = GuiPage::BatchAudit;
+        let _ = ctx.run(egui::RawInput::default(), |c| {
+            app.render_ui(c);
+        });
+        assert_eq!(app.audit_outcomes[0].status, AuditStatus::Failed);
+        assert!(!app.audit_outcomes[0].passed);
     }
 }

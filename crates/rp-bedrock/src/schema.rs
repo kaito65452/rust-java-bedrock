@@ -17,6 +17,9 @@ pub struct BedrockManifest {
     pub header: BedrockManifestHeader,
     /// Pack module declarations (must include `"resources"`).
     pub modules: Vec<BedrockManifestModule>,
+    /// Optional capability declarations (e.g. `["pbr"]` or `["raytraced"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     /// Optional metadata section (required in `format_version: 3`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BedrockManifestMetadata>,
@@ -136,6 +139,7 @@ impl BedrockManifest {
                 uuid: module_uuid,
                 version,
             }],
+            capabilities: Vec::new(),
             metadata: None,
         }
     }
@@ -186,7 +190,7 @@ impl BedrockManifest {
                     .map(|m| m.authors.clone())
                     .filter(|a| !a.is_empty())
                     .unwrap_or_else(|| vec![String::from("mc-rp-converter")]);
-                let val = serde_json::json!({
+                let mut val = serde_json::json!({
                     "format_version": 3,
                     "header": {
                         "name": self.header.name,
@@ -200,6 +204,14 @@ impl BedrockManifest {
                         "authors": authors
                     }
                 });
+                if !self.capabilities.is_empty()
+                    && let Some(obj) = val.as_object_mut()
+                {
+                    obj.insert(
+                        String::from("capabilities"),
+                        serde_json::json!(self.capabilities),
+                    );
+                }
                 serde_json::to_vec_pretty(&val)
             }
             _ => serde_json::to_vec_pretty(self),

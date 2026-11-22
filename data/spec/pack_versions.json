@@ -1,0 +1,595 @@
+{
+  "schema_version": "2.0",
+  "sources": [
+    "https://minecraft.wiki/w/Pack_format",
+    "https://minecraft.wiki/w/Template:Resource_pack_format",
+    "https://minecraft.wiki/w/Pack.mcmeta",
+    "https://minecraft.wiki/w/Resource_pack",
+    "https://minecraft.wiki/w/Manifest.json",
+    "https://minecraft.wiki/w/Bedrock_Edition_version_history",
+    "https://minecraft.wiki/w/Bedrock_Edition_26.60",
+    "https://github.com/Mojang/bedrock-samples/blob/main/resource_pack/manifest.json"
+  ],
+  "java_pack_mcmeta_rules": {
+    "legacy_pack_format_required_below": 65,
+    "supported_formats_introduced_at": 18,
+    "min_max_format_introduced_at": 65,
+    "min_max_format_syntax": "integer or [major, minor] array; single integer N in min_format means [N, 0]; single integer N in max_format means [N, 0x7fffffff]",
+    "folder_milestones": [
+      {
+        "pack_format": 1,
+        "version": "1.6.1-1.8.9",
+        "notes": "Pre-flattening: textures/blocks/, textures/items/, lang/en_US.lang"
+      },
+      {
+        "pack_format": 2,
+        "version": "1.9-1.10.2",
+        "notes": "Multipart blockstates, item overrides, updated display tags"
+      },
+      {
+        "pack_format": 3,
+        "version": "1.11-1.12.2",
+        "notes": "All filenames lowercase (lang/en_us.lang), still textures/blocks/ and textures/items/"
+      },
+      {
+        "pack_format": 4,
+        "version": "1.13-1.14.4",
+        "notes": "The Flattening: textures/block/, textures/item/, lang/*.json; 1.14 split particle/painting/mob_effect into individual PNGs"
+      },
+      {
+        "pack_format": 12,
+        "version": "1.19.3",
+        "notes": "assets/minecraft/atlases/blocks.json introduced"
+      },
+      {
+        "pack_format": 18,
+        "version": "1.20.2",
+        "notes": "supported_formats and overlays added to pack.mcmeta"
+      },
+      {
+        "pack_format": 46,
+        "version": "1.21.4",
+        "notes": "assets/minecraft/items/*.json item model definitions replace model overrides; unified block/item model format"
+      },
+      {
+        "pack_format": 63,
+        "version": "1.21.6",
+        "notes": "Arbitrary single-axis rotation angles in [-45, 45]; mob_effect folded into GUI atlas"
+      },
+      {
+        "pack_format": 69,
+        "version": "1.21.9-1.21.10",
+        "notes": "min_format/max_format with [major, minor] replace pack_format/supported_formats"
+      },
+      {
+        "pack_format": 75,
+        "version": "1.21.11",
+        "notes": "Multi-axis Euler rotation {x, y, z} without [-45, 45] restriction"
+      },
+      {
+        "pack_format": 84,
+        "version": "26.1-26.1.2",
+        "notes": "Year-based Java versioning; textures map supports {sprite, force_translucent} objects"
+      },
+      {
+        "pack_format": 88,
+        "version": "26.2",
+        "notes": "Java 26.2 resource pack format 88.0"
+      },
+      {
+        "pack_format": 97,
+        "version": "26.3",
+        "notes": "Java 26.3 resource pack format 97.1; shade_direction_override replaces element shade: false"
+      }
+    ]
+  },
+  "bedrock_manifest_rules": {
+    "supported_format_versions": [
+      1,
+      2,
+      3
+    ],
+    "v1": {
+      "version_type": "[major, minor, patch] int array",
+      "module_type_resources": "resources (or legacy resource)",
+      "min_engine_version_required": false
+    },
+    "v2": {
+      "version_type": "[major, minor, patch] int array",
+      "min_engine_version_type": "[major, minor, patch] int array",
+      "module_type_resources": "resources",
+      "distinct_uuids_required": true
+    },
+    "v3": {
+      "version_type": "SemVer string 'major.minor.patch'",
+      "min_engine_version_type": "SemVer string 'major.minor.patch'",
+      "module_type_resources": "resources",
+      "metadata_authors_required": true,
+      "distinct_uuids_required": true
+    },
+    "version_26_x_rule": "Bedrock 26.x display versions (e.g. 26.0, 26.10, 26.50, 26.60) use internal min_engine_version [1, 26, <minor>] (e.g. [1, 26, 60] or '1.26.60'), as confirmed by minecraft.wiki/w/Bedrock_Edition_26.60 and Mojang/bedrock-samples."
+  },
+  "version_table": [
+    {
+      "minecraft_version": "1.6.1",
+      "java_pack_format": [
+        1,
+        0
+      ],
+      "bedrock_display_version": "1.6.1",
+      "bedrock_min_engine_version": [
+        1,
+        6,
+        1
+      ]
+    },
+    {
+      "minecraft_version": "1.8.9",
+      "java_pack_format": [
+        1,
+        0
+      ],
+      "bedrock_display_version": "1.8.9",
+      "bedrock_min_engine_version": [
+        1,
+        8,
+        9
+      ]
+    },
+    {
+      "minecraft_version": "1.9",
+      "java_pack_format": [
+        2,
+        0
+      ],
+      "bedrock_display_version": "1.9.0",
+      "bedrock_min_engine_version": [
+        1,
+        9,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.11",
+      "java_pack_format": [
+        3,
+        0
+      ],
+      "bedrock_display_version": "1.11.0",
+      "bedrock_min_engine_version": [
+        1,
+        11,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.12.2",
+      "java_pack_format": [
+        3,
+        0
+      ],
+      "bedrock_display_version": "1.12.0",
+      "bedrock_min_engine_version": [
+        1,
+        12,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.13",
+      "java_pack_format": [
+        4,
+        0
+      ],
+      "bedrock_display_version": "1.13.0",
+      "bedrock_min_engine_version": [
+        1,
+        13,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.15",
+      "java_pack_format": [
+        5,
+        0
+      ],
+      "bedrock_display_version": "1.14.0",
+      "bedrock_min_engine_version": [
+        1,
+        14,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.16",
+      "java_pack_format": [
+        5,
+        0
+      ],
+      "bedrock_display_version": "1.16.0",
+      "bedrock_min_engine_version": [
+        1,
+        16,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.16.5",
+      "java_pack_format": [
+        6,
+        0
+      ],
+      "bedrock_display_version": "1.16.200",
+      "bedrock_min_engine_version": [
+        1,
+        16,
+        200
+      ]
+    },
+    {
+      "minecraft_version": "1.17",
+      "java_pack_format": [
+        7,
+        0
+      ],
+      "bedrock_display_version": "1.17.0",
+      "bedrock_min_engine_version": [
+        1,
+        17,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.18",
+      "java_pack_format": [
+        8,
+        0
+      ],
+      "bedrock_display_version": "1.18.0",
+      "bedrock_min_engine_version": [
+        1,
+        18,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.19",
+      "java_pack_format": [
+        9,
+        0
+      ],
+      "bedrock_display_version": "1.19.0",
+      "bedrock_min_engine_version": [
+        1,
+        19,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.19.3",
+      "java_pack_format": [
+        12,
+        0
+      ],
+      "bedrock_display_version": "1.19.50",
+      "bedrock_min_engine_version": [
+        1,
+        19,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "1.19.4",
+      "java_pack_format": [
+        13,
+        0
+      ],
+      "bedrock_display_version": "1.19.70",
+      "bedrock_min_engine_version": [
+        1,
+        19,
+        70
+      ]
+    },
+    {
+      "minecraft_version": "1.20",
+      "java_pack_format": [
+        15,
+        0
+      ],
+      "bedrock_display_version": "1.20.0",
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.20.1",
+      "java_pack_format": [
+        15,
+        0
+      ],
+      "bedrock_display_version": "1.20.10",
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        10
+      ]
+    },
+    {
+      "minecraft_version": "1.20.2",
+      "java_pack_format": [
+        18,
+        0
+      ],
+      "bedrock_display_version": "1.20.30",
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        30
+      ]
+    },
+    {
+      "minecraft_version": "1.20.4",
+      "java_pack_format": [
+        22,
+        0
+      ],
+      "bedrock_display_version": "1.20.60",
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        60
+      ]
+    },
+    {
+      "minecraft_version": "1.20.5",
+      "java_pack_format": [
+        32,
+        0
+      ],
+      "bedrock_display_version": "1.20.80",
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        80
+      ]
+    },
+    {
+      "minecraft_version": "1.21",
+      "java_pack_format": [
+        34,
+        0
+      ],
+      "bedrock_display_version": "1.21.0",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.21.2",
+      "java_pack_format": [
+        42,
+        0
+      ],
+      "bedrock_display_version": "1.21.40",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        40
+      ]
+    },
+    {
+      "minecraft_version": "1.21.4",
+      "java_pack_format": [
+        46,
+        0
+      ],
+      "bedrock_display_version": "1.21.50",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "1.21.5",
+      "java_pack_format": [
+        55,
+        0
+      ],
+      "bedrock_display_version": "1.21.70",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        70
+      ]
+    },
+    {
+      "minecraft_version": "1.21.6",
+      "java_pack_format": [
+        63,
+        0
+      ],
+      "bedrock_display_version": "1.21.90",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        90
+      ]
+    },
+    {
+      "minecraft_version": "1.21.7",
+      "java_pack_format": [
+        64,
+        0
+      ],
+      "bedrock_display_version": "1.21.100",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        100
+      ]
+    },
+    {
+      "minecraft_version": "1.21.9",
+      "java_pack_format": [
+        69,
+        0
+      ],
+      "bedrock_display_version": "1.21.111",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        111
+      ]
+    },
+    {
+      "minecraft_version": "1.21.11",
+      "java_pack_format": [
+        75,
+        0
+      ],
+      "bedrock_display_version": "1.21.130",
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        130
+      ]
+    },
+    {
+      "minecraft_version": "26.0",
+      "java_pack_format": [
+        84,
+        0
+      ],
+      "bedrock_display_version": "26.0",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "26.1",
+      "java_pack_format": [
+        84,
+        0
+      ],
+      "bedrock_display_version": "26.10",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        10
+      ]
+    },
+    {
+      "minecraft_version": "26.10",
+      "java_pack_format": [
+        84,
+        0
+      ],
+      "bedrock_display_version": "26.10",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        10
+      ]
+    },
+    {
+      "minecraft_version": "26.2",
+      "java_pack_format": [
+        88,
+        0
+      ],
+      "bedrock_display_version": "26.30",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        30
+      ]
+    },
+    {
+      "minecraft_version": "26.20",
+      "java_pack_format": [
+        88,
+        0
+      ],
+      "bedrock_display_version": "26.20",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        20
+      ]
+    },
+    {
+      "minecraft_version": "26.30",
+      "java_pack_format": [
+        88,
+        0
+      ],
+      "bedrock_display_version": "26.30",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        30
+      ]
+    },
+    {
+      "minecraft_version": "26.40",
+      "java_pack_format": [
+        97,
+        1
+      ],
+      "bedrock_display_version": "26.40",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        40
+      ]
+    },
+    {
+      "minecraft_version": "26.3",
+      "java_pack_format": [
+        97,
+        1
+      ],
+      "bedrock_display_version": "26.50",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "26.50",
+      "java_pack_format": [
+        97,
+        1
+      ],
+      "bedrock_display_version": "26.50",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "26.60",
+      "java_pack_format": [
+        97,
+        1
+      ],
+      "bedrock_display_version": "26.60",
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        60
+      ]
+    }
+  ]
+}

@@ -1,162 +1,1310 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "pack_format_versions": [
-    { "minecraft_version": "1.6.1", "java_pack_format": 1, "bedrock_min_engine_version": [1, 6, 1] },
-    { "minecraft_version": "1.8.9", "java_pack_format": 1, "bedrock_min_engine_version": [1, 8, 9] },
-    { "minecraft_version": "1.9", "java_pack_format": 2, "bedrock_min_engine_version": [1, 9, 0] },
-    { "minecraft_version": "1.11", "java_pack_format": 3, "bedrock_min_engine_version": [1, 11, 0] },
-    { "minecraft_version": "1.12.2", "java_pack_format": 3, "bedrock_min_engine_version": [1, 12, 2] },
-    { "minecraft_version": "1.13", "java_pack_format": 4, "bedrock_min_engine_version": [1, 13, 0] },
-    { "minecraft_version": "1.15", "java_pack_format": 5, "bedrock_min_engine_version": [1, 14, 0] },
-    { "minecraft_version": "1.16", "java_pack_format": 6, "bedrock_min_engine_version": [1, 16, 0] },
-    { "minecraft_version": "1.16.5", "java_pack_format": 6, "bedrock_min_engine_version": [1, 16, 200] },
-    { "minecraft_version": "1.17", "java_pack_format": 7, "bedrock_min_engine_version": [1, 17, 0] },
-    { "minecraft_version": "1.18", "java_pack_format": 8, "bedrock_min_engine_version": [1, 18, 0] },
-    { "minecraft_version": "1.19", "java_pack_format": 9, "bedrock_min_engine_version": [1, 19, 0] },
-    { "minecraft_version": "1.19.3", "java_pack_format": 12, "bedrock_min_engine_version": [1, 19, 50] },
-    { "minecraft_version": "1.19.4", "java_pack_format": 13, "bedrock_min_engine_version": [1, 19, 70] },
-    { "minecraft_version": "1.20", "java_pack_format": 15, "bedrock_min_engine_version": [1, 20, 0] },
-    { "minecraft_version": "1.20.1", "java_pack_format": 15, "bedrock_min_engine_version": [1, 20, 10] },
-    { "minecraft_version": "1.20.2", "java_pack_format": 18, "bedrock_min_engine_version": [1, 20, 30] },
-    { "minecraft_version": "1.20.4", "java_pack_format": 22, "bedrock_min_engine_version": [1, 20, 60] },
-    { "minecraft_version": "1.20.5", "java_pack_format": 32, "bedrock_min_engine_version": [1, 20, 80] },
-    { "minecraft_version": "1.21", "java_pack_format": 34, "bedrock_min_engine_version": [1, 21, 0] },
-    { "minecraft_version": "1.21.2", "java_pack_format": 42, "bedrock_min_engine_version": [1, 21, 40] },
-    { "minecraft_version": "1.21.4", "java_pack_format": 46, "bedrock_min_engine_version": [1, 21, 50] },
-    { "minecraft_version": "1.21.5", "java_pack_format": 55, "bedrock_min_engine_version": [1, 21, 70] },
-    { "minecraft_version": "1.21.6", "java_pack_format": 63, "bedrock_min_engine_version": [1, 21, 90] },
-    { "minecraft_version": "1.21.7", "java_pack_format": 64, "bedrock_min_engine_version": [1, 21, 100] },
-    { "minecraft_version": "1.21.9", "java_pack_format": 69, "bedrock_min_engine_version": [1, 21, 110] },
-    { "minecraft_version": "1.21.11", "java_pack_format": 75, "bedrock_min_engine_version": [1, 21, 120] },
-    { "minecraft_version": "1.21.130", "java_pack_format": 75, "bedrock_min_engine_version": [1, 21, 130] },
-    { "minecraft_version": "26.0", "java_pack_format": 84, "bedrock_min_engine_version": [26, 0, 0] },
-    { "minecraft_version": "26.1", "java_pack_format": 84, "bedrock_min_engine_version": [26, 1, 0] },
-    { "minecraft_version": "26.10", "java_pack_format": 84, "bedrock_min_engine_version": [26, 10, 0] },
-    { "minecraft_version": "26.2", "java_pack_format": 88, "bedrock_min_engine_version": [26, 2, 0] },
-    { "minecraft_version": "26.20", "java_pack_format": 88, "bedrock_min_engine_version": [26, 20, 0] },
-    { "minecraft_version": "26.30", "java_pack_format": 88, "bedrock_min_engine_version": [26, 30, 0] },
-    { "minecraft_version": "26.3", "java_pack_format": 97, "bedrock_min_engine_version": [26, 50, 0] },
-    { "minecraft_version": "26.50", "java_pack_format": 97, "bedrock_min_engine_version": [26, 50, 0] }
+    {
+      "minecraft_version": "1.6.1",
+      "java_pack_format": 1,
+      "bedrock_min_engine_version": [
+        1,
+        6,
+        1
+      ]
+    },
+    {
+      "minecraft_version": "1.8.9",
+      "java_pack_format": 1,
+      "bedrock_min_engine_version": [
+        1,
+        8,
+        9
+      ]
+    },
+    {
+      "minecraft_version": "1.9",
+      "java_pack_format": 2,
+      "bedrock_min_engine_version": [
+        1,
+        9,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.11",
+      "java_pack_format": 3,
+      "bedrock_min_engine_version": [
+        1,
+        11,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.12.2",
+      "java_pack_format": 3,
+      "bedrock_min_engine_version": [
+        1,
+        12,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.13",
+      "java_pack_format": 4,
+      "bedrock_min_engine_version": [
+        1,
+        13,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.15",
+      "java_pack_format": 5,
+      "bedrock_min_engine_version": [
+        1,
+        14,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.16",
+      "java_pack_format": 5,
+      "bedrock_min_engine_version": [
+        1,
+        16,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.16.5",
+      "java_pack_format": 6,
+      "bedrock_min_engine_version": [
+        1,
+        16,
+        200
+      ]
+    },
+    {
+      "minecraft_version": "1.17",
+      "java_pack_format": 7,
+      "bedrock_min_engine_version": [
+        1,
+        17,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.18",
+      "java_pack_format": 8,
+      "bedrock_min_engine_version": [
+        1,
+        18,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.19",
+      "java_pack_format": 9,
+      "bedrock_min_engine_version": [
+        1,
+        19,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.19.3",
+      "java_pack_format": 12,
+      "bedrock_min_engine_version": [
+        1,
+        19,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "1.19.4",
+      "java_pack_format": 13,
+      "bedrock_min_engine_version": [
+        1,
+        19,
+        70
+      ]
+    },
+    {
+      "minecraft_version": "1.20",
+      "java_pack_format": 15,
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.20.1",
+      "java_pack_format": 15,
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        10
+      ]
+    },
+    {
+      "minecraft_version": "1.20.2",
+      "java_pack_format": 18,
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        30
+      ]
+    },
+    {
+      "minecraft_version": "1.20.4",
+      "java_pack_format": 22,
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        60
+      ]
+    },
+    {
+      "minecraft_version": "1.20.5",
+      "java_pack_format": 32,
+      "bedrock_min_engine_version": [
+        1,
+        20,
+        80
+      ]
+    },
+    {
+      "minecraft_version": "1.21",
+      "java_pack_format": 34,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "1.21.2",
+      "java_pack_format": 42,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        40
+      ]
+    },
+    {
+      "minecraft_version": "1.21.4",
+      "java_pack_format": 46,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "1.21.5",
+      "java_pack_format": 55,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        70
+      ]
+    },
+    {
+      "minecraft_version": "1.21.6",
+      "java_pack_format": 63,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        90
+      ]
+    },
+    {
+      "minecraft_version": "1.21.7",
+      "java_pack_format": 64,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        100
+      ]
+    },
+    {
+      "minecraft_version": "1.21.9",
+      "java_pack_format": 69,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        111
+      ]
+    },
+    {
+      "minecraft_version": "1.21.11",
+      "java_pack_format": 75,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        130
+      ]
+    },
+    {
+      "minecraft_version": "1.21.130",
+      "java_pack_format": 75,
+      "bedrock_min_engine_version": [
+        1,
+        21,
+        130
+      ]
+    },
+    {
+      "minecraft_version": "26.0",
+      "java_pack_format": 84,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        0
+      ]
+    },
+    {
+      "minecraft_version": "26.1",
+      "java_pack_format": 84,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        10
+      ]
+    },
+    {
+      "minecraft_version": "26.10",
+      "java_pack_format": 84,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        10
+      ]
+    },
+    {
+      "minecraft_version": "26.2",
+      "java_pack_format": 88,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        30
+      ]
+    },
+    {
+      "minecraft_version": "26.20",
+      "java_pack_format": 88,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        20
+      ]
+    },
+    {
+      "minecraft_version": "26.30",
+      "java_pack_format": 88,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        30
+      ]
+    },
+    {
+      "minecraft_version": "26.40",
+      "java_pack_format": 97,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        40
+      ]
+    },
+    {
+      "minecraft_version": "26.3",
+      "java_pack_format": 97,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "26.50",
+      "java_pack_format": 97,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        50
+      ]
+    },
+    {
+      "minecraft_version": "26.60",
+      "java_pack_format": 97,
+      "bedrock_min_engine_version": [
+        1,
+        26,
+        60
+      ]
+    }
   ],
   "textures": [
-    { "java": "block/stone", "bedrock": "textures/blocks/stone", "atlas_key": "stone" },
-    { "java": "block/cobblestone", "bedrock": "textures/blocks/cobblestone", "atlas_key": "cobblestone" },
-    { "java": "block/mossy_cobblestone", "bedrock": "textures/blocks/cobblestone_mossy", "atlas_key": "cobblestone_mossy" },
-    { "java": "block/stone_bricks", "bedrock": "textures/blocks/stonebrick", "atlas_key": "stonebrick" },
-    { "java": "block/mossy_stone_bricks", "bedrock": "textures/blocks/stonebrick_mossy", "atlas_key": "stonebrick_mossy" },
-    { "java": "block/cracked_stone_bricks", "bedrock": "textures/blocks/stonebrick_cracked", "atlas_key": "stonebrick_cracked" },
-    { "java": "block/chiseled_stone_bricks", "bedrock": "textures/blocks/stonebrick_carved", "atlas_key": "stonebrick_carved" },
-    { "java": "block/dirt", "bedrock": "textures/blocks/dirt", "atlas_key": "dirt" },
-    { "java": "block/podzol_top", "bedrock": "textures/blocks/dirt_podzol_top", "atlas_key": "dirt_podzol_top" },
-    { "java": "block/podzol_side", "bedrock": "textures/blocks/dirt_podzol_side", "atlas_key": "dirt_podzol_side" },
-    { "java": "block/mycelium_top", "bedrock": "textures/blocks/mycelium_top", "atlas_key": "mycelium_top" },
-    { "java": "block/mycelium_side", "bedrock": "textures/blocks/mycelium_side", "atlas_key": "mycelium_side" },
-    { "java": "block/grass_block_top", "bedrock": "textures/blocks/grass_top", "atlas_key": "grass_top" },
-    { "java": "block/grass_block_side", "bedrock": "textures/blocks/grass_side_carried", "atlas_key": "grass_side" },
-    { "java": "block/grass_block_side_overlay", "bedrock": "textures/blocks/grass_side", "atlas_key": "grass_side_overlay" },
-    { "java": "block/grass_block_snow", "bedrock": "textures/blocks/grass_side_snowed", "atlas_key": "grass_side_snowed" },
-    { "java": "block/oak_planks", "bedrock": "textures/blocks/planks_oak", "atlas_key": "planks_oak" },
-    { "java": "block/spruce_planks", "bedrock": "textures/blocks/planks_spruce", "atlas_key": "planks_spruce" },
-    { "java": "block/birch_planks", "bedrock": "textures/blocks/planks_birch", "atlas_key": "planks_birch" },
-    { "java": "block/jungle_planks", "bedrock": "textures/blocks/planks_jungle", "atlas_key": "planks_jungle" },
-    { "java": "block/acacia_planks", "bedrock": "textures/blocks/planks_acacia", "atlas_key": "planks_acacia" },
-    { "java": "block/dark_oak_planks", "bedrock": "textures/blocks/planks_big_oak", "atlas_key": "planks_big_oak" },
-    { "java": "block/oak_log", "bedrock": "textures/blocks/log_oak", "atlas_key": "log_oak" },
-    { "java": "block/oak_log_top", "bedrock": "textures/blocks/log_oak_top", "atlas_key": "log_oak_top" },
-    { "java": "block/spruce_log", "bedrock": "textures/blocks/log_spruce", "atlas_key": "log_spruce" },
-    { "java": "block/spruce_log_top", "bedrock": "textures/blocks/log_spruce_top", "atlas_key": "log_spruce_top" },
-    { "java": "block/birch_log", "bedrock": "textures/blocks/log_birch", "atlas_key": "log_birch" },
-    { "java": "block/birch_log_top", "bedrock": "textures/blocks/log_birch_top", "atlas_key": "log_birch_top" },
-    { "java": "block/bricks", "bedrock": "textures/blocks/brick", "atlas_key": "brick" },
-    { "java": "block/nether_bricks", "bedrock": "textures/blocks/nether_brick", "atlas_key": "nether_brick" },
-    { "java": "block/sandstone", "bedrock": "textures/blocks/sandstone_normal", "atlas_key": "sandstone_normal" },
-    { "java": "block/red_sandstone", "bedrock": "textures/blocks/red_sandstone_normal", "atlas_key": "red_sandstone_normal" },
-    { "java": "block/torch", "bedrock": "textures/blocks/torch_on", "atlas_key": "torch_on" },
-    { "java": "block/redstone_torch", "bedrock": "textures/blocks/redstone_torch_on", "atlas_key": "redstone_torch_on" },
-    { "java": "block/redstone_torch_off", "bedrock": "textures/blocks/redstone_torch_off", "atlas_key": "redstone_torch_off" },
-    { "java": "block/furnace_front", "bedrock": "textures/blocks/furnace_front_off", "atlas_key": "furnace_front_off" },
-    { "java": "block/furnace_front_on", "bedrock": "textures/blocks/furnace_front_on", "atlas_key": "furnace_front_on" },
-    { "java": "block/furnace_side", "bedrock": "textures/blocks/furnace_side", "atlas_key": "furnace_side" },
-    { "java": "block/furnace_top", "bedrock": "textures/blocks/furnace_top", "atlas_key": "furnace_top" },
-    { "java": "block/crafting_table_front", "bedrock": "textures/blocks/crafting_table_front", "atlas_key": "crafting_table_front" },
-    { "java": "block/crafting_table_side", "bedrock": "textures/blocks/crafting_table_side", "atlas_key": "crafting_table_side" },
-    { "java": "block/crafting_table_top", "bedrock": "textures/blocks/crafting_table_top", "atlas_key": "crafting_table_top" },
-    { "java": "block/tnt_side", "bedrock": "textures/blocks/tnt_side", "atlas_key": "tnt_side" },
-    { "java": "block/tnt_top", "bedrock": "textures/blocks/tnt_top", "atlas_key": "tnt_top" },
-    { "java": "block/tnt_bottom", "bedrock": "textures/blocks/tnt_bottom", "atlas_key": "tnt_bottom" },
-    { "java": "block/white_wool", "bedrock": "textures/blocks/wool_colored_white", "atlas_key": "wool_colored_white" },
-    { "java": "block/red_wool", "bedrock": "textures/blocks/wool_colored_red", "atlas_key": "wool_colored_red" },
-    { "java": "block/blue_wool", "bedrock": "textures/blocks/wool_colored_blue", "atlas_key": "wool_colored_blue" },
-    { "java": "block/black_wool", "bedrock": "textures/blocks/wool_colored_black", "atlas_key": "wool_colored_black" },
-    { "java": "block/fire_0", "bedrock": "textures/blocks/fire_0", "atlas_key": "fire_0" },
-    { "java": "block/fire_1", "bedrock": "textures/blocks/fire_1", "atlas_key": "fire_1" },
-    { "java": "block/nether_portal", "bedrock": "textures/blocks/portal", "atlas_key": "portal" },
-    { "java": "block/water_still", "bedrock": "textures/blocks/water_still", "atlas_key": "water_still" },
-    { "java": "block/lava_still", "bedrock": "textures/blocks/lava_still", "atlas_key": "lava_still" },
-    { "java": "block/glass", "bedrock": "textures/blocks/glass", "atlas_key": "glass" },
-    { "java": "block/diamond_ore", "bedrock": "textures/blocks/diamond_ore", "atlas_key": "diamond_ore" },
-    { "java": "block/iron_ore", "bedrock": "textures/blocks/iron_ore", "atlas_key": "iron_ore" },
-    { "java": "block/gold_ore", "bedrock": "textures/blocks/gold_ore", "atlas_key": "gold_ore" },
-    { "java": "block/emerald_ore", "bedrock": "textures/blocks/emerald_ore", "atlas_key": "emerald_ore" },
-    { "java": "block/coal_ore", "bedrock": "textures/blocks/coal_ore", "atlas_key": "coal_ore" },
-    { "java": "block/iron_block", "bedrock": "textures/blocks/iron_block", "atlas_key": "iron_block" },
-    { "java": "block/gold_block", "bedrock": "textures/blocks/gold_block", "atlas_key": "gold_block" },
-    { "java": "block/diamond_block", "bedrock": "textures/blocks/diamond_block", "atlas_key": "diamond_block" },
-    { "java": "block/emerald_block", "bedrock": "textures/blocks/emerald_block", "atlas_key": "emerald_block" },
-    { "java": "item/diamond", "bedrock": "textures/items/diamond", "atlas_key": "diamond" },
-    { "java": "item/emerald", "bedrock": "textures/items/emerald", "atlas_key": "emerald" },
-    { "java": "item/iron_ingot", "bedrock": "textures/items/iron_ingot", "atlas_key": "iron_ingot" },
-    { "java": "item/gold_ingot", "bedrock": "textures/items/gold_ingot", "atlas_key": "gold_ingot" },
-    { "java": "item/netherite_ingot", "bedrock": "textures/items/netherite_ingot", "atlas_key": "netherite_ingot" },
-    { "java": "item/wooden_sword", "bedrock": "textures/items/wood_sword", "atlas_key": "wood_sword" },
-    { "java": "item/wooden_pickaxe", "bedrock": "textures/items/wood_pickaxe", "atlas_key": "wood_pickaxe" },
-    { "java": "item/wooden_axe", "bedrock": "textures/items/wood_axe", "atlas_key": "wood_axe" },
-    { "java": "item/wooden_shovel", "bedrock": "textures/items/wood_shovel", "atlas_key": "wood_shovel" },
-    { "java": "item/stone_sword", "bedrock": "textures/items/stone_sword", "atlas_key": "stone_sword" },
-    { "java": "item/stone_pickaxe", "bedrock": "textures/items/stone_pickaxe", "atlas_key": "stone_pickaxe" },
-    { "java": "item/stone_axe", "bedrock": "textures/items/stone_axe", "atlas_key": "stone_axe" },
-    { "java": "item/stone_shovel", "bedrock": "textures/items/stone_shovel", "atlas_key": "stone_shovel" },
-    { "java": "item/iron_sword", "bedrock": "textures/items/iron_sword", "atlas_key": "iron_sword" },
-    { "java": "item/iron_pickaxe", "bedrock": "textures/items/iron_pickaxe", "atlas_key": "iron_pickaxe" },
-    { "java": "item/iron_axe", "bedrock": "textures/items/iron_axe", "atlas_key": "iron_axe" },
-    { "java": "item/iron_shovel", "bedrock": "textures/items/iron_shovel", "atlas_key": "iron_shovel" },
-    { "java": "item/golden_sword", "bedrock": "textures/items/gold_sword", "atlas_key": "gold_sword" },
-    { "java": "item/golden_pickaxe", "bedrock": "textures/items/gold_pickaxe", "atlas_key": "gold_pickaxe" },
-    { "java": "item/golden_axe", "bedrock": "textures/items/gold_axe", "atlas_key": "gold_axe" },
-    { "java": "item/golden_shovel", "bedrock": "textures/items/gold_shovel", "atlas_key": "gold_shovel" },
-    { "java": "item/diamond_sword", "bedrock": "textures/items/diamond_sword", "atlas_key": "diamond_sword" },
-    { "java": "item/diamond_pickaxe", "bedrock": "textures/items/diamond_pickaxe", "atlas_key": "diamond_pickaxe" },
-    { "java": "item/diamond_axe", "bedrock": "textures/items/diamond_axe", "atlas_key": "diamond_axe" },
-    { "java": "item/diamond_shovel", "bedrock": "textures/items/diamond_shovel", "atlas_key": "diamond_shovel" },
-    { "java": "item/netherite_sword", "bedrock": "textures/items/netherite_sword", "atlas_key": "netherite_sword" },
-    { "java": "item/netherite_pickaxe", "bedrock": "textures/items/netherite_pickaxe", "atlas_key": "netherite_pickaxe" },
-    { "java": "item/bow", "bedrock": "textures/items/bow_standby", "atlas_key": "bow_standby" },
-    { "java": "item/bow_pulling_0", "bedrock": "textures/items/bow_pulling_0", "atlas_key": "bow_pulling_0" },
-    { "java": "item/bow_pulling_1", "bedrock": "textures/items/bow_pulling_1", "atlas_key": "bow_pulling_1" },
-    { "java": "item/bow_pulling_2", "bedrock": "textures/items/bow_pulling_2", "atlas_key": "bow_pulling_2" },
-    { "java": "item/crossbow_standby", "bedrock": "textures/items/crossbow_standby", "atlas_key": "crossbow_standby" },
-    { "java": "item/crossbow_pulling_0", "bedrock": "textures/items/crossbow_pulling_0", "atlas_key": "crossbow_pulling_0" },
-    { "java": "item/crossbow_pulling_1", "bedrock": "textures/items/crossbow_pulling_1", "atlas_key": "crossbow_pulling_1" },
-    { "java": "item/crossbow_pulling_2", "bedrock": "textures/items/crossbow_pulling_2", "atlas_key": "crossbow_pulling_2" },
-    { "java": "item/fishing_rod", "bedrock": "textures/items/fishing_rod_uncast", "atlas_key": "fishing_rod_uncast" },
-    { "java": "item/fishing_rod_cast", "bedrock": "textures/items/fishing_rod_cast", "atlas_key": "fishing_rod_cast" },
-    { "java": "item/apple", "bedrock": "textures/items/apple", "atlas_key": "apple" },
-    { "java": "item/golden_apple", "bedrock": "textures/items/apple_golden", "atlas_key": "apple_golden" },
-    { "java": "item/golden_carrot", "bedrock": "textures/items/carrot_golden", "atlas_key": "carrot_golden" },
-    { "java": "item/melon_slice", "bedrock": "textures/items/melon", "atlas_key": "melon" },
-    { "java": "item/glistering_melon_slice", "bedrock": "textures/items/melon_speckled", "atlas_key": "melon_speckled" },
-    { "java": "item/beef", "bedrock": "textures/items/beef_raw", "atlas_key": "beef_raw" },
-    { "java": "item/cooked_beef", "bedrock": "textures/items/beef_cooked", "atlas_key": "beef_cooked" },
-    { "java": "item/porkchop", "bedrock": "textures/items/porkchop_raw", "atlas_key": "porkchop_raw" },
-    { "java": "item/cooked_porkchop", "bedrock": "textures/items/porkchop_cooked", "atlas_key": "porkchop_cooked" },
-    { "java": "item/bucket", "bedrock": "textures/items/bucket_empty", "atlas_key": "bucket_empty" },
-    { "java": "item/water_bucket", "bedrock": "textures/items/bucket_water", "atlas_key": "bucket_water" },
-    { "java": "item/lava_bucket", "bedrock": "textures/items/bucket_lava", "atlas_key": "bucket_lava" },
-    { "java": "item/milk_bucket", "bedrock": "textures/items/bucket_milk", "atlas_key": "bucket_milk" },
-    { "java": "item/ender_pearl", "bedrock": "textures/items/ender_pearl", "atlas_key": "ender_pearl" },
-    { "java": "item/totem_of_undying", "bedrock": "textures/items/totem", "atlas_key": "totem" },
-    { "java": "item/slime_ball", "bedrock": "textures/items/slimeball", "atlas_key": "slimeball" },
-    { "java": "item/fire_charge", "bedrock": "textures/items/fireball", "atlas_key": "fireball" }
+    {
+      "java": "block/stone",
+      "bedrock": "textures/blocks/stone",
+      "atlas_key": "stone"
+    },
+    {
+      "java": "block/cobblestone",
+      "bedrock": "textures/blocks/cobblestone",
+      "atlas_key": "cobblestone"
+    },
+    {
+      "java": "block/mossy_cobblestone",
+      "bedrock": "textures/blocks/cobblestone_mossy",
+      "atlas_key": "cobblestone_mossy"
+    },
+    {
+      "java": "block/stone_bricks",
+      "bedrock": "textures/blocks/stonebrick",
+      "atlas_key": "stonebrick"
+    },
+    {
+      "java": "block/mossy_stone_bricks",
+      "bedrock": "textures/blocks/stonebrick_mossy",
+      "atlas_key": "stonebrick_mossy"
+    },
+    {
+      "java": "block/cracked_stone_bricks",
+      "bedrock": "textures/blocks/stonebrick_cracked",
+      "atlas_key": "stonebrick_cracked"
+    },
+    {
+      "java": "block/chiseled_stone_bricks",
+      "bedrock": "textures/blocks/stonebrick_carved",
+      "atlas_key": "stonebrick_carved"
+    },
+    {
+      "java": "block/dirt",
+      "bedrock": "textures/blocks/dirt",
+      "atlas_key": "dirt"
+    },
+    {
+      "java": "block/podzol_top",
+      "bedrock": "textures/blocks/dirt_podzol_top",
+      "atlas_key": "dirt_podzol_top"
+    },
+    {
+      "java": "block/podzol_side",
+      "bedrock": "textures/blocks/dirt_podzol_side",
+      "atlas_key": "dirt_podzol_side"
+    },
+    {
+      "java": "block/mycelium_top",
+      "bedrock": "textures/blocks/mycelium_top",
+      "atlas_key": "mycelium_top"
+    },
+    {
+      "java": "block/mycelium_side",
+      "bedrock": "textures/blocks/mycelium_side",
+      "atlas_key": "mycelium_side"
+    },
+    {
+      "java": "block/grass_block_top",
+      "bedrock": "textures/blocks/grass_top",
+      "atlas_key": "grass_top"
+    },
+    {
+      "java": "block/grass_block_side",
+      "bedrock": "textures/blocks/grass_side_carried",
+      "atlas_key": "grass_side"
+    },
+    {
+      "java": "block/grass_block_side_overlay",
+      "bedrock": "textures/blocks/grass_side",
+      "atlas_key": "grass_side_overlay"
+    },
+    {
+      "java": "block/grass_block_snow",
+      "bedrock": "textures/blocks/grass_side_snowed",
+      "atlas_key": "grass_side_snowed"
+    },
+    {
+      "java": "block/oak_planks",
+      "bedrock": "textures/blocks/planks_oak",
+      "atlas_key": "planks_oak"
+    },
+    {
+      "java": "block/spruce_planks",
+      "bedrock": "textures/blocks/planks_spruce",
+      "atlas_key": "planks_spruce"
+    },
+    {
+      "java": "block/birch_planks",
+      "bedrock": "textures/blocks/planks_birch",
+      "atlas_key": "planks_birch"
+    },
+    {
+      "java": "block/jungle_planks",
+      "bedrock": "textures/blocks/planks_jungle",
+      "atlas_key": "planks_jungle"
+    },
+    {
+      "java": "block/acacia_planks",
+      "bedrock": "textures/blocks/planks_acacia",
+      "atlas_key": "planks_acacia"
+    },
+    {
+      "java": "block/dark_oak_planks",
+      "bedrock": "textures/blocks/planks_big_oak",
+      "atlas_key": "planks_big_oak"
+    },
+    {
+      "java": "block/oak_log",
+      "bedrock": "textures/blocks/log_oak",
+      "atlas_key": "log_oak"
+    },
+    {
+      "java": "block/oak_log_top",
+      "bedrock": "textures/blocks/log_oak_top",
+      "atlas_key": "log_oak_top"
+    },
+    {
+      "java": "block/spruce_log",
+      "bedrock": "textures/blocks/log_spruce",
+      "atlas_key": "log_spruce"
+    },
+    {
+      "java": "block/spruce_log_top",
+      "bedrock": "textures/blocks/log_spruce_top",
+      "atlas_key": "log_spruce_top"
+    },
+    {
+      "java": "block/birch_log",
+      "bedrock": "textures/blocks/log_birch",
+      "atlas_key": "log_birch"
+    },
+    {
+      "java": "block/birch_log_top",
+      "bedrock": "textures/blocks/log_birch_top",
+      "atlas_key": "log_birch_top"
+    },
+    {
+      "java": "block/bricks",
+      "bedrock": "textures/blocks/brick",
+      "atlas_key": "brick"
+    },
+    {
+      "java": "block/nether_bricks",
+      "bedrock": "textures/blocks/nether_brick",
+      "atlas_key": "nether_brick"
+    },
+    {
+      "java": "block/sandstone",
+      "bedrock": "textures/blocks/sandstone_normal",
+      "atlas_key": "sandstone_normal"
+    },
+    {
+      "java": "block/red_sandstone",
+      "bedrock": "textures/blocks/red_sandstone_normal",
+      "atlas_key": "red_sandstone_normal"
+    },
+    {
+      "java": "block/torch",
+      "bedrock": "textures/blocks/torch_on",
+      "atlas_key": "torch_on"
+    },
+    {
+      "java": "block/redstone_torch",
+      "bedrock": "textures/blocks/redstone_torch_on",
+      "atlas_key": "redstone_torch_on"
+    },
+    {
+      "java": "block/redstone_torch_off",
+      "bedrock": "textures/blocks/redstone_torch_off",
+      "atlas_key": "redstone_torch_off"
+    },
+    {
+      "java": "block/furnace_front",
+      "bedrock": "textures/blocks/furnace_front_off",
+      "atlas_key": "furnace_front_off"
+    },
+    {
+      "java": "block/furnace_front_on",
+      "bedrock": "textures/blocks/furnace_front_on",
+      "atlas_key": "furnace_front_on"
+    },
+    {
+      "java": "block/furnace_side",
+      "bedrock": "textures/blocks/furnace_side",
+      "atlas_key": "furnace_side"
+    },
+    {
+      "java": "block/furnace_top",
+      "bedrock": "textures/blocks/furnace_top",
+      "atlas_key": "furnace_top"
+    },
+    {
+      "java": "block/crafting_table_front",
+      "bedrock": "textures/blocks/crafting_table_front",
+      "atlas_key": "crafting_table_front"
+    },
+    {
+      "java": "block/crafting_table_side",
+      "bedrock": "textures/blocks/crafting_table_side",
+      "atlas_key": "crafting_table_side"
+    },
+    {
+      "java": "block/crafting_table_top",
+      "bedrock": "textures/blocks/crafting_table_top",
+      "atlas_key": "crafting_table_top"
+    },
+    {
+      "java": "block/tnt_side",
+      "bedrock": "textures/blocks/tnt_side",
+      "atlas_key": "tnt_side"
+    },
+    {
+      "java": "block/tnt_top",
+      "bedrock": "textures/blocks/tnt_top",
+      "atlas_key": "tnt_top"
+    },
+    {
+      "java": "block/tnt_bottom",
+      "bedrock": "textures/blocks/tnt_bottom",
+      "atlas_key": "tnt_bottom"
+    },
+    {
+      "java": "block/white_wool",
+      "bedrock": "textures/blocks/wool_colored_white",
+      "atlas_key": "wool_colored_white"
+    },
+    {
+      "java": "block/red_wool",
+      "bedrock": "textures/blocks/wool_colored_red",
+      "atlas_key": "wool_colored_red"
+    },
+    {
+      "java": "block/blue_wool",
+      "bedrock": "textures/blocks/wool_colored_blue",
+      "atlas_key": "wool_colored_blue"
+    },
+    {
+      "java": "block/black_wool",
+      "bedrock": "textures/blocks/wool_colored_black",
+      "atlas_key": "wool_colored_black"
+    },
+    {
+      "java": "block/fire_0",
+      "bedrock": "textures/blocks/fire_0",
+      "atlas_key": "fire_0"
+    },
+    {
+      "java": "block/fire_1",
+      "bedrock": "textures/blocks/fire_1",
+      "atlas_key": "fire_1"
+    },
+    {
+      "java": "block/nether_portal",
+      "bedrock": "textures/blocks/portal",
+      "atlas_key": "portal"
+    },
+    {
+      "java": "block/water_still",
+      "bedrock": "textures/blocks/water_still",
+      "atlas_key": "water_still"
+    },
+    {
+      "java": "block/lava_still",
+      "bedrock": "textures/blocks/lava_still",
+      "atlas_key": "lava_still"
+    },
+    {
+      "java": "block/glass",
+      "bedrock": "textures/blocks/glass",
+      "atlas_key": "glass"
+    },
+    {
+      "java": "block/diamond_ore",
+      "bedrock": "textures/blocks/diamond_ore",
+      "atlas_key": "diamond_ore"
+    },
+    {
+      "java": "block/iron_ore",
+      "bedrock": "textures/blocks/iron_ore",
+      "atlas_key": "iron_ore"
+    },
+    {
+      "java": "block/gold_ore",
+      "bedrock": "textures/blocks/gold_ore",
+      "atlas_key": "gold_ore"
+    },
+    {
+      "java": "block/emerald_ore",
+      "bedrock": "textures/blocks/emerald_ore",
+      "atlas_key": "emerald_ore"
+    },
+    {
+      "java": "block/coal_ore",
+      "bedrock": "textures/blocks/coal_ore",
+      "atlas_key": "coal_ore"
+    },
+    {
+      "java": "block/iron_block",
+      "bedrock": "textures/blocks/iron_block",
+      "atlas_key": "iron_block"
+    },
+    {
+      "java": "block/gold_block",
+      "bedrock": "textures/blocks/gold_block",
+      "atlas_key": "gold_block"
+    },
+    {
+      "java": "block/diamond_block",
+      "bedrock": "textures/blocks/diamond_block",
+      "atlas_key": "diamond_block"
+    },
+    {
+      "java": "block/emerald_block",
+      "bedrock": "textures/blocks/emerald_block",
+      "atlas_key": "emerald_block"
+    },
+    {
+      "java": "item/diamond",
+      "bedrock": "textures/items/diamond",
+      "atlas_key": "diamond"
+    },
+    {
+      "java": "item/emerald",
+      "bedrock": "textures/items/emerald",
+      "atlas_key": "emerald"
+    },
+    {
+      "java": "item/iron_ingot",
+      "bedrock": "textures/items/iron_ingot",
+      "atlas_key": "iron_ingot"
+    },
+    {
+      "java": "item/gold_ingot",
+      "bedrock": "textures/items/gold_ingot",
+      "atlas_key": "gold_ingot"
+    },
+    {
+      "java": "item/netherite_ingot",
+      "bedrock": "textures/items/netherite_ingot",
+      "atlas_key": "netherite_ingot"
+    },
+    {
+      "java": "item/wooden_sword",
+      "bedrock": "textures/items/wood_sword",
+      "atlas_key": "wood_sword"
+    },
+    {
+      "java": "item/wooden_pickaxe",
+      "bedrock": "textures/items/wood_pickaxe",
+      "atlas_key": "wood_pickaxe"
+    },
+    {
+      "java": "item/wooden_axe",
+      "bedrock": "textures/items/wood_axe",
+      "atlas_key": "wood_axe"
+    },
+    {
+      "java": "item/wooden_shovel",
+      "bedrock": "textures/items/wood_shovel",
+      "atlas_key": "wood_shovel"
+    },
+    {
+      "java": "item/stone_sword",
+      "bedrock": "textures/items/stone_sword",
+      "atlas_key": "stone_sword"
+    },
+    {
+      "java": "item/stone_pickaxe",
+      "bedrock": "textures/items/stone_pickaxe",
+      "atlas_key": "stone_pickaxe"
+    },
+    {
+      "java": "item/stone_axe",
+      "bedrock": "textures/items/stone_axe",
+      "atlas_key": "stone_axe"
+    },
+    {
+      "java": "item/stone_shovel",
+      "bedrock": "textures/items/stone_shovel",
+      "atlas_key": "stone_shovel"
+    },
+    {
+      "java": "item/iron_sword",
+      "bedrock": "textures/items/iron_sword",
+      "atlas_key": "iron_sword"
+    },
+    {
+      "java": "item/iron_pickaxe",
+      "bedrock": "textures/items/iron_pickaxe",
+      "atlas_key": "iron_pickaxe"
+    },
+    {
+      "java": "item/iron_axe",
+      "bedrock": "textures/items/iron_axe",
+      "atlas_key": "iron_axe"
+    },
+    {
+      "java": "item/iron_shovel",
+      "bedrock": "textures/items/iron_shovel",
+      "atlas_key": "iron_shovel"
+    },
+    {
+      "java": "item/golden_sword",
+      "bedrock": "textures/items/gold_sword",
+      "atlas_key": "gold_sword"
+    },
+    {
+      "java": "item/golden_pickaxe",
+      "bedrock": "textures/items/gold_pickaxe",
+      "atlas_key": "gold_pickaxe"
+    },
+    {
+      "java": "item/golden_axe",
+      "bedrock": "textures/items/gold_axe",
+      "atlas_key": "gold_axe"
+    },
+    {
+      "java": "item/golden_shovel",
+      "bedrock": "textures/items/gold_shovel",
+      "atlas_key": "gold_shovel"
+    },
+    {
+      "java": "item/diamond_sword",
+      "bedrock": "textures/items/diamond_sword",
+      "atlas_key": "diamond_sword"
+    },
+    {
+      "java": "item/diamond_pickaxe",
+      "bedrock": "textures/items/diamond_pickaxe",
+      "atlas_key": "diamond_pickaxe"
+    },
+    {
+      "java": "item/diamond_axe",
+      "bedrock": "textures/items/diamond_axe",
+      "atlas_key": "diamond_axe"
+    },
+    {
+      "java": "item/diamond_shovel",
+      "bedrock": "textures/items/diamond_shovel",
+      "atlas_key": "diamond_shovel"
+    },
+    {
+      "java": "item/netherite_sword",
+      "bedrock": "textures/items/netherite_sword",
+      "atlas_key": "netherite_sword"
+    },
+    {
+      "java": "item/netherite_pickaxe",
+      "bedrock": "textures/items/netherite_pickaxe",
+      "atlas_key": "netherite_pickaxe"
+    },
+    {
+      "java": "item/bow",
+      "bedrock": "textures/items/bow_standby",
+      "atlas_key": "bow_standby"
+    },
+    {
+      "java": "item/bow_pulling_0",
+      "bedrock": "textures/items/bow_pulling_0",
+      "atlas_key": "bow_pulling_0"
+    },
+    {
+      "java": "item/bow_pulling_1",
+      "bedrock": "textures/items/bow_pulling_1",
+      "atlas_key": "bow_pulling_1"
+    },
+    {
+      "java": "item/bow_pulling_2",
+      "bedrock": "textures/items/bow_pulling_2",
+      "atlas_key": "bow_pulling_2"
+    },
+    {
+      "java": "item/crossbow_standby",
+      "bedrock": "textures/items/crossbow_standby",
+      "atlas_key": "crossbow_standby"
+    },
+    {
+      "java": "item/crossbow_pulling_0",
+      "bedrock": "textures/items/crossbow_pulling_0",
+      "atlas_key": "crossbow_pulling_0"
+    },
+    {
+      "java": "item/crossbow_pulling_1",
+      "bedrock": "textures/items/crossbow_pulling_1",
+      "atlas_key": "crossbow_pulling_1"
+    },
+    {
+      "java": "item/crossbow_pulling_2",
+      "bedrock": "textures/items/crossbow_pulling_2",
+      "atlas_key": "crossbow_pulling_2"
+    },
+    {
+      "java": "item/fishing_rod",
+      "bedrock": "textures/items/fishing_rod_uncast",
+      "atlas_key": "fishing_rod_uncast"
+    },
+    {
+      "java": "item/fishing_rod_cast",
+      "bedrock": "textures/items/fishing_rod_cast",
+      "atlas_key": "fishing_rod_cast"
+    },
+    {
+      "java": "item/apple",
+      "bedrock": "textures/items/apple",
+      "atlas_key": "apple"
+    },
+    {
+      "java": "item/golden_apple",
+      "bedrock": "textures/items/apple_golden",
+      "atlas_key": "apple_golden"
+    },
+    {
+      "java": "item/golden_carrot",
+      "bedrock": "textures/items/carrot_golden",
+      "atlas_key": "carrot_golden"
+    },
+    {
+      "java": "item/melon_slice",
+      "bedrock": "textures/items/melon",
+      "atlas_key": "melon"
+    },
+    {
+      "java": "item/glistering_melon_slice",
+      "bedrock": "textures/items/melon_speckled",
+      "atlas_key": "melon_speckled"
+    },
+    {
+      "java": "item/beef",
+      "bedrock": "textures/items/beef_raw",
+      "atlas_key": "beef_raw"
+    },
+    {
+      "java": "item/cooked_beef",
+      "bedrock": "textures/items/beef_cooked",
+      "atlas_key": "beef_cooked"
+    },
+    {
+      "java": "item/porkchop",
+      "bedrock": "textures/items/porkchop_raw",
+      "atlas_key": "porkchop_raw"
+    },
+    {
+      "java": "item/cooked_porkchop",
+      "bedrock": "textures/items/porkchop_cooked",
+      "atlas_key": "porkchop_cooked"
+    },
+    {
+      "java": "item/bucket",
+      "bedrock": "textures/items/bucket_empty",
+      "atlas_key": "bucket_empty"
+    },
+    {
+      "java": "item/water_bucket",
+      "bedrock": "textures/items/bucket_water",
+      "atlas_key": "bucket_water"
+    },
+    {
+      "java": "item/lava_bucket",
+      "bedrock": "textures/items/bucket_lava",
+      "atlas_key": "bucket_lava"
+    },
+    {
+      "java": "item/milk_bucket",
+      "bedrock": "textures/items/bucket_milk",
+      "atlas_key": "bucket_milk"
+    },
+    {
+      "java": "item/ender_pearl",
+      "bedrock": "textures/items/ender_pearl",
+      "atlas_key": "ender_pearl"
+    },
+    {
+      "java": "item/totem_of_undying",
+      "bedrock": "textures/items/totem",
+      "atlas_key": "totem"
+    },
+    {
+      "java": "item/slime_ball",
+      "bedrock": "textures/items/slimeball",
+      "atlas_key": "slimeball"
+    },
+    {
+      "java": "item/fire_charge",
+      "bedrock": "textures/items/fireball",
+      "atlas_key": "fireball"
+    },
+    {
+      "java": "block/bamboo_stalk",
+      "bedrock": "textures/blocks/bamboo_stem",
+      "atlas_key": "bamboo_stem"
+    },
+    {
+      "java": "block/bamboo_large_leaves",
+      "bedrock": "textures/blocks/bamboo_leaf",
+      "atlas_key": "bamboo_leaf"
+    },
+    {
+      "java": "block/bamboo_small_leaves",
+      "bedrock": "textures/blocks/bamboo_small_leaf",
+      "atlas_key": "bamboo_small_leaf"
+    },
+    {
+      "java": "block/bamboo_singleleaf",
+      "bedrock": "textures/blocks/bamboo_singleleaf",
+      "atlas_key": "bamboo_singleleaf"
+    },
+    {
+      "java": "block/bamboo_stage0",
+      "bedrock": "textures/blocks/bamboo_sapling",
+      "atlas_key": "bamboo_sapling"
+    },
+    {
+      "java": "block/cactus_side",
+      "bedrock": "textures/blocks/cactus_side",
+      "atlas_key": "cactus_side"
+    },
+    {
+      "java": "block/cactus_top",
+      "bedrock": "textures/blocks/cactus_top",
+      "atlas_key": "cactus_top"
+    },
+    {
+      "java": "block/cactus_bottom",
+      "bedrock": "textures/blocks/cactus_bottom",
+      "atlas_key": "cactus_bottom"
+    },
+    {
+      "java": "block/short_grass",
+      "bedrock": "textures/blocks/tallgrass",
+      "atlas_key": "short_grass"
+    },
+    {
+      "java": "block/grass",
+      "bedrock": "textures/blocks/tallgrass",
+      "atlas_key": "tallgrass"
+    },
+    {
+      "java": "block/tall_grass_top",
+      "bedrock": "textures/blocks/double_plant_grass_top",
+      "atlas_key": "tall_grass_top"
+    },
+    {
+      "java": "block/tall_grass_bottom",
+      "bedrock": "textures/blocks/double_plant_grass_bottom",
+      "atlas_key": "tall_grass_bottom"
+    },
+    {
+      "java": "block/fern",
+      "bedrock": "textures/blocks/fern",
+      "atlas_key": "fern"
+    },
+    {
+      "java": "block/dandelion",
+      "bedrock": "textures/blocks/flower_dandelion",
+      "atlas_key": "yellow_flower"
+    },
+    {
+      "java": "block/poppy",
+      "bedrock": "textures/blocks/flower_rose",
+      "atlas_key": "red_flower"
+    },
+    {
+      "java": "block/sugar_cane",
+      "bedrock": "textures/blocks/reeds",
+      "atlas_key": "reeds"
+    },
+    {
+      "java": "block/oak_leaves",
+      "bedrock": "textures/blocks/leaves_oak",
+      "atlas_key": "oak_leaves"
+    },
+    {
+      "java": "block/spruce_leaves",
+      "bedrock": "textures/blocks/leaves_spruce",
+      "atlas_key": "spruce_leaves"
+    },
+    {
+      "java": "block/birch_leaves",
+      "bedrock": "textures/blocks/leaves_birch",
+      "atlas_key": "birch_leaves"
+    },
+    {
+      "java": "block/jungle_leaves",
+      "bedrock": "textures/blocks/leaves_jungle",
+      "atlas_key": "jungle_leaves"
+    },
+    {
+      "java": "block/acacia_leaves",
+      "bedrock": "textures/blocks/leaves_acacia",
+      "atlas_key": "acacia_leaves"
+    },
+    {
+      "java": "block/dark_oak_leaves",
+      "bedrock": "textures/blocks/leaves_big_oak",
+      "atlas_key": "dark_oak_leaves"
+    },
+    {
+      "java": "item/bamboo",
+      "bedrock": "textures/items/bamboo",
+      "atlas_key": "bamboo"
+    },
+    {
+      "java": "item/baked_potato",
+      "bedrock": "textures/items/potato_baked",
+      "atlas_key": "potato_baked"
+    },
+    {
+      "java": "item/poisonous_potato",
+      "bedrock": "textures/items/potato_poisonous",
+      "atlas_key": "potato_poisonous"
+    },
+    {
+      "java": "item/popped_chorus_fruit",
+      "bedrock": "textures/items/chorus_fruit_popped",
+      "atlas_key": "chorus_fruit_popped"
+    },
+    {
+      "java": "item/wheat_seeds",
+      "bedrock": "textures/items/seeds_wheat",
+      "atlas_key": "seeds_wheat"
+    },
+    {
+      "java": "item/melon_seeds",
+      "bedrock": "textures/items/seeds_melon",
+      "atlas_key": "seeds_melon"
+    },
+    {
+      "java": "item/pumpkin_seeds",
+      "bedrock": "textures/items/seeds_pumpkin",
+      "atlas_key": "seeds_pumpkin"
+    },
+    {
+      "java": "item/beetroot_seeds",
+      "bedrock": "textures/items/seeds_beetroot",
+      "atlas_key": "seeds_beetroot"
+    },
+    {
+      "java": "item/sugar_cane",
+      "bedrock": "textures/items/reeds",
+      "atlas_key": "reeds"
+    },
+    {
+      "java": "item/enchanted_golden_apple",
+      "bedrock": "textures/items/apple_golden",
+      "atlas_key": "apple_golden"
+    },
+    {
+      "java": "block/dead_bush",
+      "bedrock": "textures/blocks/deadbush",
+      "atlas_key": "deadbush"
+    },
+    {
+      "java": "block/lily_pad",
+      "bedrock": "textures/blocks/waterlily",
+      "atlas_key": "waterlily"
+    },
+    {
+      "java": "block/cave_vines",
+      "bedrock": "textures/blocks/cave_vines_head",
+      "atlas_key": "cave_vines_head"
+    },
+    {
+      "java": "block/cave_vines_lit",
+      "bedrock": "textures/blocks/cave_vines_head_berries",
+      "atlas_key": "cave_vines_head"
+    },
+    {
+      "java": "block/cave_vines_plant",
+      "bedrock": "textures/blocks/cave_vines_body",
+      "atlas_key": "cave_vines_body"
+    },
+    {
+      "java": "block/cave_vines_plant_lit",
+      "bedrock": "textures/blocks/cave_vines_body_berries",
+      "atlas_key": "cave_vines_body"
+    },
+    {
+      "java": "block/tall_seagrass_bottom",
+      "bedrock": "textures/blocks/seagrass_doubletall_bottom_a",
+      "atlas_key": "seagrass_tall_bot_a"
+    },
+    {
+      "java": "block/tall_seagrass_top",
+      "bedrock": "textures/blocks/seagrass_doubletall_top_a",
+      "atlas_key": "seagrass_tall_top_a"
+    },
+    {
+      "java": "mob_effect/absorption",
+      "bedrock": "textures/ui/absorption_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/bad_omen",
+      "bedrock": "textures/ui/bad_omen_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/blindness",
+      "bedrock": "textures/ui/blindness_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/breath_of_the_nautilus",
+      "bedrock": "textures/ui/breath_of_the_nautilus_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/conduit_power",
+      "bedrock": "textures/ui/conduit_power_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/darkness",
+      "bedrock": "textures/ui/darkness_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/fire_resistance",
+      "bedrock": "textures/ui/fire_resistance_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/frozen",
+      "bedrock": "textures/ui/frozen_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/haste",
+      "bedrock": "textures/ui/haste_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/health_boost",
+      "bedrock": "textures/ui/health_boost_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/hero_of_the_village",
+      "bedrock": "textures/ui/village_hero_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/hunger",
+      "bedrock": "textures/ui/hunger_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/infested",
+      "bedrock": "textures/ui/infested_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/invisibility",
+      "bedrock": "textures/ui/invisibility_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/jump_boost",
+      "bedrock": "textures/ui/jump_boost_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/levitation",
+      "bedrock": "textures/ui/levitation_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/mining_fatigue",
+      "bedrock": "textures/ui/mining_fatigue_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/nausea",
+      "bedrock": "textures/ui/nausea_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/night_vision",
+      "bedrock": "textures/ui/night_vision_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/oozing",
+      "bedrock": "textures/ui/oozing_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/poison",
+      "bedrock": "textures/ui/poison_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/raid_omen",
+      "bedrock": "textures/ui/raid_omen_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/regeneration",
+      "bedrock": "textures/ui/regeneration_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/resistance",
+      "bedrock": "textures/ui/resistance_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/slow_falling",
+      "bedrock": "textures/ui/slow_falling_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/slowness",
+      "bedrock": "textures/ui/slowness_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/speed",
+      "bedrock": "textures/ui/speed_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/strength",
+      "bedrock": "textures/ui/strength_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/trial_omen",
+      "bedrock": "textures/ui/trial_omen_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/water_breathing",
+      "bedrock": "textures/ui/water_breathing_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/weakness",
+      "bedrock": "textures/ui/weakness_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/weaving",
+      "bedrock": "textures/ui/weaving_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/wind_charged",
+      "bedrock": "textures/ui/wind_charged_effect",
+      "atlas_key": null
+    },
+    {
+      "java": "mob_effect/wither",
+      "bedrock": "textures/ui/wither_effect",
+      "atlas_key": null
+    }
   ],
   "model_parents": {
     "minecraft:block/cube_all": "geometry.block.cube_all",

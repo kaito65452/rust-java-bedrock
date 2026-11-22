@@ -7,11 +7,13 @@
 //! `terrain_texture.json`, `item_texture.json`, `flipbook_textures.json`,
 //! `*.geo.json`, `sound_definitions.json`, and `texts/*.lang`).
 
+pub mod audit;
 pub mod emitter;
 pub mod error;
 pub mod parser;
 pub mod schema;
 
+pub use audit::audit_bedrock_container;
 pub use emitter::emit_bedrock_pack;
 pub use error::BedrockPackError;
 pub use parser::{parse_bedrock_pack, parse_bedrock_pack_with_options};

@@ -16,15 +16,19 @@ pub use error::CoreError;
 pub use ir::{
     AnimationFrame, AnimationSpec, AttachableAsset, BedrockGeoVersion, DisplayTransform, Edition,
     ElementFace, ElementRotation, FaceDirection, LocaleTable, ModelAsset, ModelCategory,
-    ModelElement, PackMetadata, ResolutionTier, ResourcePackIR, RotationAxis, RotationSnapMode,
-    SoundAsset, SoundEntry, SoundEventDef, SoundRegistry, TextureAsset, TextureCategory,
-    TexturePayload,
+    ModelElement, PackMetadata, PbrSourceMaps, ResolutionTier, ResourcePackIR, RotationAxis,
+    RotationSnapMode, SoundAsset, SoundEntry, SoundEventDef, SoundRegistry, TextureAsset,
+    TextureCategory, TexturePayload,
 };
 pub use jsonc::{
     decode_minecraft_text, parse_minecraft_json, sanitize_java_resource_path, sanitize_jsonc_bytes,
     sanitize_minecraft_json, sanitize_minecraft_json_bytes,
 };
-pub use mapping::{BedrockTextureTarget, MappingTable, PackVersionEntry, TextureMappingEntry};
+pub use mapping::{
+    BedrockTextureTarget, BedrockVanillaIndex, MappingTable, PackVersionEntry, TextureMappingEntry,
+    normalize_bedrock_engine_triplet,
+};
 pub use report::{
-    ConversionReport, ConversionWarning, LossyConversion, SkippedAsset, WarningSeverity,
+    AuditStatus, BrokenReference, ConversionReport, ConversionWarning, ForbiddenEntry,
+    LossyConversion, PipelineStage, SemanticAuditReport, SkippedAsset, WarningSeverity,
 };

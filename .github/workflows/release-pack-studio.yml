@@ -1,0 +1,65 @@
+name: Build & Release PackStudio (with Blockbench Web Bundle)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-blockbench-bundle:
+    name: Build Optimized Blockbench Web Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Build & Compress Blockbench Web Bundle
+        run: bash scripts/build_blockbench.sh
+
+      - name: Upload Blockbench Vendor Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: blockbench-web-vendor
+          path: |
+            assets/vendor/blockbench-web.tar.zst
+            assets/vendor/blockbench-web.sha256
+
+  build-pack-studio:
+    name: Build & Test PackStudio
+    needs: build-blockbench-bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor
+          path: assets/vendor
+
+      - name: Install Linux GUI & WebView deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Run Workspace Tests & Clippy
+        run: |
+          cargo check -p pack-studio
+          cargo clippy -p pack-studio -- -D warnings
+          cargo test --workspace
+
+      - name: Build Release Binary (Embedded Blockbench + Native WebView)
+        run: cargo build -p pack-studio --release --features "embed-blockbench,native-webview"

@@ -8,7 +8,8 @@ use ratatui::text::Line;
 
 use rp_cli::{ConvertOptions, VersionSpecificOptions, convert_pack};
 use rp_core::{
-    BedrockGeoVersion, ConversionReport, Edition, MappingTable, ResourcePackIR, RotationSnapMode,
+    AuditStatus, BedrockGeoVersion, ConversionReport, Edition, MappingTable, ResourcePackIR,
+    RotationSnapMode,
 };
 use rp_io::IoLimits;
 
@@ -288,6 +289,7 @@ impl ConvertForm {
             bedrock_geo_version: self.bedrock_geo_version,
             bedrock_manifest_version: self.bedrock_manifest_version,
             emit_java_items_definitions: self.emit_java_items,
+            convert_pbr: false,
         }
     }
 
@@ -900,15 +902,23 @@ impl App {
 
                 let outcome = match convert_pack(&options) {
                     Ok((source, target, report)) => {
-                        ok_count += 1;
+                        let status = report.effective_status();
+                        if status == AuditStatus::Passed {
+                            ok_count += 1;
+                        }
+                        let detail = match &report.semantic_audit {
+                            Some(a) => format!("{} | Saved -> {}", a.summary, out_file.display()),
+                            None => format!("Saved -> {}", out_file.display()),
+                        };
                         AuditOutcome {
                             pack_name,
                             path,
                             source_edition: source,
                             target_edition: target,
-                            passed: true,
+                            passed: status == AuditStatus::Passed,
+                            status,
                             forward_report: Some(report),
-                            detail: format!("Saved -> {}", out_file.display()),
+                            detail,
                             elapsed_ms: start.elapsed().as_millis(),
                         }
                     }
@@ -918,8 +928,9 @@ impl App {
                         source_edition: src_ed,
                         target_edition: target_ed,
                         passed: false,
+                        status: AuditStatus::Failed,
                         forward_report: None,
-                        detail: format!("Error: {err:#}"),
+                        detail: format!("FAILED: {err:#}"),
                         elapsed_ms: start.elapsed().as_millis(),
                     },
                 };

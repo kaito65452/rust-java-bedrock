@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use rp_bedrock::parse_bedrock_pack;
 use rp_core::{
-    ConversionReport, Edition, FaceDirection, MappingTable, ModelAsset, ModelElement,
+    AuditStatus, ConversionReport, Edition, FaceDirection, MappingTable, ModelAsset, ModelElement,
     ResourcePackIR, RotationAxis,
 };
 use rp_io::{IoLimits, PackContainer};
@@ -16,7 +16,7 @@ use rp_java::parse_java_pack;
 use rp_transforms::model::euler_zyx_to_mat3;
 
 use crate::{
-    InspectSummary, VersionSpecificOptions, convert_container_with_options, detect_edition,
+    InspectSummary, VersionSpecificOptions, convert_container_with_audit, detect_edition,
     inspect_container,
 };
 
@@ -101,7 +101,7 @@ pub fn sort_discovered_packs(packs: &mut [DiscoveredPack], key: PackSortKey) {
     });
 }
 
-/// Result of a bidirectional round-trip & integrity audit or batch conversion item.
+/// Result of a bidirectional round-trip & semantic audit or batch conversion item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditOutcome {
     /// Pack filename.
@@ -112,14 +112,21 @@ pub struct AuditOutcome {
     pub source_edition: Edition,
     /// Target edition converted to.
     pub target_edition: Edition,
-    /// Whether conversion + integrity + round-trip succeeded.
+    /// Whether conversion + semantic audit + integrity + round-trip succeeded cleanly.
     pub passed: bool,
-    /// Forward conversion report.
+    /// Tri-state semantic verdict (`Passed`, `Partial`, or `Failed`).
+    #[serde(default = "default_failed_status")]
+    pub status: AuditStatus,
+    /// Forward conversion report (including `semantic_audit`).
     pub forward_report: Option<ConversionReport>,
     /// Human-readable audit or output detail.
     pub detail: String,
     /// Elapsed wall-clock milliseconds.
     pub elapsed_ms: u128,
+}
+
+const fn default_failed_status() -> AuditStatus {
+    AuditStatus::Failed
 }
 
 /// Per-category set difference between two resource packs.
@@ -382,6 +389,7 @@ pub fn audit_pack_roundtrip(
                 source_edition: Edition::Java,
                 target_edition: Edition::Bedrock,
                 passed: false,
+                status: AuditStatus::Failed,
                 forward_report: None,
                 detail: format!("read error: {err}"),
                 elapsed_ms: start.elapsed().as_millis(),
@@ -398,6 +406,7 @@ pub fn audit_pack_roundtrip(
                 source_edition: Edition::Java,
                 target_edition: Edition::Bedrock,
                 passed: false,
+                status: AuditStatus::Failed,
                 forward_report: None,
                 detail: format!("edition error: {err}"),
                 elapsed_ms: start.elapsed().as_millis(),
@@ -409,12 +418,11 @@ pub fn audit_pack_roundtrip(
         Edition::Bedrock => Edition::Java,
     };
 
-    let (converted, _, _, forward_report) = match convert_container_with_options(
+    let (converted, _, _, forward_report) = match convert_container_with_audit(
         &container,
         Some(target),
         target_version,
         mappings,
-        false,
         version_options,
     ) {
         Ok(res) => res,
@@ -425,12 +433,30 @@ pub fn audit_pack_roundtrip(
                 source_edition: source,
                 target_edition: target,
                 passed: false,
+                status: AuditStatus::Failed,
                 forward_report: None,
                 detail: format!("forward convert error: {err:#}"),
                 elapsed_ms: start.elapsed().as_millis(),
             };
         }
     };
+
+    // Enforce the Bedrock Semantic Audit Gate immediately!
+    if let Some(audit) = &forward_report.semantic_audit
+        && audit.status == AuditStatus::Failed
+    {
+        return AuditOutcome {
+            pack_name,
+            path: path.to_path_buf(),
+            source_edition: source,
+            target_edition: target,
+            passed: false,
+            status: AuditStatus::Failed,
+            detail: audit.summary.clone(),
+            forward_report: Some(forward_report),
+            elapsed_ms: start.elapsed().as_millis(),
+        };
+    }
 
     let mut issues: Vec<String> = Vec::new();
     for (rel, bytes) in converted.files() {
@@ -461,36 +487,56 @@ pub fn audit_pack_roundtrip(
         }
     }
 
-    let roundtrip_res = convert_container_with_options(
+    let roundtrip_res = convert_container_with_audit(
         &converted,
         Some(source),
         None,
         mappings,
-        false,
         &VersionSpecificOptions::default(),
     );
 
+    let semantic_status = forward_report.effective_status();
+
     match roundtrip_res {
-        Ok((rt_container, _, _, _)) if issues.is_empty() => AuditOutcome {
-            pack_name,
-            path: path.to_path_buf(),
-            source_edition: source,
-            target_edition: target,
-            passed: true,
-            forward_report: Some(forward_report),
-            detail: format!(
-                "OK: {} out files -> {} round-trip files, 0 JSON/bounds issues",
-                converted.len(),
-                rt_container.len()
-            ),
-            elapsed_ms: start.elapsed().as_millis(),
-        },
+        Ok((rt_container, _, _, _)) if issues.is_empty() => {
+            let final_status = match semantic_status {
+                AuditStatus::Failed => AuditStatus::Failed,
+                AuditStatus::Partial => AuditStatus::Partial,
+                AuditStatus::Passed => AuditStatus::Passed,
+            };
+            let detail = if let Some(audit) = &forward_report.semantic_audit {
+                format!(
+                    "{} | {} out files -> {} round-trip files",
+                    audit.summary,
+                    converted.len(),
+                    rt_container.len()
+                )
+            } else {
+                format!(
+                    "OK: {} out files -> {} round-trip files, 0 JSON/bounds issues",
+                    converted.len(),
+                    rt_container.len()
+                )
+            };
+            AuditOutcome {
+                pack_name,
+                path: path.to_path_buf(),
+                source_edition: source,
+                target_edition: target,
+                passed: final_status == AuditStatus::Passed,
+                status: final_status,
+                forward_report: Some(forward_report),
+                detail,
+                elapsed_ms: start.elapsed().as_millis(),
+            }
+        }
         Ok(_) => AuditOutcome {
             pack_name,
             path: path.to_path_buf(),
             source_edition: source,
             target_edition: target,
             passed: false,
+            status: AuditStatus::Failed,
             forward_report: Some(forward_report),
             detail: format!("{} audit issue(s): {}", issues.len(), issues.join("; ")),
             elapsed_ms: start.elapsed().as_millis(),
@@ -501,6 +547,7 @@ pub fn audit_pack_roundtrip(
             source_edition: source,
             target_edition: target,
             passed: false,
+            status: AuditStatus::Failed,
             forward_report: Some(forward_report),
             detail: format!("round-trip re-parse failed: {err:#}"),
             elapsed_ms: start.elapsed().as_millis(),

@@ -12,7 +12,7 @@ pub mod path;
 
 pub use container::{
     DEFAULT_MAX_FILE_COUNT, DEFAULT_MAX_SINGLE_FILE_BYTES, DEFAULT_MAX_TOTAL_UNCOMPRESSED_BYTES,
-    IoLimits, PackContainer,
+    IoLimits, PackContainer, is_os_junk,
 };
 pub use error::IoError;
 pub use path::sanitize_archive_path;

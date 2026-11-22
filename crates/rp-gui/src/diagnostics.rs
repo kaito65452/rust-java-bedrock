@@ -127,14 +127,20 @@ impl NeedsReviewIndex {
                 let kind = match w.severity {
                     WarningSeverity::Info => DiagnosticKind::Info,
                     WarningSeverity::Warning => DiagnosticKind::Warning,
+                    WarningSeverity::Error => DiagnosticKind::Error,
                 };
                 if kind.needs_review() {
-                    flagged_assets.insert(normalize_asset_key(&w.asset));
+                    flagged_assets.insert(normalize_asset_key(&w.source_path));
                 }
+                let display_msg = if w.actionable_fix.is_empty() {
+                    format!("[{}] {}", w.stage, w.reason)
+                } else {
+                    format!("[{}] {} — Fix: {}", w.stage, w.reason, w.actionable_fix)
+                };
                 buckets
-                    .entry((kind, w.message.clone()))
+                    .entry((kind, display_msg))
                     .or_default()
-                    .insert(w.asset.clone());
+                    .insert(w.source_path.clone());
             }
         }
 

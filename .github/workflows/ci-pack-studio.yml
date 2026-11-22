@@ -1,0 +1,117 @@
+name: CI — Test, Clippy & Build PackStudio (Cloud Offload)
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - "ci/**"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_release:
+        description: "Also build & upload release binary artifact"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ci-pack-studio-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  blockbench-web-bundle:
+    name: Build & Verify Blockbench Web Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Run scripts/build_blockbench.sh
+        run: bash scripts/build_blockbench.sh
+
+      - name: Verify archive size < 10 MB & GPL-3.0 LICENSE.MD present
+        run: |
+          SIZE=$(stat -c '%s' assets/vendor/blockbench-web.tar.zst)
+          echo "Archive size: ${SIZE} bytes"
+          test "${SIZE}" -lt 10485760
+          zstd -dc assets/vendor/blockbench-web.tar.zst | tar -tf - | grep -q "LICENSE.MD"
+          zstd -dc assets/vendor/blockbench-web.tar.zst | tar -tf - | grep -q "studio_bridge.js"
+          cat assets/vendor/blockbench-web.sha256
+
+      - name: Upload Blockbench Vendor Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: blockbench-web-vendor
+          path: |
+            assets/vendor/blockbench-web.tar.zst
+            assets/vendor/blockbench-web.sha256
+          retention-days: 7
+
+  test-and-clippy:
+    name: Check, Clippy (-D warnings) & Full Workspace Tests
+    needs: blockbench-web-bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor
+          path: assets/vendor
+
+      - name: Install Linux GUI & WebKitGTK deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust Stable + Clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo Build
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo check -p pack-studio
+        run: cargo check -p pack-studio
+
+      - name: cargo clippy -p pack-studio --all-targets -- -D warnings
+        run: cargo clippy -p pack-studio --all-targets -- -D warnings
+
+      - name: cargo check (embed-blockbench + native-webview features)
+        run: cargo check -p pack-studio --features "embed-blockbench,native-webview"
+
+      - name: cargo test -p pack-studio (verbose)
+        run: cargo test -p pack-studio -- --nocapture
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: Build & Upload PackStudio Release Binary
+        if: ${{ inputs.build_release == true || github.event_name == 'push' }}
+        run: |
+          cargo build -p pack-studio --release --features "embed-blockbench,native-webview"
+          ls -lh target/release/pack-studio
+
+      - name: Upload PackStudio Linux Release Artifact
+        if: ${{ inputs.build_release == true || github.event_name == 'push' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-studio-linux-x86_64
+          path: target/release/pack-studio
+          retention-days: 7

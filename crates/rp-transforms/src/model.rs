@@ -245,6 +245,13 @@ pub struct BedrockFaceUv {
     pub material_instance: Option<String>,
 }
 
+/// Rounds away trigonometric noise (`-22.500002` -> `-22.5`) from decomposed values.
+#[inline]
+fn snap(v: f32) -> f32 {
+    let r = (v * 10_000.0).round() / 10_000.0;
+    if r.abs() < 1e-6 { 0.0 } else { r }
+}
+
 #[inline]
 fn clean_zero(v: f32) -> f32 {
     if v.abs() < 1e-6 { 0.0 } else { v }
@@ -592,7 +599,8 @@ pub fn model_asset_to_bedrock_geo_with_head_bind(
             .group
             .clone()
             .unwrap_or_else(|| String::from("root"));
-        let (mut origin, size) = java_to_bedrock_box(element.from, element.to);
+        let (from, to) = apply_java_rescale(element);
+        let (mut origin, size) = java_to_bedrock_box(from, to);
         if y_offset != 0.0 {
             origin[1] = clean_zero(origin[1] + y_offset);
         }
@@ -911,9 +919,9 @@ pub fn bedrock_geo_to_model_assets_with_options(
                     ];
                     let java_euler = mat3_to_euler_zyx(r_acc);
                     let bedrock_euler = [
-                        clean_zero(-java_euler[0] as f32),
-                        clean_zero(-java_euler[1] as f32),
-                        clean_zero(java_euler[2] as f32),
+                        snap(-java_euler[0] as f32),
+                        snap(-java_euler[1] as f32),
+                        snap(java_euler[2] as f32),
                     ];
                     (pivot_java, Some(bedrock_euler))
                 };
@@ -1264,6 +1272,33 @@ pub fn auto_java_uv_for_face(dir: FaceDirection, from: [f32; 3], to: [f32; 3]) -
         FaceDirection::Up => [from[0], from[2], to[0], to[2]],
         FaceDirection::Down => [from[0], 16.0 - to[2], to[0], 16.0 - from[2]],
     }
+}
+
+/// Java `rescale: true` multiplies the two axes perpendicular to the rotation axis by
+/// `1 / cos(angle)` (vanilla: 1.0823922 for 22.5 deg, 1.4142135 for 45 deg).
+///
+/// The scale acts inside the rotation plane and is uniform there, so it commutes with the
+/// rotation. Pre-scaling the cuboid about the pivot is therefore exactly equivalent to
+/// vanilla's post-rotation scale: `S R (v - o) = R S (v - o)`.
+fn apply_java_rescale(el: &ModelElement) -> ([f32; 3], [f32; 3]) {
+    let Some(rot) = el.rotation.as_ref().filter(|r| r.rescale) else {
+        return (el.from, el.to);
+    };
+    let cos = rot.angle.to_radians().cos().abs().max(0.5);
+    let k = 1.0 / cos;
+    let mut s = [k, k, k];
+    match rot.axis {
+        RotationAxis::X => s[0] = 1.0,
+        RotationAxis::Y => s[1] = 1.0,
+        RotationAxis::Z => s[2] = 1.0,
+    }
+    let mut from = el.from;
+    let mut to = el.to;
+    for i in 0..3 {
+        from[i] = clean_zero(rot.origin[i] + (el.from[i] - rot.origin[i]) * s[i]);
+        to[i] = clean_zero(rot.origin[i] + (el.to[i] - rot.origin[i]) * s[i]);
+    }
+    (from, to)
 }
 
 #[cfg(test)]

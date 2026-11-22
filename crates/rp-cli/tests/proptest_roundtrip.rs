@@ -236,12 +236,12 @@ proptest! {
             "pack": { "pack_format": 15, "description": desc }
         });
         j_in.insert("pack.mcmeta", serde_json::to_vec(&mcmeta).expect("mcmeta")).expect("ins");
-        j_in.insert("assets/minecraft/textures/block/custom_anim.png", solid_png(16, 64)).expect("png");
+        j_in.insert("assets/minecraft/textures/block/water_still.png", solid_png(16, 64)).expect("png");
         let anim_meta = serde_json::json!({
             "animation": { "frametime": frametime, "interpolate": interpolate, "frames": [0, 1, 2, 3] }
         });
-        j_in.insert("assets/minecraft/textures/block/custom_anim.png.mcmeta", serde_json::to_vec(&anim_meta).expect("anim")).expect("ins");
-        let lang_json = serde_json::json!({ "block.minecraft.custom_anim": locale_val });
+        j_in.insert("assets/minecraft/textures/block/water_still.png.mcmeta", serde_json::to_vec(&anim_meta).expect("anim")).expect("ins");
+        let lang_json = serde_json::json!({ "block.minecraft.water_still": locale_val });
         j_in.insert("assets/minecraft/lang/en_us.json", serde_json::to_vec(&lang_json).expect("lang")).expect("ins");
 
         let (bedrock_mid, _, _, _) =
@@ -254,8 +254,8 @@ proptest! {
         prop_assert_eq!(&ir_rt.metadata.description, &ir_orig.metadata.description);
         prop_assert_eq!(ir_rt.metadata.java_pack_format, ir_orig.metadata.java_pack_format);
         prop_assert_eq!(
-            &ir_rt.textures["block/custom_anim"].animation,
-            &ir_orig.textures["block/custom_anim"].animation
+            &ir_rt.textures["block/water_still"].animation,
+            &ir_orig.textures["block/water_still"].animation
         );
         prop_assert_eq!(
             &ir_rt.locales["en_us"].entries,
@@ -268,8 +268,8 @@ proptest! {
         let (ir_b_rt, _) = parse_bedrock_pack(&bedrock_rt, &mappings).expect("parse b_rt");
         prop_assert_eq!(&ir_b_rt.metadata.description, &ir_b_orig.metadata.description);
         prop_assert_eq!(
-            &ir_b_rt.textures["block/custom_anim"].animation,
-            &ir_b_orig.textures["block/custom_anim"].animation
+            &ir_b_rt.textures["block/water_still"].animation,
+            &ir_b_orig.textures["block/water_still"].animation
         );
         prop_assert_eq!(
             &ir_b_rt.locales["en_us"].entries,

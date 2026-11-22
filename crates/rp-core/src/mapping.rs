@@ -1,19 +1,215 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{CoreError, Edition, TextureCategory};
 
 const DEFAULT_MAPPINGS_JSON: &str = include_str!("../data/default_mappings.json");
+const BEDROCK_VANILLA_INDEX_JSON: &str = include_str!("../data/bedrock_vanilla_index.json");
+
+/// Official vanilla Bedrock texture & atlas ground-truth index compiled from
+/// `minecraft.wiki` and Mojang's `bedrock-samples` (`v26.60`).
+#[derive(Debug, Clone)]
+pub struct BedrockVanillaIndex {
+    /// Vanilla `terrain_texture.json` atlas key -> primary Bedrock texture path (without `.png`).
+    pub terrain_keys: BTreeMap<String, String>,
+    /// Vanilla `item_texture.json` atlas key -> primary Bedrock texture path (without `.png`).
+    pub item_keys: BTreeMap<String, String>,
+    /// Vanilla `blocks.json` block ID -> face/side -> `terrain_texture.json` atlas key.
+    pub blocks: BTreeMap<String, BTreeMap<String, String>>,
+    /// Java `mob_effect/<id>` -> Bedrock `textures/ui/<id>_effect`.
+    pub mob_effects: BTreeMap<String, String>,
+    /// Lowercase set of all official vanilla Bedrock texture stems (without extension).
+    texture_stems_lower: HashSet<String>,
+    /// Lowercase set of all official vanilla Bedrock `terrain_texture.json` keys.
+    terrain_keys_lower: HashSet<String>,
+    /// Lowercase set of all official vanilla Bedrock `item_texture.json` keys.
+    item_keys_lower: HashSet<String>,
+    /// Reverse lookup from `textures/ui/<id>_effect` -> `mob_effect/<java_id>`.
+    reverse_mob_effects: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BedrockVanillaIndexFile {
+    terrain_keys: BTreeMap<String, String>,
+    item_keys: BTreeMap<String, String>,
+    blocks: BTreeMap<String, BTreeMap<String, String>>,
+    mob_effects: BTreeMap<String, String>,
+    texture_stems: Vec<String>,
+}
+
+impl BedrockVanillaIndex {
+    /// Returns the shared process-wide vanilla Bedrock specification index.
+    #[must_use]
+    pub fn global() -> &'static Self {
+        static INDEX: OnceLock<BedrockVanillaIndex> = OnceLock::new();
+        INDEX.get_or_init(|| {
+            let parsed: Result<BedrockVanillaIndexFile, _> =
+                serde_json::from_str(BEDROCK_VANILLA_INDEX_JSON);
+            match parsed {
+                Ok(raw) => {
+                    let texture_stems_lower = raw
+                        .texture_stems
+                        .into_iter()
+                        .map(|s| s.to_ascii_lowercase())
+                        .collect();
+                    let terrain_keys_lower = raw
+                        .terrain_keys
+                        .keys()
+                        .map(|k| k.to_ascii_lowercase())
+                        .collect();
+                    let item_keys_lower = raw
+                        .item_keys
+                        .keys()
+                        .map(|k| k.to_ascii_lowercase())
+                        .collect();
+                    let reverse_mob_effects = raw
+                        .mob_effects
+                        .iter()
+                        .map(|(j, b)| (b.to_ascii_lowercase(), j.clone()))
+                        .collect();
+                    Self {
+                        terrain_keys: raw.terrain_keys,
+                        item_keys: raw.item_keys,
+                        blocks: raw.blocks,
+                        mob_effects: raw.mob_effects,
+                        texture_stems_lower,
+                        terrain_keys_lower,
+                        item_keys_lower,
+                        reverse_mob_effects,
+                    }
+                }
+                Err(_) => Self {
+                    terrain_keys: BTreeMap::new(),
+                    item_keys: BTreeMap::new(),
+                    blocks: BTreeMap::new(),
+                    mob_effects: BTreeMap::new(),
+                    texture_stems_lower: HashSet::new(),
+                    terrain_keys_lower: HashSet::new(),
+                    item_keys_lower: HashSet::new(),
+                    reverse_mob_effects: HashMap::new(),
+                },
+            }
+        })
+    }
+
+    /// Returns `true` if `path` (with or without `.png`) matches an official vanilla Bedrock texture.
+    #[must_use]
+    pub fn is_vanilla_texture(&self, path: &str) -> bool {
+        let stem = normalize_texture_id(path).to_ascii_lowercase();
+        self.texture_stems_lower.contains(&stem)
+    }
+
+    /// Returns `true` if `key` is an official vanilla Bedrock `terrain_texture.json` key.
+    #[must_use]
+    pub fn is_vanilla_terrain_key(&self, key: &str) -> bool {
+        self.terrain_keys_lower.contains(&key.to_ascii_lowercase())
+    }
+
+    /// Returns `true` if `key` is an official vanilla Bedrock `item_texture.json` key.
+    #[must_use]
+    pub fn is_vanilla_item_key(&self, key: &str) -> bool {
+        self.item_keys_lower.contains(&key.to_ascii_lowercase())
+    }
+
+    /// Looks up the official Bedrock `blocks.json` texture key map for a vanilla block ID.
+    #[must_use]
+    pub fn block_texture_keys(&self, block_id: &str) -> Option<&BTreeMap<String, String>> {
+        let clean = block_id
+            .trim()
+            .strip_prefix("minecraft:")
+            .unwrap_or(block_id.trim())
+            .strip_prefix("block/")
+            .unwrap_or(
+                block_id
+                    .trim()
+                    .strip_prefix("minecraft:")
+                    .unwrap_or(block_id.trim()),
+            );
+        // In Java Edition `cave_vines` is exclusively the tip/head block while `cave_vines_plant`
+        // is the body block; map them cleanly to Bedrock's head-only and body-only block entries.
+        if clean == "cave_vines" || clean == "cave_vines_lit" {
+            return self.blocks.get("cave_vines_head_with_berries");
+        }
+        if clean == "cave_vines_plant" || clean == "cave_vines_plant_lit" {
+            return self.blocks.get("cave_vines_body_with_berries");
+        }
+        if let Some(found) = self.blocks.get(clean) {
+            return Some(found);
+        }
+        // Handle well-known Java <-> Bedrock block ID aliases verified against bedrock-samples.
+        let alias = match clean {
+            "grass_block" => Some("grass"),
+            "grass" => Some("short_grass"),
+            "sugar_cane" => Some("reeds"),
+            "dandelion" => Some("yellow_flower"),
+            "poppy" => Some("red_flower"),
+            "bricks" => Some("brick_block"),
+            "nether_bricks" => Some("nether_brick"),
+            "stone_bricks" => Some("stonebrick"),
+            "oak_planks" => Some("oak_planks"),
+            "dead_bush" => Some("deadbush"),
+            "lily_pad" => Some("waterlily"),
+            "beetroots" => Some("beetroot"),
+            "attached_melon_stem" => Some("melon_stem"),
+            "attached_pumpkin_stem" => Some("pumpkin_stem"),
+            "kelp_plant" => Some("kelp"),
+            "tall_seagrass" => Some("seagrass"),
+            _ => None,
+        };
+        alias.and_then(|a| self.blocks.get(a))
+    }
+
+    /// Looks up an official Bedrock `*_carried` `terrain_texture.json` key for a vanilla block-item.
+    #[must_use]
+    pub fn carried_terrain_key(&self, item_id: &str) -> Option<String> {
+        let clean = item_id
+            .trim()
+            .strip_prefix("minecraft:")
+            .unwrap_or(item_id.trim());
+        let bedrock_block = match clean {
+            "lily_pad" => "waterlily",
+            "grass" => "short_grass",
+            _ => clean,
+        };
+        let carried = format!("{bedrock_block}_carried");
+        if self.is_vanilla_terrain_key(&carried) {
+            Some(carried)
+        } else {
+            None
+        }
+    }
+
+    /// Looks up the official Bedrock texture path for a `terrain_texture.json` key.
+    #[must_use]
+    pub fn terrain_path_for_key(&self, key: &str) -> Option<&str> {
+        self.terrain_keys.get(key).map(String::as_str)
+    }
+
+    /// Looks up the official Bedrock texture path for an `item_texture.json` key.
+    #[must_use]
+    pub fn item_path_for_key(&self, key: &str) -> Option<&str> {
+        self.item_keys.get(key).map(String::as_str)
+    }
+
+    /// Looks up the Java `mob_effect/<id>` for a Bedrock `textures/ui/<id>_effect` path.
+    #[must_use]
+    pub fn bedrock_effect_to_java(&self, bedrock_stem: &str) -> Option<&str> {
+        self.reverse_mob_effects
+            .get(&bedrock_stem.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+}
 
 /// Version correspondence entry between Java `pack_format` and Bedrock `min_engine_version`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackVersionEntry {
-    /// Human-readable Minecraft release string (e.g. `"1.20.1"`).
+    /// Human-readable Minecraft release string (e.g. `"1.20.1"`, `"26.3"`, `"26.60"`).
     pub minecraft_version: String,
-    /// Java Edition `pack_format` integer.
+    /// Java Edition `pack_format` major integer.
     pub java_pack_format: u32,
     /// Bedrock Edition `header.min_engine_version` triplet.
     pub bedrock_min_engine_version: [u32; 3],
@@ -58,7 +254,7 @@ struct MappingFileSchema {
 }
 
 fn default_schema_version() -> String {
-    String::from("1.0")
+    String::from("2.0")
 }
 
 /// Externalized versioned mapping registry for cross-edition resource pack conversion.
@@ -73,6 +269,8 @@ pub struct MappingTable {
     // Precomputed lookup indices
     java_to_bedrock_tex: HashMap<String, TextureMappingEntry>,
     bedrock_to_java_tex: HashMap<String, String>,
+    explicit_atlas_keys_lower: HashSet<String>,
+    explicit_bedrock_paths_lower: HashSet<String>,
     reverse_model_parents: HashMap<String, String>,
     reverse_sound_events: HashMap<String, String>,
     reverse_locale_keys: HashMap<String, String>,
@@ -108,6 +306,8 @@ impl MappingTable {
             locale_keys: parsed.locale_keys,
             java_to_bedrock_tex: HashMap::new(),
             bedrock_to_java_tex: HashMap::new(),
+            explicit_atlas_keys_lower: HashSet::new(),
+            explicit_bedrock_paths_lower: HashSet::new(),
             reverse_model_parents: HashMap::new(),
             reverse_sound_events: HashMap::new(),
             reverse_locale_keys: HashMap::new(),
@@ -148,9 +348,20 @@ impl MappingTable {
     fn rebuild_indices(&mut self) {
         self.java_to_bedrock_tex.clear();
         self.bedrock_to_java_tex.clear();
+        self.explicit_atlas_keys_lower.clear();
+        self.explicit_bedrock_paths_lower.clear();
         for entry in &self.textures {
             let norm_java = normalize_texture_id(&entry.java);
             let norm_bedrock = normalize_texture_id(&entry.bedrock);
+            if let Some(key) = &entry.atlas_key {
+                self.explicit_atlas_keys_lower
+                    .insert(key.to_ascii_lowercase());
+            } else {
+                self.explicit_atlas_keys_lower
+                    .insert(default_atlas_key_from_bedrock(&norm_bedrock).to_ascii_lowercase());
+            }
+            self.explicit_bedrock_paths_lower
+                .insert(norm_bedrock.to_ascii_lowercase());
             self.java_to_bedrock_tex.insert(
                 norm_java.clone(),
                 TextureMappingEntry {
@@ -188,6 +399,48 @@ impl MappingTable {
         }
     }
 
+    /// Returns the embedded official vanilla Bedrock texture & atlas index.
+    #[must_use]
+    pub fn vanilla_index(&self) -> &'static BedrockVanillaIndex {
+        BedrockVanillaIndex::global()
+    }
+
+    /// Returns `true` if `java_id` has an explicit entry in this `MappingTable` (embedded or `--mapping`).
+    #[must_use]
+    pub fn is_explicitly_mapped_java_texture(&self, java_id: &str) -> bool {
+        let norm = normalize_texture_id(java_id);
+        self.java_to_bedrock_tex.contains_key(&norm)
+    }
+
+    /// Returns `true` if `bedrock_path` (with or without `.png`) is a known vanilla Bedrock texture
+    /// OR explicitly configured in this `MappingTable`.
+    #[must_use]
+    pub fn is_known_bedrock_texture(&self, bedrock_path: &str) -> bool {
+        let norm = normalize_texture_id(bedrock_path).to_ascii_lowercase();
+        self.vanilla_index().is_vanilla_texture(&norm)
+            || self.explicit_bedrock_paths_lower.contains(&norm)
+    }
+
+    /// Returns `true` if `key` is an official vanilla Bedrock `terrain_texture.json` key
+    /// OR explicitly configured in this `MappingTable`.
+    #[must_use]
+    pub fn is_known_terrain_key(&self, key: &str) -> bool {
+        self.vanilla_index().is_vanilla_terrain_key(key)
+            || self
+                .explicit_atlas_keys_lower
+                .contains(&key.to_ascii_lowercase())
+    }
+
+    /// Returns `true` if `key` is an official vanilla Bedrock `item_texture.json` key
+    /// OR explicitly configured in this `MappingTable`.
+    #[must_use]
+    pub fn is_known_item_key(&self, key: &str) -> bool {
+        self.vanilla_index().is_vanilla_item_key(key)
+            || self
+                .explicit_atlas_keys_lower
+                .contains(&key.to_ascii_lowercase())
+    }
+
     /// Returns the schema version string of the loaded mapping file.
     #[must_use]
     pub fn schema_version(&self) -> &str {
@@ -212,6 +465,30 @@ impl MappingTable {
                 path: mapped.bedrock.clone(),
                 atlas_key: mapped.atlas_key.clone().unwrap_or(default_key),
                 category,
+            };
+        }
+
+        // Exact minecraft.wiki rule: assets/minecraft/textures/mob_effect/<id>.png -> textures/ui/<id>_effect.png
+        if let Some(effect_id) = norm.strip_prefix("mob_effect/") {
+            if let Some(mapped_ui) = self.vanilla_index().mob_effects.get(&norm) {
+                return BedrockTextureTarget {
+                    path: mapped_ui.clone(),
+                    atlas_key: default_atlas_key_from_bedrock(mapped_ui),
+                    category: TextureCategory::MobEffect,
+                };
+            }
+            let stem = if effect_id == "hero_of_the_village" {
+                String::from("village_hero_effect")
+            } else if effect_id.ends_with("_effect") {
+                effect_id.to_string()
+            } else {
+                format!("{effect_id}_effect")
+            };
+            let path = format!("textures/ui/{stem}");
+            return BedrockTextureTarget {
+                atlas_key: stem,
+                path,
+                category: TextureCategory::MobEffect,
             };
         }
 
@@ -244,6 +521,19 @@ impl MappingTable {
         let norm = normalize_texture_id(bedrock_path);
         if let Some(mapped) = self.bedrock_to_java_tex.get(&norm) {
             return mapped.clone();
+        }
+        if let Some(java_eff) = self.vanilla_index().bedrock_effect_to_java(&norm) {
+            return java_eff.to_string();
+        }
+        if let Some(rest) = norm
+            .strip_prefix("textures/ui/")
+            .and_then(|s| s.strip_suffix("_effect"))
+            && !rest.contains('/')
+        {
+            if rest == "village_hero" {
+                return String::from("mob_effect/hero_of_the_village");
+            }
+            return format!("mob_effect/{rest}");
         }
 
         if let Some(rest) = norm.strip_prefix("textures/blocks/") {
@@ -342,7 +632,6 @@ impl MappingTable {
         {
             return exact.bedrock_min_engine_version;
         }
-        // Fallback to closest lower-or-equal entry, else 1.20.0.
         self.pack_format_versions
             .iter()
             .filter(|e| e.java_pack_format <= pack_format)
@@ -354,26 +643,28 @@ impl MappingTable {
     /// Maps a Bedrock `min_engine_version` triplet to the closest Java `pack_format`.
     #[must_use]
     pub fn bedrock_engine_to_java_pack_format(&self, ver: [u32; 3]) -> u32 {
+        // Normalize legacy/third-party [26, 60, 0] style triplets to official [1, 26, 60].
+        let normalized = normalize_bedrock_engine_triplet(ver);
         if let Some(exact) = self
             .pack_format_versions
             .iter()
-            .find(|e| e.bedrock_min_engine_version == ver)
+            .find(|e| e.bedrock_min_engine_version == normalized)
         {
             return exact.java_pack_format;
         }
         self.pack_format_versions
             .iter()
-            .filter(|e| e.bedrock_min_engine_version <= ver)
+            .filter(|e| e.bedrock_min_engine_version <= normalized)
             .max_by_key(|e| e.bedrock_min_engine_version)
             .map(|e| e.java_pack_format)
             .unwrap_or(15)
     }
 
-    /// Resolves a CLI `--target-version` string (e.g. `"1.20.1"`, `"15"`, `"1.21.0"`)
-    /// into Java `pack_format` and/or Bedrock `min_engine_version`.
+    /// Resolves a CLI `--target-version` string (e.g. `"1.20.1"`, `"1.21.11"`, `"26.3"`, `"26.60"`,
+    /// `"1.26.60"`, `"97.1"`, `"15"`) into Java `pack_format` and Bedrock `min_engine_version`.
     pub fn resolve_target_version(
         &self,
-        target: Edition,
+        _target: Edition,
         version_str: &str,
     ) -> Result<(Option<u32>, Option<[u32; 3]>), CoreError> {
         let trimmed = version_str.trim();
@@ -388,20 +679,14 @@ impl MappingTable {
             ));
         }
 
-        // Also match `"84.0"` / `"88.0"` style Java minor pack formats if passed directly.
+        // Match Java `major.minor` pack_format notation (e.g. `"84.0"`, `"88.0"`, `"97.1"`).
         if let Some((maj_str, min_str)) = trimmed.split_once('.')
-            && let (Ok(maj), Ok(min)) = (maj_str.parse::<u32>(), min_str.parse::<u32>())
-            && maj >= 69
-            && min == 0
-            && let Some(entry) = self
-                .pack_format_versions
-                .iter()
-                .find(|e| e.java_pack_format == maj)
+            && !min_str.contains('.')
+            && let (Ok(maj), Ok(_min)) = (maj_str.parse::<u32>(), min_str.parse::<u32>())
+            && maj >= 65
         {
-            return Ok((
-                Some(entry.java_pack_format),
-                Some(entry.bedrock_min_engine_version),
-            ));
+            let bedrock_ver = self.java_pack_format_to_bedrock(maj);
+            return Ok((Some(maj), Some(bedrock_ver)));
         }
 
         if let Ok(pack_fmt) = trimmed.parse::<u32>() {
@@ -424,17 +709,35 @@ impl MappingTable {
             } else {
                 0
             };
-            let ver = [major, minor, patch];
-            let pack_fmt = self.bedrock_engine_to_java_pack_format(ver);
-            return match target {
-                Edition::Java => Ok((Some(pack_fmt), Some(ver))),
-                Edition::Bedrock => Ok((Some(pack_fmt), Some(ver))),
+
+            // Per minecraft.wiki/w/Bedrock_Edition_26.60 & Mojang/bedrock-samples:
+            // Year-based 2-part display versions `YY.M` (YY >= 26, e.g. `26.60`, `26.70`)
+            // correspond to Bedrock internal `min_engine_version` `[1, YY, M]`.
+            let ver = if parts.len() == 2 && major >= 26 {
+                [1, major, minor]
+            } else {
+                normalize_bedrock_engine_triplet([major, minor, patch])
             };
+            let pack_fmt = self.bedrock_engine_to_java_pack_format(ver);
+            return Ok((Some(pack_fmt), Some(ver)));
         }
 
         Err(CoreError::InvalidMetadata(format!(
             "unrecognized target version '{trimmed}'"
         )))
+    }
+}
+
+/// Normalizes a Bedrock `min_engine_version` triplet so year-based `[26, 60, 0]` / `[26, 3, 0]`
+/// or any non-`1` major version is strictly coerced to Bedrock's required `[1, minor, patch]` format.
+#[must_use]
+pub const fn normalize_bedrock_engine_triplet(ver: [u32; 3]) -> [u32; 3] {
+    if ver[0] >= 26 {
+        [1, ver[0], ver[1]]
+    } else if ver[0] != 1 {
+        [1, ver[1], ver[2]]
+    } else {
+        ver
     }
 }
 
@@ -484,7 +787,30 @@ mod tests {
     }
 
     #[test]
-    fn maps_locale_keys_and_versions() {
+    fn maps_mob_effects_per_minecraft_wiki_spec() {
+        let table = MappingTable::default_embedded().expect("mappings");
+        let speed = table.java_texture_to_bedrock("mob_effect/speed");
+        assert_eq!(speed.path, "textures/ui/speed_effect");
+        assert_eq!(speed.category, TextureCategory::MobEffect);
+        assert_eq!(
+            table.bedrock_texture_to_java("textures/ui/speed_effect.png"),
+            "mob_effect/speed"
+        );
+
+        let hero = table.java_texture_to_bedrock("mob_effect/hero_of_the_village");
+        assert_eq!(hero.path, "textures/ui/village_hero_effect");
+        assert_eq!(
+            table.bedrock_texture_to_java("textures/ui/village_hero_effect.png"),
+            "mob_effect/hero_of_the_village"
+        );
+
+        assert!(table.is_known_bedrock_texture("textures/ui/speed_effect"));
+        assert!(table.is_known_terrain_key("bamboo_stem"));
+        assert!(table.is_known_item_key("apple"));
+    }
+
+    #[test]
+    fn maps_locale_keys_and_versions_including_26_3_and_26_60() {
         let table = MappingTable::default_embedded().expect("default mappings should parse");
         assert_eq!(
             table.java_locale_key_to_bedrock("block.minecraft.stone"),
@@ -509,19 +835,37 @@ mod tests {
             table
                 .resolve_target_version(Edition::Java, "26.1")
                 .expect("26.1"),
-            (Some(84), Some([26, 1, 0]))
+            (Some(84), Some([1, 26, 10]))
         );
         assert_eq!(
             table
                 .resolve_target_version(Edition::Java, "26.2")
                 .expect("26.2"),
-            (Some(88), Some([26, 2, 0]))
+            (Some(88), Some([1, 26, 30]))
         );
         assert_eq!(
             table
-                .resolve_target_version(Edition::Java, "88.0")
-                .expect("88.0"),
-            (Some(88), Some([26, 2, 0]))
+                .resolve_target_version(Edition::Java, "26.3")
+                .expect("26.3"),
+            (Some(97), Some([1, 26, 50]))
+        );
+        assert_eq!(
+            table
+                .resolve_target_version(Edition::Bedrock, "26.60")
+                .expect("26.60"),
+            (Some(97), Some([1, 26, 60]))
+        );
+        assert_eq!(
+            table
+                .resolve_target_version(Edition::Bedrock, "1.26.60")
+                .expect("1.26.60"),
+            (Some(97), Some([1, 26, 60]))
+        );
+        assert_eq!(
+            table
+                .resolve_target_version(Edition::Java, "97.1")
+                .expect("97.1"),
+            (Some(97), Some([1, 26, 40]))
         );
     }
 }

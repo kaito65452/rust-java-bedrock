@@ -9,7 +9,7 @@ use ratatui::widgets::{
     TableState, Tabs, Wrap,
 };
 
-use rp_core::{BedrockGeoVersion, Edition, RotationSnapMode};
+use rp_core::{AuditStatus, BedrockGeoVersion, Edition, RotationSnapMode};
 
 use crate::app::{ActiveTab, App, ExplorerItem, InputMode};
 use crate::preview::format_model_details;
@@ -686,21 +686,27 @@ fn render_convert_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ],
         Some(Err(err)) => vec![
             Line::from(Span::styled(
-                "Conversion Failed:",
+                "FAILED — Conversion / Semantic Audit Failed:",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(err.clone()),
         ],
         Some(Ok(res)) => {
+            let status = res.report.effective_status();
+            let (banner_label, banner_color) = match status {
+                AuditStatus::Passed => ("PASSED", Color::Green),
+                AuditStatus::Partial => ("PARTIAL / WARNING", Color::Yellow),
+                AuditStatus::Failed => ("FAILED", Color::Red),
+            };
             let mut lines = vec![
                 Line::from(Span::styled(
                     format!(
-                        "SUCCESS: {} -> {} ({} ms)",
+                        "{banner_label}: {} -> {} ({} ms)",
                         res.source, res.target, res.elapsed_ms
                     ),
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(banner_color)
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(format!("Output: {}", res.output_path.display())),
@@ -723,6 +729,23 @@ fn render_convert_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     res.report.warnings.len()
                 )),
             ];
+            if let Some(audit) = &res.report.semantic_audit {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("Semantic Audit: {}", audit.summary),
+                    Style::default()
+                        .fg(banner_color)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(format!(
+                    "  Mapped textures: {}/{} | Orphan: {} | Forbidden: {} | Broken refs: {}",
+                    audit.semantically_mapped_textures,
+                    audit.total_input_textures,
+                    audit.orphan_textures.len(),
+                    audit.forbidden_entries.len(),
+                    audit.broken_references.len()
+                )));
+            }
             if !res.report.lossy_conversions.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
@@ -730,7 +753,10 @@ fn render_convert_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Style::default().fg(Color::Yellow),
                 )));
                 for item in &res.report.lossy_conversions {
-                    lines.push(Line::from(format!(" • [{}] {}", item.asset, item.detail)));
+                    lines.push(Line::from(format!(
+                        " • [{}] {}: {} | Fix: {}",
+                        item.stage, item.source_path, item.detail, item.actionable_fix
+                    )));
                 }
             }
             if !res.report.skipped_assets.is_empty() {
@@ -740,19 +766,22 @@ fn render_convert_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Style::default().fg(Color::Red),
                 )));
                 for item in &res.report.skipped_assets {
-                    lines.push(Line::from(format!(" • [{}] {}", item.asset, item.reason)));
+                    lines.push(Line::from(format!(
+                        " • [{}] {}: {} | Fix: {}",
+                        item.stage, item.source_path, item.reason, item.actionable_fix
+                    )));
                 }
             }
             if !res.report.warnings.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "Warnings:",
+                    "Diagnostics:",
                     Style::default().fg(Color::Cyan),
                 )));
                 for w in &res.report.warnings {
                     lines.push(Line::from(format!(
-                        " • [{:?}] {}: {}",
-                        w.severity, w.asset, w.message
+                        " • [{:?}|{}] {}: {} | Fix: {}",
+                        w.severity, w.stage, w.source_path, w.reason, w.actionable_fix
                     )));
                 }
             }
@@ -820,15 +849,19 @@ fn render_batch_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .audit_outcomes
         .iter()
         .map(|o| {
-            let status_cell = if o.passed {
-                Cell::from("PASS").style(
+            let status_cell = match o.status {
+                AuditStatus::Passed => Cell::from("PASS").style(
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Cell::from("FAIL")
-                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                ),
+                AuditStatus::Partial => Cell::from("WARN").style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                AuditStatus::Failed => Cell::from("FAIL")
+                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
             };
             let (conv, lossy) = match &o.forward_report {
                 Some(r) => (r.converted_count.to_string(), r.lossy_count.to_string()),
@@ -1353,5 +1386,68 @@ mod tests {
         terminal
             .draw(|f| render(f, &app))
             .expect("draw help overlay");
+    }
+
+    #[test]
+    fn tui_renders_failed_status_for_unmappable_pack_never_passed() {
+        let dir = tempdir().expect("tempdir");
+        let mut bad = PackContainer::new();
+        bad.insert(
+            "pack.mcmeta",
+            br#"{"pack":{"pack_format":34,"description":"Unmappable Pack"}}"#.to_vec(),
+        )
+        .expect("mcmeta");
+        bad.insert(
+            "assets/minecraft/textures/block/totally_unknown_custom.png",
+            make_png(16, 16, Rgba([200, 10, 10, 255])),
+        )
+        .expect("tex");
+        let bad_zip = dir.path().join("bad.zip");
+        std::fs::write(&bad_zip, bad.write_to_zip_bytes().expect("zip")).expect("save");
+
+        let mappings = MappingTable::default_embedded().expect("mappings");
+        let audit = audit_pack_roundtrip(
+            &bad_zip,
+            Some("26.60"),
+            &rp_cli::VersionSpecificOptions::default(),
+            &mappings,
+            IoLimits::default(),
+        );
+        assert!(!audit.passed);
+        assert_eq!(audit.status, AuditStatus::Failed);
+
+        let mut app = App::new(dir.path().to_path_buf(), None, mappings);
+        app.last_conversion = Some(Err(audit.detail.clone()));
+        app.audit_outcomes.push(audit);
+
+        let backend = TestBackend::new(120, 38);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        app.active_tab = ActiveTab::Convert;
+        terminal
+            .draw(|f| render(f, &app))
+            .expect("draw convert tab");
+        let buf_str: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(buf_str.contains("FAILED"), "expected FAILED banner in TUI Convert tab");
+        assert!(!buf_str.contains("PASSED"), "must NOT show PASSED on failed conversion");
+
+        app.active_tab = ActiveTab::BatchAudit;
+        terminal
+            .draw(|f| render(f, &app))
+            .expect("draw batch tab");
+        let batch_str: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(batch_str.contains("FAIL"), "expected FAIL cell in TUI Batch/Audit tab");
     }
 }

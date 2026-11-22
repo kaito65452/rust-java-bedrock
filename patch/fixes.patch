@@ -1,0 +1,798 @@
+diff --git a/crates/rp-transforms/src/model.rs b/crates/rp-transforms/src/model.rs
+--- a/crates/rp-transforms/src/model.rs
++++ b/crates/rp-transforms/src/model.rs
+@@ -1,4 +1,4 @@
+-use std::collections::{BTreeMap, BTreeSet};
++use std::collections::BTreeMap;
+ 
+ use serde::{Deserialize, Serialize};
+ 
+@@ -184,6 +184,9 @@
+     /// Bone Euler rotation `[rx, ry, rz]` in degrees.
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub rotation: Option<[f32; 3]>,
++    /// Mirrors the box UV of every cube in this bone (unless a cube overrides it).
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub mirror: Option<bool>,
+     /// Cuboids attached to this bone.
+     #[serde(default)]
+     pub cubes: Vec<BedrockCube>,
+@@ -205,6 +208,9 @@
+     /// Optional cube inflation.
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub inflate: Option<f32>,
++    /// Mirrors this cube's box UV.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub mirror: Option<bool>,
+     /// Box UV `[u, v]` or per-face UV map.
+     pub uv: BedrockCubeUv,
+ }
+@@ -231,6 +237,13 @@
+     pub material_instance: Option<String>,
+ }
+ 
++/// Rounds away trigonometric noise (`-22.500002` -> `-22.5`) from decomposed values.
++#[inline]
++fn snap(v: f32) -> f32 {
++    let r = (v * 10_000.0).round() / 10_000.0;
++    if r.abs() < 1e-6 { 0.0 } else { r }
++}
++
+ #[inline]
+ fn clean_zero(v: f32) -> f32 {
+     if v.abs() < 1e-6 { 0.0 } else { v }
+@@ -477,7 +490,8 @@
+             .group
+             .clone()
+             .unwrap_or_else(|| String::from("root"));
+-        let (mut origin, size) = java_to_bedrock_box(element.from, element.to);
++        let (from, to) = apply_java_rescale(element);
++        let (mut origin, size) = java_to_bedrock_box(from, to);
+         if y_offset != 0.0 {
+             origin[1] = clean_zero(origin[1] + y_offset);
+         }
+@@ -532,6 +546,7 @@
+             pivot,
+             rotation,
+             inflate: None,
++            mirror: None,
+             uv: BedrockCubeUv::PerFace(per_face),
+         };
+ 
+@@ -557,6 +572,7 @@
+             parent: None,
+             pivot: Some([0.0, 24.0, 0.0]),
+             rotation: None,
++            mirror: None,
+             cubes: Vec::new(),
+         });
+     }
+@@ -574,6 +590,7 @@
+             parent,
+             pivot,
+             rotation: None,
++            mirror: None,
+             cubes,
+         });
+     }
+@@ -645,32 +662,54 @@
+ 
+         let mut elements = Vec::new();
+         let mut textures = BTreeMap::new();
+-        let parent_bone_names: BTreeSet<&str> = geo
+-            .bones
+-            .iter()
+-            .filter_map(|b| b.parent.as_deref())
+-            .collect();
++        let by_name: BTreeMap<&str, &BedrockBone> =
++            geo.bones.iter().map(|b| (b.name.as_str(), b)).collect();
+ 
+         for bone in &geo.bones {
+-            let is_parent_or_mixed = parent_bone_names.contains(bone.name.as_str())
+-                || bone.cubes.iter().any(|c| c.rotation.is_some());
++            // World transform of a cube = bone chain (root first) o cube-local rotation.
++            let chain = bone_chain(bone, &by_name);
++            let mut bone_world = Affine::IDENTITY;
++            for b in &chain {
++                if let Some(rot) = b.rotation.filter(|r| r.iter().any(|v| v.abs() > 1e-5)) {
++                    bone_world =
++                        bone_world.after(Affine::rotation_about(b.pivot.unwrap_or([0.0; 3]), rot));
++                }
++            }
+             for cube in &bone.cubes {
+-                let (mut from, mut to) = bedrock_to_java_box(cube.origin, cube.size);
+-                for axis in 0..3 {
+-                    if from[axis] > to[axis] {
+-                        std::mem::swap(&mut from[axis], &mut to[axis]);
+-                    }
++                let local_pivot = cube.pivot.or(bone.pivot).unwrap_or([0.0; 3]);
++                let mut world = bone_world;
++                if let Some(rot) = cube.rotation.filter(|r| r.iter().any(|v| v.abs() > 1e-5)) {
++                    world = world.after(Affine::rotation_about(local_pivot, rot));
+                 }
+ 
+-                let effective_pivot = cube.pivot.or(bone.pivot);
+-                let effective_rot = if is_parent_or_mixed {
+-                    cube.rotation
+-                } else {
+-                    cube.rotation.or(bone.rotation)
+-                };
+-
+-                let rotation = effective_rot.and_then(|euler| {
+-                    bedrock_to_java_rotation_with_mode(
++                // Bedrock `inflate` grows the cuboid by `inflate` on every side.
++                let inflate = cube.inflate.unwrap_or(0.0);
++                let mut origin = [
++                    cube.origin[0] - inflate,
++                    cube.origin[1] - inflate,
++                    cube.origin[2] - inflate,
++                ];
++                let size = [
++                    cube.size[0] + 2.0 * inflate,
++                    cube.size[1] + 2.0 * inflate,
++                    cube.size[2] + 2.0 * inflate,
++                ];
++
++                // Decompose the composed transform into what a Java element can express.
++                let mut rotation: Option<ElementRotation> = None;
++                if world.is_pure_translation() {
++                    // Rotations cancelled: only a translation can remain; bake it in.
++                    for (o, t) in origin.iter_mut().zip(world.t) {
++                        *o += t;
++                    }
++                } else if let Some((axis_idx, angle)) = world.single_axis() {
++                    let (center, along) = axis_fixed_point(&world, axis_idx);
++                    origin[axis_idx] += along; // translation along the axis commutes with it
++                    let mut euler = [0.0; 3];
++                    euler[axis_idx] = angle;
++                    let mut pivot = center;
++                    pivot[axis_idx] = local_pivot[axis_idx];
++                    rotation = bedrock_to_java_rotation_with_mode(
+                         euler,
+                         &model_id,
+                         target_java_pack_format,
+@@ -678,15 +717,44 @@
+                         report,
+                     )
+                     .map(|(axis, angle, extra)| ElementRotation {
+-                        origin: effective_pivot
+-                            .map(bedrock_to_java_pivot)
+-                            .unwrap_or([8.0, 8.0, 8.0]),
++                        origin: bedrock_to_java_pivot(pivot),
+                         axis,
+                         angle,
+                         rescale: false,
+                         extra_bedrock_euler: extra,
+-                    })
+-                });
++                    });
++                } else {
++                    // Genuine multi-axis rotation: Java has a single axis per element.
++                    report.record_lossy(
++                        &model_id,
++                        format!(
++                            "Composed bone/cube rotation of '{}' is multi-axis; approximated by its dominant axis",
++                            bone.name
++                        ),
++                    );
++                    rotation = bedrock_to_java_rotation_with_mode(
++                        world.to_euler(),
++                        &model_id,
++                        target_java_pack_format,
++                        rotation_mode,
++                        report,
++                    )
++                    .map(|(axis, angle, extra)| ElementRotation {
++                        origin: bedrock_to_java_pivot(local_pivot),
++                        axis,
++                        angle,
++                        rescale: false,
++                        extra_bedrock_euler: extra,
++                    });
++                }
++
++                let (mut from, mut to) = bedrock_to_java_box(origin, size);
++                for axis in 0..3 {
++                    if from[axis] > to[axis] {
++                        std::mem::swap(&mut from[axis], &mut to[axis]);
++                    }
++                }
++                let mirror = cube.mirror.or(bone.mirror).unwrap_or(false);
+ 
+                 let mut faces = BTreeMap::new();
+                 match &cube.uv {
+@@ -725,8 +793,8 @@
+                         let dx = cube.size[0].abs();
+                         let dy = cube.size[1].abs();
+                         let dz = cube.size[2].abs();
+-                        for dir in FaceDirection::ALL {
+-                            let raw = match dir {
++                        let box_rect = |dir: FaceDirection| -> [f32; 4] {
++                            match dir {
+                                 FaceDirection::Up => [u + dz, *v, u + dz + dx, v + dz],
+                                 FaceDirection::Down => [u + dz + dx, *v, u + dz + dx + dx, v + dz],
+                                 FaceDirection::East => [*u, v + dz, u + dz, v + dz + dy],
+@@ -737,6 +805,20 @@
+                                 FaceDirection::South => {
+                                     [u + dz + dx + dz, v + dz, u + dz + dx + dz + dx, v + dz + dy]
+                                 }
++                            }
++                        };
++                        for dir in FaceDirection::ALL {
++                            // `mirror` swaps the east/west rectangles and flips U on every face.
++                            let raw = if mirror {
++                                let src = match dir {
++                                    FaceDirection::East => FaceDirection::West,
++                                    FaceDirection::West => FaceDirection::East,
++                                    other => other,
++                                };
++                                let r = box_rect(src);
++                                [r[2], r[1], r[0], r[3]]
++                            } else {
++                                box_rect(dir)
+                             };
+                             let clamped = [
+                                 (raw[0] * uv_scale_x).clamp(0.0, 16.0),
+@@ -895,12 +977,11 @@
+             0.5 * (min_c[2] + max_c[2]),
+         ];
+         for el in elements.iter_mut() {
+-            for i in 0..3 {
+-                el.from[i] =
+-                    clean_zero((8.0 + (el.from[i] - center[i]) * scale).clamp(-16.0, 32.0));
+-                el.to[i] = clean_zero((8.0 + (el.to[i] - center[i]) * scale).clamp(-16.0, 32.0));
++            for (i, c) in center.iter().enumerate() {
++                el.from[i] = clean_zero((8.0 + (el.from[i] - c) * scale).clamp(-16.0, 32.0));
++                el.to[i] = clean_zero((8.0 + (el.to[i] - c) * scale).clamp(-16.0, 32.0));
+                 if let Some(rot) = &mut el.rotation {
+-                    rot.origin[i] = clean_zero(8.0 + (rot.origin[i] - center[i]) * scale);
++                    rot.origin[i] = clean_zero(8.0 + (rot.origin[i] - c) * scale);
+                 }
+             }
+         }
+@@ -963,14 +1044,190 @@
+     }
+ }
+ 
++/// Vanilla implicit UVs (`BlockElement.uvsByFace`). They are face specific: the north and
++/// east faces are mirrored on the horizontal axis and the down face is flipped on `v`.
+ fn auto_java_uv_for_face(dir: FaceDirection, from: [f32; 3], to: [f32; 3]) -> [f32; 4] {
+     match dir {
+-        FaceDirection::North | FaceDirection::South => {
+-            [from[0], 16.0 - to[1], to[0], 16.0 - from[1]]
++        FaceDirection::Down => [from[0], 16.0 - to[2], to[0], 16.0 - from[2]],
++        FaceDirection::Up => [from[0], from[2], to[0], to[2]],
++        FaceDirection::North => [16.0 - to[0], 16.0 - to[1], 16.0 - from[0], 16.0 - from[1]],
++        FaceDirection::South => [from[0], 16.0 - to[1], to[0], 16.0 - from[1]],
++        FaceDirection::West => [from[2], 16.0 - to[1], to[2], 16.0 - from[1]],
++        FaceDirection::East => [16.0 - to[2], 16.0 - to[1], 16.0 - from[2], 16.0 - from[1]],
++    }
++}
++
++/// Java `rescale: true` multiplies the two axes perpendicular to the rotation axis by
++/// `1 / cos(angle)` (vanilla: 1.0823922 for 22.5 deg, 1.4142135 for 45 deg).
++///
++/// The scale acts inside the rotation plane and is uniform there, so it commutes with the
++/// rotation. Pre-scaling the cuboid about the pivot is therefore exactly equivalent to
++/// vanilla's post-rotation scale: `S R (v - o) = R S (v - o)`.
++fn apply_java_rescale(el: &ModelElement) -> ([f32; 3], [f32; 3]) {
++    let Some(rot) = el.rotation.as_ref().filter(|r| r.rescale) else {
++        return (el.from, el.to);
++    };
++    let cos = rot.angle.to_radians().cos().abs().max(0.5);
++    let k = 1.0 / cos;
++    let mut s = [k, k, k];
++    match rot.axis {
++        RotationAxis::X => s[0] = 1.0,
++        RotationAxis::Y => s[1] = 1.0,
++        RotationAxis::Z => s[2] = 1.0,
++    }
++    let mut from = el.from;
++    let mut to = el.to;
++    for i in 0..3 {
++        from[i] = clean_zero(rot.origin[i] + (el.from[i] - rot.origin[i]) * s[i]);
++        to[i] = clean_zero(rot.origin[i] + (el.to[i] - rot.origin[i]) * s[i]);
++    }
++    (from, to)
++}
++
++// ---------------------------------------------------------------------------
++// Bone hierarchy: affine composition in Bedrock model space
++// ---------------------------------------------------------------------------
++
++/// Affine map `p' = m * p + t` in Bedrock model space.
++#[derive(Debug, Clone, Copy)]
++struct Affine {
++    m: [[f32; 3]; 3],
++    t: [f32; 3],
++}
++
++const IDENTITY_M: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
++
++fn mat_mul(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
++    let mut out = [[0.0; 3]; 3];
++    for (i, row) in out.iter_mut().enumerate() {
++        for (j, cell) in row.iter_mut().enumerate() {
++            *cell = (0..3).map(|k| a[i][k] * b[k][j]).sum();
++        }
++    }
++    out
++}
++
++fn mat_vec(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
++    [
++        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
++        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
++        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
++    ]
++}
++
++/// Euler matrix `R = Rz(rz) * Ry(ry) * Rx(rx)` (X is applied first). This is the order used
++/// by Bedrock bones and Blockbench (`ZYX`); the order only matters for multi-axis rotations.
++fn euler_matrix(e: [f32; 3]) -> [[f32; 3]; 3] {
++    let (sx, cx) = e[0].to_radians().sin_cos();
++    let (sy, cy) = e[1].to_radians().sin_cos();
++    let (sz, cz) = e[2].to_radians().sin_cos();
++    let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
++    let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
++    let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
++    mat_mul(&rz, &mat_mul(&ry, &rx))
++}
++
++impl Affine {
++    const IDENTITY: Self = Self {
++        m: IDENTITY_M,
++        t: [0.0; 3],
++    };
++
++    /// Rotation by `euler` about `pivot`: `p' = pivot + R (p - pivot)`.
++    fn rotation_about(pivot: [f32; 3], euler: [f32; 3]) -> Self {
++        let m = euler_matrix(euler);
++        let rp = mat_vec(&m, pivot);
++        Self {
++            m,
++            t: [pivot[0] - rp[0], pivot[1] - rp[1], pivot[2] - rp[2]],
++        }
++    }
++
++    /// `self` applied after `inner`: `(A o B)(p) = A.m (B.m p + B.t) + A.t`.
++    fn after(self, inner: Self) -> Self {
++        let rt = mat_vec(&self.m, inner.t);
++        Self {
++            m: mat_mul(&self.m, &inner.m),
++            t: [rt[0] + self.t[0], rt[1] + self.t[1], rt[2] + self.t[2]],
++        }
++    }
++
++    /// Principal-axis rotation angle (degrees) if `m` is a rotation about exactly one axis.
++    fn single_axis(&self) -> Option<(usize, f32)> {
++        const EPS: f32 = 1e-3;
++        let m = &self.m;
++        let candidates = [
++            (0usize, m[2][1].atan2(m[1][1])),
++            (1, m[0][2].atan2(m[0][0])),
++            (2, m[1][0].atan2(m[0][0])),
++        ];
++        for (axis, theta) in candidates {
++            let mut e = [0.0; 3];
++            e[axis] = theta.to_degrees();
++            let r = euler_matrix(e);
++            let close = (0..3).all(|i| (0..3).all(|j| (r[i][j] - m[i][j]).abs() < EPS));
++            if close {
++                return Some((axis, snap(theta.to_degrees())));
++            }
++        }
++        None
++    }
++
++    /// Euler angles (degrees) of `m` for `R = Rz Ry Rx`.
++    fn to_euler(self) -> [f32; 3] {
++        let m = &self.m;
++        let ry = (-m[2][0]).clamp(-1.0, 1.0).asin();
++        let (rx, rz) = if ry.cos().abs() > 1e-4 {
++            (m[2][1].atan2(m[2][2]), m[1][0].atan2(m[0][0]))
++        } else {
++            ((-m[1][2]).atan2(m[1][1]), 0.0)
++        };
++        [
++            snap(rx.to_degrees()),
++            snap(ry.to_degrees()),
++            snap(rz.to_degrees()),
++        ]
++    }
++
++    fn is_pure_translation(&self) -> bool {
++        (0..3).all(|i| (0..3).all(|j| (self.m[i][j] - IDENTITY_M[i][j]).abs() < 1e-4))
++    }
++}
++
++/// Fixed point of a rotation `p' = R p + t` about principal axis `a` (in the plane
++/// perpendicular to `a`) and the residual translation along `a`.
++///
++/// With `(p, q)` the other two axes and `R2` the 2x2 block of `R`, solve `(I - R2) c = t`:
++/// `det = (1 - Rpp)(1 - Rqq) - Rpq Rqp`, `c = (I - R2)^-1 t`. For a rotation by `theta`
++/// `det = 2 - 2 cos(theta)`, so the system is solvable for every `theta != 0`.
++fn axis_fixed_point(aff: &Affine, a: usize) -> ([f32; 3], f32) {
++    let (p, q) = ((a + 1) % 3, (a + 2) % 3);
++    let m = &aff.m;
++    let det = (1.0 - m[p][p]) * (1.0 - m[q][q]) - m[p][q] * m[q][p];
++    let mut c = [0.0; 3];
++    if det.abs() > 1e-6 {
++        c[p] = ((1.0 - m[q][q]) * aff.t[p] + m[p][q] * aff.t[q]) / det;
++        c[q] = (m[q][p] * aff.t[p] + (1.0 - m[p][p]) * aff.t[q]) / det;
++    }
++    (c.map(snap), snap(aff.t[a]))
++}
++
++/// Chain of bones from the root down to `bone` (cycle and depth safe).
++fn bone_chain<'a>(
++    bone: &'a BedrockBone,
++    by_name: &BTreeMap<&str, &'a BedrockBone>,
++) -> Vec<&'a BedrockBone> {
++    let mut chain = vec![bone];
++    let mut cur = bone;
++    while let Some(parent) = cur.parent.as_deref().and_then(|n| by_name.get(n)) {
++        if chain.len() >= 64 || chain.iter().any(|b| b.name == parent.name) {
++            break;
+         }
+-        FaceDirection::East | FaceDirection::West => [from[2], 16.0 - to[1], to[2], 16.0 - from[1]],
+-        FaceDirection::Up | FaceDirection::Down => [from[0], from[2], to[0], to[2]],
++        chain.push(parent);
++        cur = parent;
+     }
++    chain.reverse();
++    chain
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/rp-transforms/src/texture.rs b/crates/rp-transforms/src/texture.rs
+--- a/crates/rp-transforms/src/texture.rs
++++ b/crates/rp-transforms/src/texture.rs
+@@ -269,6 +269,14 @@
+                 WarningSeverity::Info,
+                 "Expanded per-frame Java animation timings using frame index repetition",
+             );
++            if spec.interpolate {
++                // Java blends frame i -> i+1 over the whole frame duration t. After repetition
++                // the blend only spans the last `tick_unit` ticks of that duration.
++                report.record_lossy(
++                    bedrock_texture_path,
++                    "Interpolated animation with per-frame timings: blend window shrinks from the frame duration to one tick after repetition",
++                );
++            }
+             (tick_unit, Some(expanded))
+         }
+     };
+diff --git a/crates/rp-transforms/tests/geometry_defects.rs b/crates/rp-transforms/tests/geometry_defects.rs
+--- a/crates/rp-transforms/tests/geometry_defects.rs
++++ b/crates/rp-transforms/tests/geometry_defects.rs
+@@ -0,0 +1,328 @@
++//! Reproductions of geometry/animation defects found in review.
++//! Each test states the mathematically expected result.
++#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
++
++use std::collections::BTreeMap;
++
++use rp_core::{
++    AnimationFrame, AnimationSpec, ConversionReport, ElementFace, ElementRotation, FaceDirection,
++    MappingTable, ModelAsset, ModelCategory, ModelElement, RotationAxis,
++};
++use rp_transforms::model::{
++    BedrockGeoFile, bedrock_geo_to_model_assets, model_asset_to_bedrock_geo,
++};
++use rp_transforms::texture::java_animation_to_flipbook;
++
++fn geo(json: &str) -> BedrockGeoFile {
++    BedrockGeoFile::from_json_slice(json.as_bytes()).unwrap()
++}
++
++fn to_java(json: &str) -> (Vec<ModelElement>, ConversionReport) {
++    let mut r = ConversionReport::new();
++    let m = bedrock_geo_to_model_assets(&geo(json), "block/t", ModelCategory::Block, &mut r);
++    (m[0].elements.clone(), r)
++}
++
++fn up_face() -> BTreeMap<FaceDirection, ElementFace> {
++    BTreeMap::from([(
++        FaceDirection::Up,
++        ElementFace {
++            uv: None,
++            texture: "#all".into(),
++            cullface: None,
++            rotation: 0,
++            tintindex: None,
++        },
++    )])
++}
++
++fn java_model(el: ModelElement) -> ModelAsset {
++    ModelAsset {
++        id: "block/t".into(),
++        category: ModelCategory::Block,
++        parent: None,
++        textures: BTreeMap::from([("all".into(), "block/stone".into())]),
++        texture_size: [16, 16],
++        ambient_occlusion: true,
++        elements: vec![el],
++        display: BTreeMap::new(),
++        has_overrides: false,
++        overrides_count: 0,
++    }
++}
++
++const FACE: &str = r#""uv": {"north": {"uv": [0,0], "uv_size": [4,4]}}"#;
++
++/// D1: a bone rotation is silently dropped when the bone is a parent of another bone.
++#[test]
++fn d1_parent_bone_rotation_is_inherited_by_child_cubes() {
++    let (els, report) = to_java(&format!(
++        r#"{{
++      "format_version":"1.12.0","minecraft:geometry":[{{
++        "description":{{"identifier":"geometry.t","texture_width":16,"texture_height":16}},
++        "bones":[
++          {{"name":"arm","pivot":[0,12,0],"rotation":[0,0,30]}},
++          {{"name":"hand","parent":"arm","pivot":[0,6,0],
++            "cubes":[{{"origin":[-2,4,-2],"size":[4,4,4],{FACE}}}]}}
++        ]}}]}}"#
++    ));
++    let rot = els[0]
++        .rotation
++        .as_ref()
++        .expect("child cube must inherit the parent's 30° rotation");
++    assert_eq!(rot.axis, RotationAxis::Z);
++    assert!((rot.angle - 30.0).abs() < 1e-3, "angle {}", rot.angle);
++    // The effective pivot is the parent's pivot (0,12,0) -> Java (8,12,8)
++    assert!(
++        (rot.origin[0] - 8.0).abs() < 1e-3 && (rot.origin[1] - 12.0).abs() < 1e-3,
++        "{:?}",
++        rot.origin
++    );
++    let _ = report;
++}
++
++/// D1b: a bone rotation is also dropped when one of its cubes has its own rotation.
++#[test]
++fn d1b_bone_and_cube_rotation_compose() {
++    let (els, _) = to_java(&format!(
++        r#"{{
++      "format_version":"1.12.0","minecraft:geometry":[{{
++        "description":{{"identifier":"geometry.t","texture_width":16,"texture_height":16}},
++        "bones":[{{"name":"b","pivot":[0,8,0],"rotation":[0,0,10],
++          "cubes":[{{"origin":[-2,4,-2],"size":[4,4,4],"pivot":[0,8,0],"rotation":[0,0,20],{FACE}}}]}}]}}]}}"#
++    ));
++    let rot = els[0].rotation.as_ref().unwrap();
++    assert_eq!(rot.axis, RotationAxis::Z);
++    assert!(
++        (rot.angle - 30.0).abs() < 1e-3,
++        "10°+20° about the same axis must give 30°, got {}",
++        rot.angle
++    );
++}
++
++/// D2: `inflate` grows the cube by `inflate` on every side.
++#[test]
++fn d2_inflate_is_applied() {
++    let (els, _) = to_java(&format!(
++        r#"{{
++      "format_version":"1.12.0","minecraft:geometry":[{{
++        "description":{{"identifier":"geometry.t","texture_width":16,"texture_height":16}},
++        "bones":[{{"name":"b","cubes":[{{"origin":[-2,4,-2],"size":[4,4,4],"inflate":0.5,{FACE}}}]}}]}}]}}"#
++    ));
++    // plain: from=[6,4,6] to=[10,8,10]; inflated by 0.5 -> [5.5,3.5,5.5]..[10.5,8.5,10.5]
++    let e = &els[0];
++    for i in 0..3 {
++        assert!(
++            (e.to[i] - e.from[i] - 5.0).abs() < 1e-4,
++            "axis {i}: size {}",
++            e.to[i] - e.from[i]
++        );
++    }
++    assert!((e.from[1] - 3.5).abs() < 1e-4);
++}
++
++/// D3: Java `rescale:true` scales the cube by 1/cos(angle) on the two non-rotation axes.
++#[test]
++fn d3_rescale_is_applied_when_exporting() {
++    let el = ModelElement {
++        group: None,
++        from: [4.0, 4.0, 4.0],
++        to: [12.0, 12.0, 12.0],
++        rotation: Some(ElementRotation {
++            origin: [8.0, 8.0, 8.0],
++            axis: RotationAxis::Y,
++            angle: 45.0,
++            rescale: true,
++            extra_bedrock_euler: None,
++        }),
++        faces: up_face(),
++        shade: true,
++    };
++    let mut r = ConversionReport::new();
++    let g = model_asset_to_bedrock_geo(
++        &java_model(el),
++        &MappingTable::default_embedded().unwrap(),
++        &mut r,
++    );
++    let c = &g.geometries[0].bones[0].cubes[0];
++    let s = std::f32::consts::SQRT_2; // 1/cos(45°)
++    assert!((c.size[0] - 8.0 * s).abs() < 1e-3, "x size {}", c.size[0]);
++    assert!((c.size[2] - 8.0 * s).abs() < 1e-3, "z size {}", c.size[2]);
++    assert!(
++        (c.size[1] - 8.0).abs() < 1e-4,
++        "y (rotation axis) must be untouched"
++    );
++}
++
++/// D4: Java's implicit UVs are face specific (vanilla `BlockElement.uvsByFace`).
++#[test]
++fn d4_default_uv_per_face_matches_vanilla() {
++    let mut faces = BTreeMap::new();
++    for d in [
++        FaceDirection::North,
++        FaceDirection::East,
++        FaceDirection::Down,
++        FaceDirection::South,
++    ] {
++        faces.insert(
++            d,
++            ElementFace {
++                uv: None,
++                texture: "#all".into(),
++                cullface: None,
++                rotation: 0,
++                tintindex: None,
++            },
++        );
++    }
++    let el = ModelElement {
++        group: None,
++        from: [2.0, 3.0, 5.0],
++        to: [6.0, 9.0, 11.0],
++        rotation: None,
++        faces,
++        shade: true,
++    };
++    let mut r = ConversionReport::new();
++    let g = model_asset_to_bedrock_geo(
++        &java_model(el),
++        &MappingTable::default_embedded().unwrap(),
++        &mut r,
++    );
++    let c = &g.geometries[0].bones[0].cubes[0];
++    let rp_transforms::model::BedrockCubeUv::PerFace(m) = &c.uv else {
++        panic!("per-face expected")
++    };
++    // north: [16-x2, 16-y2, 16-x1, 16-y1] = [10, 7, 14, 13]  -> uv (10,7), size (4,6)
++    assert_eq!(
++        (m["north"].uv, m["north"].uv_size),
++        ([10.0, 7.0], [4.0, 6.0])
++    );
++    // east:  [16-z2, 16-y2, 16-z1, 16-y1] = [5, 7, 11, 13]   -> uv (5,7),  size (6,6)
++    assert_eq!((m["east"].uv, m["east"].uv_size), ([5.0, 7.0], [6.0, 6.0]));
++    // down:  [x1, 16-z2, x2, 16-z1]       = [2, 5, 6, 11]    -> uv (2,5),  size (4,6)
++    assert_eq!((m["down"].uv, m["down"].uv_size), ([2.0, 5.0], [4.0, 6.0]));
++    // south: [x1, 16-y2, x2, 16-y1]       = [2, 7, 6, 13]    -> uv (2,7),  size (4,6)
++    assert_eq!(
++        (m["south"].uv, m["south"].uv_size),
++        ([2.0, 7.0], [4.0, 6.0])
++    );
++}
++
++/// D5: `interpolate` combined with non-uniform frame times cannot be reproduced by frame
++/// repetition (the blend window shrinks from `t` ticks to one tick). It must be reported.
++#[test]
++fn d5_interpolated_nonuniform_animation_is_reported_lossy() {
++    let spec = AnimationSpec {
++        frametime: 2,
++        interpolate: true,
++        frames: vec![
++            AnimationFrame {
++                index: 0,
++                time: Some(10),
++            },
++            AnimationFrame {
++                index: 1,
++                time: Some(4),
++            },
++        ],
++        frame_width: None,
++        frame_height: None,
++    };
++    let mut r = ConversionReport::new();
++    let e = java_animation_to_flipbook("t", "textures/blocks/t", &spec, &mut r);
++    assert_eq!(e.ticks_per_frame, 2);
++    assert_eq!(e.frames, Some(vec![0, 0, 0, 0, 0, 1, 1]));
++    assert_eq!(
++        r.lossy_count, 1,
++        "interpolation over repeated frames is lossy"
++    );
++}
++
++/// D6: Bedrock `mirror` flips the box-UV unwrapping (east/west swap + U flip). Ignoring it
++/// mirrors every texture of a mirrored bone (typically the left limbs).
++#[test]
++fn d6_mirror_flag_swaps_east_west_and_flips_u() {
++    let src = |mirror: &str| {
++        format!(
++            r#"{{"format_version":"1.12.0","minecraft:geometry":[{{
++        "description":{{"identifier":"geometry.t","texture_width":16,"texture_height":16}},
++        "bones":[{{"name":"b",{mirror}"cubes":[{{"origin":[-2,4,-2],"size":[4,4,4],"uv":[0,0]}}]}}]}}]}}"#
++        )
++    };
++    let (plain, _) = to_java(&src(""));
++    let (mir, _) = to_java(&src(r#""mirror":true,"#));
++    let uv = |e: &ModelElement, d: FaceDirection| e.faces[&d].uv.unwrap();
++    // plain east = [0,4,4,8], west = [8,4,12,8], north = [4,4,8,8]
++    assert_eq!(uv(&plain[0], FaceDirection::East), [0.0, 4.0, 4.0, 8.0]);
++    assert_eq!(uv(&plain[0], FaceDirection::West), [8.0, 4.0, 12.0, 8.0]);
++    // mirrored: east takes west's rectangle with u reversed, and vice versa
++    assert_eq!(uv(&mir[0], FaceDirection::East), [12.0, 4.0, 8.0, 8.0]);
++    assert_eq!(uv(&mir[0], FaceDirection::West), [4.0, 4.0, 0.0, 8.0]);
++    assert_eq!(uv(&mir[0], FaceDirection::North), [8.0, 4.0, 4.0, 8.0]);
++}
++
++/// Independent numeric check of the composition/fixed-point formula: rotate a corner through
++/// the bone chain point-by-point and compare with the single rotation the converter emits.
++#[test]
++fn chain_with_different_pivots_matches_pointwise_rotation() {
++    use rp_transforms::model::{java_to_bedrock_pivot, java_to_bedrock_rotation};
++    fn rot_z(p: [f32; 2], c: [f32; 2], deg: f32) -> [f32; 2] {
++        let (s, k) = deg.to_radians().sin_cos();
++        let (dx, dy) = (p[0] - c[0], p[1] - c[1]);
++        [c[0] + k * dx - s * dy, c[1] + s * dx + k * dy]
++    }
++    let (els, report) = to_java(&format!(
++        r#"{{
++      "format_version":"1.12.0","minecraft:geometry":[{{
++        "description":{{"identifier":"geometry.t","texture_width":16,"texture_height":16}},
++        "bones":[
++          {{"name":"a","pivot":[0,12,0],"rotation":[0,0,30]}},
++          {{"name":"b","parent":"a","pivot":[4,6,0],"rotation":[0,0,-10],
++            "cubes":[{{"origin":[1,2,-2],"size":[4,4,4],{FACE}}}]}}
++        ]}}]}}"#
++    ));
++    assert_eq!(report.lossy_count, 0);
++    let r = els[0].rotation.as_ref().expect("net 20° rotation");
++    assert_eq!(r.axis, RotationAxis::Z);
++    assert!((r.angle - 20.0).abs() < 1e-3, "angle {}", r.angle);
++
++    // Ground truth: bone b rotation first (-10° about (4,6)), then bone a (30° about (0,12)).
++    let corner = [1.0f32, 2.0];
++    let truth = rot_z(rot_z(corner, [4.0, 6.0], -10.0), [0.0, 12.0], 30.0);
++    // Converter result: undo the Java mapping of the *unrotated* cube, apply the emitted rotation.
++    let bp = java_to_bedrock_pivot(r.origin);
++    let b_rot = java_to_bedrock_rotation(r.axis, r.angle);
++    let got = rot_z(corner, [bp[0], bp[1]], b_rot[2]);
++    assert!(
++        (truth[0] - got[0]).abs() < 1e-3 && (truth[1] - got[1]).abs() < 1e-3,
++        "truth {truth:?} vs converter {got:?}"
++    );
++}
++
++/// Rotations that cancel leave only a translation, which must be baked into the cuboid.
++#[test]
++fn cancelling_rotations_bake_translation() {
++    let (els, _) = to_java(&format!(
++        r#"{{
++      "format_version":"1.12.0","minecraft:geometry":[{{
++        "description":{{"identifier":"geometry.t","texture_width":16,"texture_height":16}},
++        "bones":[
++          {{"name":"a","pivot":[0,0,0],"rotation":[0,0,90]}},
++          {{"name":"b","parent":"a","pivot":[4,0,0],"rotation":[0,0,-90],
++            "cubes":[{{"origin":[1,2,-2],"size":[2,2,2],{FACE}}}]}}
++        ]}}]}}"#
++    ));
++    assert!(els[0].rotation.is_none());
++    // A(B(p)) = R90 (c + R-90 (p - c)) = p + (R90 c - c); c=(4,0,0) -> t = (0,4,0)-(4,0,0) = (-4,4,0)
++    let e = &els[0];
++    assert!((e.to[0] - e.from[0] - 2.0).abs() < 1e-4);
++    // Bedrock origin (1,2,-2)+(-4,4,0) = (-3,6,-2) -> Java from = (8-(-3+2), 6, -2+8) = (9,6,6)
++    assert!(
++        (e.from[0] - 9.0).abs() < 1e-3
++            && (e.from[1] - 6.0).abs() < 1e-3
++            && (e.from[2] - 6.0).abs() < 1e-3,
++        "{:?}",
++        e.from
++    );
++}
+

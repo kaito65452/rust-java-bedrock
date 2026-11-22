@@ -8,5 +8,7 @@
 
 pub mod locale;
 pub mod model;
+pub mod pbr;
+pub mod resolver;
 pub mod sound;
 pub mod texture;

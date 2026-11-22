@@ -173,6 +173,11 @@ impl PackContainer {
                 continue;
             }
 
+            // Filter OS metadata junk files at scan time so they never enter the pipeline.
+            if is_os_junk(&clean_path) {
+                continue;
+            }
+
             if entry.size() > limits.max_single_file_bytes {
                 return Err(IoError::FileSizeLimitExceeded {
                     path: clean_path,
@@ -439,6 +444,9 @@ fn collect_dir_entries(
             })?;
             let rel_str = rel.to_string_lossy();
             let clean = sanitize_archive_path(&rel_str)?;
+            if is_os_junk(&clean) {
+                continue;
+            }
             out.push((clean, entry_path, sym_meta.len()));
         }
     }
@@ -446,12 +454,18 @@ fn collect_dir_entries(
     Ok(())
 }
 
-fn is_os_junk(path: &str) -> bool {
-    path.starts_with("__MACOSX/")
-        || path == ".DS_Store"
-        || path.ends_with("/.DS_Store")
-        || path == "Thumbs.db"
-        || path.ends_with("/Thumbs.db")
+/// Returns `true` if `path` is an OS metadata/junk entry (`desktop.ini`, `.DS_Store`,
+/// `Thumbs.db`, `__MACOSX/`, or macOS AppleDouble `._*` resource fork).
+#[must_use]
+pub fn is_os_junk(path: &str) -> bool {
+    let norm = path.replace('\\', "/");
+    let lower = norm.to_ascii_lowercase();
+    if lower.starts_with("__macosx/") || lower.contains("/__macosx/") || lower == "__macosx" {
+        return true;
+    }
+    let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    matches!(file_name, "desktop.ini" | ".ds_store" | "thumbs.db")
+        || file_name.starts_with("._")
 }
 
 #[cfg(test)]
@@ -588,5 +602,23 @@ mod tests {
         assert!(parsed_nested.contains("pack.mcmeta"));
         assert!(parsed_nested.contains("pack.png"));
         assert!(parsed_nested.contains("assets/minecraft/textures/block/stone.png"));
+    }
+
+    #[test]
+    fn filters_os_junk_files_at_scan_time() {
+        let zip_bytes = build_raw_zip(&[
+            ("pack.mcmeta", b"{}"),
+            ("desktop.ini", b"[.ShellClassInfo]"),
+            ("assets/minecraft/textures/Desktop.INI", b"junk"),
+            (".DS_Store", b"mac"),
+            ("Thumbs.db", b"win"),
+            ("__MACOSX/._pack.mcmeta", b"fork"),
+            ("assets/minecraft/textures/block/stone.png", b"png"),
+        ]);
+        let parsed =
+            PackContainer::read_from_zip_bytes(&zip_bytes, IoLimits::default()).expect("read zip");
+        assert!(parsed.contains("pack.mcmeta"));
+        assert!(parsed.contains("assets/minecraft/textures/block/stone.png"));
+        assert_eq!(parsed.len(), 2);
     }
 }

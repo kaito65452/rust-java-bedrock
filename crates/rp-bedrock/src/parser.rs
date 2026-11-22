@@ -137,6 +137,7 @@ pub fn parse_bedrock_pack_with_options(
             bedrock_geo_version: Some(BedrockGeoVersion::for_engine_version(min_engine)),
             bedrock_manifest_version: Some(manifest.format_version),
             emit_java_items_definitions: None,
+            convert_pbr: false,
         },
         ..ResourcePackIR::default()
     };
@@ -542,7 +543,9 @@ fn extract_atlas_paths(paths: &AtlasTexturePath) -> Vec<String> {
 }
 
 fn infer_bedrock_texture_category(bedrock_rel: &str, canonical_id: &str) -> TextureCategory {
-    if bedrock_rel.starts_with("textures/blocks/") {
+    if canonical_id.starts_with("mob_effect/") {
+        TextureCategory::MobEffect
+    } else if bedrock_rel.starts_with("textures/blocks/") {
         TextureCategory::Block
     } else if bedrock_rel.starts_with("textures/items/") {
         TextureCategory::Item

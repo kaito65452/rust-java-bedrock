@@ -49,6 +49,8 @@ pub enum TextureCategory {
     Armor,
     /// Painting texture.
     Painting,
+    /// Status / mob effect icon (`mob_effect/<id>` in Java, `textures/ui/<id>_effect` in Bedrock).
+    MobEffect,
     /// Any other texture category.
     Other,
 }
@@ -62,11 +64,13 @@ impl TextureCategory {
             Self::Block
         } else if lower.starts_with("item/") || lower.starts_with("items/") {
             Self::Item
+        } else if lower.starts_with("mob_effect/") {
+            Self::MobEffect
         } else if lower.starts_with("entity/") {
             Self::Entity
         } else if lower.starts_with("gui/") {
             Self::Gui
-        } else if lower.starts_with("particle/") {
+        } else if lower.starts_with("particle/") || lower.starts_with("particles/") {
             Self::Particle
         } else if lower.starts_with("environment/") {
             Self::Environment
@@ -385,6 +389,9 @@ pub struct PackMetadata {
     pub bedrock_manifest_version: Option<u32>,
     /// Override for generating Java `1.21.4+` (`pack_format >= 46`) `assets/minecraft/items/*.json`.
     pub emit_java_items_definitions: Option<bool>,
+    /// Whether to convert Java LabPBR (`_n.png` / `_s.png`) maps into Bedrock `*_mer.png` + `*.texture_set.json`.
+    #[serde(default)]
+    pub convert_pbr: bool,
 }
 
 impl Default for PackMetadata {
@@ -404,6 +411,7 @@ impl Default for PackMetadata {
             bedrock_geo_version: None,
             bedrock_manifest_version: None,
             emit_java_items_definitions: None,
+            convert_pbr: false,
         }
     }
 }
@@ -641,6 +649,15 @@ pub struct LocaleTable {
     pub comments: Vec<String>,
 }
 
+/// Java LabPBR sidecar maps (`_n.png` normal, `_s.png` specular) associated with a base texture ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PbrSourceMaps {
+    /// Original archive path and raw PNG bytes for the `_n.png` normal map.
+    pub normal_png: Option<(String, Arc<Vec<u8>>)>,
+    /// Original archive path and raw PNG bytes for the `_s.png` specular/smoothness/metalness map.
+    pub specular_png: Option<(String, Arc<Vec<u8>>)>,
+}
+
 /// Canonical Intermediate Representation decoupling source parsing from target emission.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResourcePackIR {
@@ -650,12 +667,20 @@ pub struct ResourcePackIR {
     pub textures: BTreeMap<String, TextureAsset>,
     /// 3D models keyed by canonical model ID without extension.
     pub models: BTreeMap<String, ModelAsset>,
+    /// Java `assets/minecraft/blockstates/<block>.json` -> referenced model IDs.
+    pub java_blockstates: BTreeMap<String, Vec<String>>,
+    /// Java `assets/minecraft/items/<item>.json` -> referenced model IDs.
+    pub java_item_defs: BTreeMap<String, Vec<String>>,
+    /// Java LabPBR sidecar maps keyed by base canonical texture ID (e.g. `"block/stone"`).
+    pub pbr_maps: BTreeMap<String, PbrSourceMaps>,
     /// Sound events and `.ogg` audio files.
     pub sounds: SoundRegistry,
     /// Language tables keyed by lowercase locale code (e.g. `"en_us"`).
     pub locales: BTreeMap<String, LocaleTable>,
     /// Bedrock attachable bindings (`attachables/*.json`).
     pub attachables: BTreeMap<String, AttachableAsset>,
+    /// Optional splash lines parsed from Java `assets/minecraft/texts/splashes.txt` or Bedrock `splashes.json`.
+    pub splashes: Vec<String>,
     /// Unmodified extra files (e.g. pack license/README) preserved as pass-through.
     pub passthrough_files: BTreeMap<String, Vec<u8>>,
 }
