@@ -55,7 +55,7 @@ jobs:
           retention-days: 7
 
   test-and-clippy:
-    name: Check, Clippy (-D warnings) & Full Workspace Tests
+    name: Check, Frontend Build, Clippy (-D warnings) & Full Workspace Tests
     needs: blockbench-web-bundle
     runs-on: ubuntu-latest
     steps:
@@ -66,6 +66,17 @@ jobs:
         with:
           name: blockbench-web-vendor
           path: assets/vendor
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build PackStudio Tauri Frontend (Vite + TypeScript + Monaco + Xterm)
+        working-directory: apps/pack-studio
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
 
       - name: Install Linux GUI & WebKitGTK deps
         run: |
@@ -87,31 +98,38 @@ jobs:
       - name: Cache Cargo Build
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo check -p pack-studio
-        run: cargo check -p pack-studio
+      - name: cargo check --workspace
+        run: cargo check --workspace
+
+      - name: cargo clippy -p pack-studio-tauri --all-targets --no-deps -- -D warnings
+        run: cargo clippy -p pack-studio-tauri --all-targets --no-deps -- -D warnings
 
       - name: cargo clippy -p pack-studio --all-targets --no-deps -- -D warnings
         run: cargo clippy -p pack-studio --all-targets --no-deps -- -D warnings
 
-      - name: cargo check (embed-blockbench + native-webview features)
-        run: cargo check -p pack-studio --features "embed-blockbench,native-webview"
+      - name: cargo check (embed-blockbench feature)
+        run: |
+          cargo check -p pack-studio-tauri --features embed-blockbench
+          cargo check -p pack-studio --features "embed-blockbench,native-webview"
 
-      - name: cargo test -p pack-studio (verbose)
-        run: cargo test -p pack-studio -- --nocapture
+      - name: cargo test -p pack-studio-tauri (verbose)
+        run: cargo test -p pack-studio-tauri -- --nocapture
 
       - name: cargo test --workspace
         run: cargo test --workspace
 
-      - name: Build & Upload PackStudio Release Binary
+      - name: Build & Upload PackStudio Tauri Release Binary
         if: ${{ inputs.build_release == true || github.event_name == 'push' }}
         run: |
-          cargo build -p pack-studio --release --features "embed-blockbench,native-webview"
-          ls -lh target/release/pack-studio
+          cargo build -p pack-studio-tauri --release --features embed-blockbench
+          ls -lh target/release/pack-studio-tauri
 
-      - name: Upload PackStudio Linux Release Artifact
+      - name: Upload PackStudio Tauri Linux Release Artifact
         if: ${{ inputs.build_release == true || github.event_name == 'push' }}
         uses: actions/upload-artifact@v4
         with:
-          name: pack-studio-linux-x86_64
-          path: target/release/pack-studio
+          name: pack-studio-tauri-linux-x86_64
+          path: |
+            target/release/pack-studio-tauri
+            scripts/run-studio-linux.sh
           retention-days: 7

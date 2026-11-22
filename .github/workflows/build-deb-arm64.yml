@@ -47,7 +47,7 @@ jobs:
           retention-days: 7
 
   package-deb-arm64:
-    name: Build & Verify pack-studio ARM64 .deb
+    name: Build & Verify PackStudio Tauri ARM64 .deb
     needs: build-blockbench-bundle
     runs-on: ubuntu-24.04-arm
     steps:
@@ -59,13 +59,28 @@ jobs:
           name: blockbench-web-vendor-arm64
           path: assets/vendor
 
-      - name: Install Linux ARM64 Build Dependencies
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build PackStudio Tauri Frontend (ARM64)
+        working-directory: apps/pack-studio
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Install Linux ARM64 Build Dependencies (GTK3 + WebKitGTK 4.1)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             pkg-config \
             dpkg-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
             libxkbcommon-dev \
             libwayland-dev \
             libx11-dev \
@@ -77,21 +92,21 @@ jobs:
       - name: Cache Cargo Build (ARM64)
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "v1-arm64-deb"
+          prefix-key: "v2-tauri-arm64-deb"
 
-      - name: Build pack-studio Release Binary (ARM64 + Embedded Blockbench)
+      - name: Build pack-studio-tauri Release Binary (ARM64 + Embedded Blockbench)
         run: |
-          cargo build -p pack-studio --release --features embed-blockbench
-          ls -lh target/release/pack-studio
-          file target/release/pack-studio
+          cargo build -p pack-studio-tauri --release --features embed-blockbench
+          ls -lh target/release/pack-studio-tauri
+          file target/release/pack-studio-tauri
 
       - name: Build Debian Package (.deb) for arm64
         env:
           DEB_ARCH: arm64
-          DEB_VERSION: ${{ inputs.version || '0.1.0' }}
+          DEB_VERSION: ${{ inputs.version || '0.2.0' }}
         run: |
           chmod +x scripts/build_deb_arm64.sh
-          bash scripts/build_deb_arm64.sh target/release/pack-studio dist-deb
+          bash scripts/build_deb_arm64.sh target/release/pack-studio-tauri dist-deb
 
       - name: Verify .deb Installation via apt
         run: |
@@ -99,7 +114,7 @@ jobs:
           dpkg-deb --contents "${DEB_FILE}"
           sudo apt-get install -y "./${DEB_FILE}"
           which pack-studio
-          ls -lh /usr/bin/pack-studio /usr/share/applications/pack-studio.desktop
+          ls -lh /usr/bin/pack-studio /usr/bin/pack-studio-bin /usr/share/applications/pack-studio.desktop
 
       - name: Upload ARM64 Debian Package Artifact
         uses: actions/upload-artifact@v4

@@ -10,6 +10,7 @@ members = [
     "crates/rp-tui",
     "crates/rp-gui",
     "crates/pack-studio",
+    "apps/pack-studio/src-tauri",
 ]
 
 [workspace.package]

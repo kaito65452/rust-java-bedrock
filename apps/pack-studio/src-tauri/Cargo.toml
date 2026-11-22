@@ -1,0 +1,48 @@
+[package]
+name = "pack-studio-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tauri v2 Rust backend for PackStudio — Minecraft Java & Bedrock Resource Pack Artist Workbench"
+
+[features]
+default = []
+embed-blockbench = []
+
+[lib]
+name = "pack_studio_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "pack-studio-tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+dirs = "6.0"
+fast_image_resize = "5.5"
+glam = "0.30"
+image = { workspace = true, features = ["tga", "jpeg", "webp"] }
+notify = "8.2"
+portable-pty = "0.9"
+rp-bedrock.workspace = true
+rp-core.workspace = true
+rp-io.workspace = true
+rp-java.workspace = true
+rp-transforms.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tar = "0.4"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-opener = "2"
+tempfile.workspace = true
+uuid.workspace = true
+zip.workspace = true
+zstd = "0.13"
