@@ -201,11 +201,21 @@ pub fn export_pack_archive(
     version: [u32; 3],
     uv_atlas_guard: bool,
 ) -> Result<ExportPackageSummary> {
+    let mut cleaned_container = PackContainer::new();
+    let mut stripped_junk_count = 0usize;
+    for (path, bytes) in container.files() {
+        if cfg.strip_junk_files && is_packaging_junk(path) {
+            stripped_junk_count += 1;
+            continue;
+        }
+        cleaned_container.insert(path, bytes.clone())?;
+    }
+
     let mut audit_status = None;
     let mut audit_summary = String::from("Skipped");
 
     if cfg.run_semantic_audit {
-        let audit = run_semantic_audit_sync(container, uv_atlas_guard)?;
+        let audit = run_semantic_audit_sync(&cleaned_container, uv_atlas_guard)?;
         audit_status = Some(audit.status);
         audit_summary = audit.summary.clone();
         if audit.status == AuditStatus::Failed && !cfg.allow_export_with_errors {
@@ -240,15 +250,10 @@ pub fn export_pack_archive(
         .compression_level(Some(cfg.compression.deflate_level()));
 
     let mut asset_count = 0usize;
-    let mut stripped_junk_count = 0usize;
 
     if cfg.format == PackageFormat::Mcaddon {
         // .mcaddon bundles RP/ and optional BP/ cleanly at archive root
-        for (path, bytes) in container.files() {
-            if cfg.strip_junk_files && is_packaging_junk(path) {
-                stripped_junk_count += 1;
-                continue;
-            }
+        for (path, bytes) in cleaned_container.files() {
             let clean = sanitize_archive_path(path)?;
             zip.start_file(format!("RP/{clean}"), options)?;
             zip.write_all(bytes)?;
@@ -271,11 +276,7 @@ pub fn export_pack_archive(
         }
     } else {
         // Clean flat root for .zip / .mcpack (pack.mcmeta or manifest.json directly at archive root!)
-        for (path, bytes) in container.files() {
-            if cfg.strip_junk_files && is_packaging_junk(path) {
-                stripped_junk_count += 1;
-                continue;
-            }
+        for (path, bytes) in cleaned_container.files() {
             let clean = sanitize_archive_path(path)?;
             zip.start_file(clean, options)?;
             zip.write_all(bytes)?;
