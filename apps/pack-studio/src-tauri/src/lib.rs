@@ -175,7 +175,7 @@ mod tests {
             &fs::read_to_string(addon_rp.join("manifest.json")).unwrap(),
         )
         .unwrap();
-        let bp_manifest_path = addon_rp.parent().unwrap().join("behavior_pack/manifest.json");
+        let bp_manifest_path = addon_rp.parent().unwrap().join("BP/manifest.json");
         assert!(bp_manifest_path.is_file());
         let bp_manifest: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(bp_manifest_path).unwrap()).unwrap();
