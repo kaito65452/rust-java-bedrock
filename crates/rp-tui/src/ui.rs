@@ -1,7 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table,
     TableState, Tabs, Wrap,
@@ -11,7 +13,7 @@ use rp_core::{BedrockGeoVersion, Edition, RotationSnapMode};
 
 use crate::app::{ActiveTab, App, ExplorerItem, InputMode};
 use crate::preview::format_model_details;
-use crate::scanner::format_bytes;
+use crate::scanner::{format_bytes, project_model_3d};
 
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -33,6 +35,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         ActiveTab::Explorer => render_explorer_tab(frame, app, chunks[1]),
         ActiveTab::Convert => render_convert_tab(frame, app, chunks[1]),
         ActiveTab::BatchAudit => render_batch_tab(frame, app, chunks[1]),
+        ActiveTab::Compare => render_compare_tab(frame, app, chunks[1]),
         ActiveTab::VersionsLogs => render_versions_tab(frame, app, chunks[1]),
     }
 
@@ -55,7 +58,11 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let spin = SPINNER_FRAMES[(app.tick_count as usize) % SPINNER_FRAMES.len()];
         format!(" rp-tui [Linux] — {spin} {msg} ")
     } else {
-        format!(" rp-tui [Linux] — {} ", app.scan_dir.display())
+        format!(
+            " rp-tui [Linux] — {} [Sort: {}] ",
+            app.scan_dir.display(),
+            app.pack_sort.label()
+        )
     };
 
     let tabs = Tabs::new(titles)
@@ -193,7 +200,7 @@ fn render_packs_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     frame.render_stateful_widget(table, cols[0], &mut state);
 
-    // Right pane: Live Summary
+    // Right pane: Live Summary + Pack Icon Half-Block Preview
     let detail_lines = if let Some(pack) = app.current_pack() {
         match &pack.summary {
             Ok(s) => {
@@ -260,6 +267,14 @@ fn render_packs_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
                         Span::raw(s.warnings.len().to_string()),
                     ]),
                 ];
+                if !app.cached_icon_lines.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "Pack Icon:",
+                        Style::default().fg(Color::Magenta),
+                    )));
+                    lines.extend(app.cached_icon_lines.iter().cloned());
+                }
                 if !s.warnings.is_empty() {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
@@ -268,7 +283,7 @@ fn render_packs_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     )));
-                    for w in s.warnings.iter().take(6) {
+                    for w in s.warnings.iter().take(4) {
                         lines.push(Line::from(format!(" • {}: {}", w.asset, w.message)));
                     }
                 }
@@ -319,7 +334,7 @@ fn render_explorer_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
         .split(area);
 
     let items: Vec<ListItem<'_>> = app
@@ -370,7 +385,73 @@ fn render_explorer_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     frame.render_stateful_widget(list, cols[0], &mut state);
 
-    // Right pane: Asset Preview / Details
+    // Special split for 3D Models: Top = Live Braille 3D Wireframe Canvas, Bottom = Metadata!
+    if let Some(ExplorerItem::Model(id)) = app.explorer_items.get(app.selected_asset_idx)
+        && let Some(model) = loaded.ir.models.get(id)
+        && !model.elements.is_empty()
+    {
+        let right_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(cols[1]);
+
+        let scene = project_model_3d(
+            model,
+            app.model_yaw_deg,
+            app.model_pitch_deg,
+            app.show_head_ref,
+        );
+        let canvas_title = format!(
+            " 3D Wireframe [yaw={:.0}° pitch={:.0}° | a/d/w/s:Orbit | h:HeadRef={}] ",
+            app.model_yaw_deg,
+            app.model_pitch_deg,
+            if app.show_head_ref { "ON" } else { "OFF" }
+        );
+        let canvas = Canvas::default()
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .title(canvas_title),
+            )
+            .marker(Marker::Braille)
+            .x_bounds([-1.4, 1.4])
+            .y_bounds([-1.2, 1.2])
+            .paint(move |ctx| {
+                for &(a, b) in &scene.head_ref_edges {
+                    ctx.draw(&CanvasLine {
+                        x1: f64::from(a[0]),
+                        y1: f64::from(a[1]),
+                        x2: f64::from(b[0]),
+                        y2: f64::from(b[1]),
+                        color: Color::DarkGray,
+                    });
+                }
+                for &(a, b) in &scene.edges {
+                    ctx.draw(&CanvasLine {
+                        x1: f64::from(a[0]),
+                        y1: f64::from(a[1]),
+                        x2: f64::from(b[0]),
+                        y2: f64::from(b[1]),
+                        color: Color::Cyan,
+                    });
+                }
+            });
+        frame.render_widget(canvas, right_split[0]);
+
+        let detail = Paragraph::new(format_model_details(model))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" 3D Model Diagnostics (PgUp/PgDn to scroll) "),
+            )
+            .scroll((app.detail_scroll, 0))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(detail, right_split[1]);
+        return;
+    }
+
+    // Standard right pane for Textures, parent-only Models, Attachables, Sounds, Locales, Raw
     let mut detail_lines: Vec<Line<'static>> = Vec::new();
     match app.explorer_items.get(app.selected_asset_idx) {
         Some(ExplorerItem::Texture(id)) => {
@@ -584,11 +665,10 @@ fn render_convert_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let form_list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Conversion Settings — Press 'x' or F5 to Run "),
+            .title(" Conversion Settings — Press 'x'/F5 to Run | 'e' Export JSON "),
     );
     frame.render_widget(form_list, cols[0]);
 
-    // Right pane: Conversion Report
     let report_lines: Vec<Line<'static>> = match &app.last_conversion {
         None => vec![
             Line::from("No conversion executed in this session yet."),
@@ -698,7 +778,7 @@ fn render_batch_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
         _ => (
             0.0,
             String::from(
-                "Press 't' to Audit Round-Trip all selected packs | 'b' to Batch Convert into ./converted/",
+                "Press 't' to Audit Round-Trip | 'b' to Batch Convert into ./converted/ | 'e' Export JSON",
             ),
         ),
     };
@@ -788,6 +868,105 @@ fn render_batch_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_stateful_widget(table, rows_layout[1], &mut state);
 }
 
+fn render_compare_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let lines: Vec<Line<'static>> = match &app.pack_diff {
+        None => vec![
+            Line::from("No pack comparison run yet."),
+            Line::from(""),
+            Line::from(
+                "1. Go to [1:Packs] and mark 2 packs with Space (e.g. KITSUNE.zip and kitsune-java.zip)",
+            ),
+            Line::from("2. Press '=' (or press 'r' right here) to run a canonical IR Pack Diff!"),
+        ],
+        Some(Err(err)) => vec![
+            Line::from(Span::styled(
+                "Pack Diff Error:",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(err.clone()),
+        ],
+        Some(Ok(d)) => {
+            let mut out = vec![
+                Line::from(vec![
+                    Span::styled(
+                        "Pack A: ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("{} ({})", d.name_a, d.edition_a)),
+                    Span::raw("   vs   "),
+                    Span::styled(
+                        "Pack B: ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("{} ({})", d.name_b, d.edition_b)),
+                ]),
+                Line::from(""),
+            ];
+
+            let cats = [
+                ("Textures", &d.textures),
+                ("3D Models", &d.models),
+                ("Attachables", &d.attachables),
+                ("Sound Files", &d.sound_files),
+                ("Locales", &d.locales),
+            ];
+            for (title, cat) in cats {
+                out.push(Line::from(Span::styled(
+                    format!(
+                        "=== {title}: {} shared | -{} only in A | +{} only in B ===",
+                        cat.shared_count,
+                        cat.only_in_a.len(),
+                        cat.only_in_b.len()
+                    ),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for id in cat.only_in_a.iter().take(15) {
+                    out.push(Line::from(Span::styled(
+                        format!("  - [A only] {id}"),
+                        Style::default().fg(Color::Red),
+                    )));
+                }
+                if cat.only_in_a.len() > 15 {
+                    out.push(Line::from(format!(
+                        "  ... (+{} more in A)",
+                        cat.only_in_a.len() - 15
+                    )));
+                }
+                for id in cat.only_in_b.iter().take(15) {
+                    out.push(Line::from(Span::styled(
+                        format!("  + [B only] {id}"),
+                        Style::default().fg(Color::Green),
+                    )));
+                }
+                if cat.only_in_b.len() > 15 {
+                    out.push(Line::from(format!(
+                        "  ... (+{} more in B)",
+                        cat.only_in_b.len() - 15
+                    )));
+                }
+                out.push(Line::from(""));
+            }
+            out
+        }
+    };
+
+    let diff_view = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Canonical IR Pack Compare (↑/↓:Scroll | r:Run Diff) "),
+        )
+        .scroll((app.diff_scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(diff_view, area);
+}
+
 fn render_versions_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let split = Layout::default()
         .direction(Direction::Vertical)
@@ -871,18 +1050,19 @@ fn render_versions_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let hints = match app.active_tab {
         ActiveTab::Packs => {
-            "↑/↓:Select | Space:Mark | Enter:Explore | c:Convert | t:Audit | d:Dir | /:Filter | r:Rescan | ?:Help | q:Quit"
+            "Enter:Explore | c:Convert | t:Audit | =:Compare | s:Sort | u:Unpack | p:Repack | Del:Delete | ?:Help | q:Quit"
         }
         ActiveTab::Explorer => {
-            "↑/↓:Asset | f:Category | /:Search | PgUp/PgDn:Scroll | c:Send to Convert | ?:Help | q:Quit"
+            "↑/↓:Asset | a/d/w/s:Orbit 3D | h:HeadRef | f:Category | /:Search | c:Convert | ?:Help | q:Quit"
         }
         ActiveTab::Convert => {
-            "↑/↓:Field | ←/→:Option | Enter:Edit Path | x/F5:Run Convert | PgUp/PgDn:Scroll | ?:Help | q:Quit"
+            "↑/↓:Field | ←/→:Option | Enter:Edit | x/F5:Convert | e:Export JSON | ?:Help | q:Quit"
         }
         ActiveTab::BatchAudit => {
-            "t:Audit Round-Trip | b:Batch Convert -> ./converted/ | ↑/↓:Result | ?:Help | q:Quit"
+            "t:Audit Round-Trip | b:Batch Convert | e:Export JSON | ↑/↓:Result | ?:Help | q:Quit"
         }
-        ActiveTab::VersionsLogs => "↑/↓:Scroll Versions | 1-5/Tab:Switch Tab | ?:Help | q:Quit",
+        ActiveTab::Compare => "r:Compare Marked Packs | ↑/↓:Scroll Diff | ?:Help | q:Quit",
+        ActiveTab::VersionsLogs => "↑/↓:Scroll Versions | 1-6/Tab:Switch Tab | ?:Help | q:Quit",
     };
 
     let footer = Paragraph::new(Line::from(vec![
@@ -900,7 +1080,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_help_overlay(frame: &mut Frame<'_>) {
-    let area = centered_rect(72, 70, frame.area());
+    let area = centered_rect(76, 78, frame.area());
     frame.render_widget(Clear, area);
     let lines = vec![
         Line::from(Span::styled(
@@ -911,27 +1091,24 @@ fn render_help_overlay(frame: &mut Frame<'_>) {
         )),
         Line::from(""),
         Line::from("  Global:"),
-        Line::from("    1..5 / Tab / Shift+Tab   Switch between tabs"),
-        Line::from("    ? / F1                   Toggle this help overlay"),
+        Line::from("    1..6 / Tab / Shift+Tab   Switch tabs (mouse click & wheel supported)"),
+        Line::from("    ? / F1                   Toggle help overlay"),
         Line::from("    q / Ctrl+C               Quit rp-tui"),
         Line::from(""),
         Line::from("  [1:Packs] Manager:"),
-        Line::from("    ↑/↓ or j/k               Move selection"),
-        Line::from("    Space / a                Toggle pack mark / toggle all"),
-        Line::from("    Enter / i                Deep-inspect pack in Explorer"),
-        Line::from("    c                        Load pack into Convert tab"),
-        Line::from("    t                        Run instant bidirectional round-trip audit"),
+        Line::from("    Space / a / s            Mark / mark all / cycle sort order"),
+        Line::from("    Enter / i / c / t        Explore / send to Convert / Round-Trip Audit"),
+        Line::from("    = / u / p / Del          Compare 2 packs / Unpack / Repack / Delete"),
         Line::from("    d / r / /                Change directory / rescan / filter"),
         Line::from(""),
-        Line::from("  [2:Explorer] Inspector & Terminal Texture Preview:"),
-        Line::from("    f / →                    Cycle asset category filter"),
-        Line::from("    / / Esc                  Search assets / clear search"),
-        Line::from("    PgUp/PgDn or J/K         Scroll model/texture detail panel"),
+        Line::from("  [2:Explorer] Asset Viewer & 3D Braille Wireframe:"),
+        Line::from("    a/d or [/] , w/s , h     Orbit 3D model yaw/pitch & toggle head box"),
+        Line::from("    f / →  ,  / / Esc        Cycle category filter / search"),
+        Line::from("    PgUp/PgDn or J/K         Scroll diagnostics"),
         Line::from(""),
-        Line::from("  [3:Convert] & [4:Batch & Audit]:"),
-        Line::from("    ←/→ / Space / Enter      Change options or edit paths"),
-        Line::from("    x / F5                   Execute single-pack conversion"),
-        Line::from("    b / t                    Batch convert / round-trip audit"),
+        Line::from("  [3:Convert], [4:Batch], [5:Compare]:"),
+        Line::from("    x / F5 / e               Run Convert / Export JSON report"),
+        Line::from("    b / t / r                Batch Convert / Audit All / Refresh Diff"),
         Line::from(""),
         Line::from(Span::styled(
             "Press Esc or ? to close.",
@@ -950,6 +1127,34 @@ fn render_help_overlay(frame: &mut Frame<'_>) {
 }
 
 fn render_input_overlay(frame: &mut Frame<'_>, mode: &InputMode) {
+    if let InputMode::ConfirmDelete { path, is_dir } = mode {
+        let area = centered_rect(68, 22, frame.area());
+        frame.render_widget(Clear, area);
+        let kind = if *is_dir { "directory" } else { "file" };
+        let prompt = Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!("Permanently delete this {kind}?"),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(path.display().to_string()),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press 'y' to confirm, or any other key to cancel.",
+                Style::default().fg(Color::Yellow),
+            )),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title(" Confirm Delete "),
+        )
+        .wrap(Wrap { trim: false });
+        frame.render_widget(prompt, area);
+        return;
+    }
+
     let (title, buf) = match mode {
         InputMode::EditScanDir(s) => (" Change Scan Directory (Enter to apply, Esc to cancel) ", s),
         InputMode::FilterPacks(s) => (" Filter Resource Packs (Enter to apply, Esc to cancel) ", s),
@@ -963,7 +1168,7 @@ fn render_input_overlay(frame: &mut Frame<'_>, mode: &InputMode) {
         InputMode::EditConvertOutput(s) => {
             (" Edit Output Pack Path (Enter to apply, Esc to cancel) ", s)
         }
-        InputMode::Normal => return,
+        InputMode::Normal | InputMode::ConfirmDelete { .. } => return,
     };
     let area = centered_rect(70, 18, frame.area());
     frame.render_widget(Clear, area);
@@ -1034,7 +1239,10 @@ mod tests {
 
     use super::*;
     use crate::preview::render_texture_halfblock;
-    use crate::scanner::{audit_pack_roundtrip, load_pack_ir, scan_directory_for_packs};
+    use crate::scanner::{
+        audit_pack_roundtrip, diff_packs, load_pack_ir, repack_dir_to_archive,
+        scan_directory_for_packs, unpack_pack_to_dir,
+    };
 
     fn make_png(w: u32, h: u32, color: Rgba<u8>) -> Vec<u8> {
         let img = RgbaImage::from_pixel(w, h, color);
@@ -1045,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_all_five_tabs_and_halfblock_texture_preview() {
+    fn renders_all_six_tabs_3d_canvas_diff_and_unpack_repack() {
         let dir = tempdir().expect("tempdir");
         let mut container = PackContainer::new();
         container
@@ -1056,20 +1264,38 @@ mod tests {
             )
             .expect("mcmeta");
         container
+            .insert("pack.png", make_png(16, 16, Rgba([40, 200, 120, 255])))
+            .expect("icon");
+        container
             .insert(
                 "assets/minecraft/textures/block/stone.png",
                 make_png(16, 16, Rgba([120, 180, 220, 255])),
             )
             .expect("tex");
+        container
+            .insert(
+                "assets/minecraft/models/block/cube_3d.json",
+                br##"{"textures":{"all":"block/stone"},"elements":[{"from":[4,4,4],"to":[12,12,12],"rotation":{"x":15,"y":45,"z":0,"origin":[8,8,8]},"faces":{"north":{"uv":[0,0,16,16],"texture":"#all"}}}]}"##
+                    .to_vec(),
+            )
+            .expect("model");
         let zip_path = dir.path().join("sample_java.zip");
-        let zip_bytes = container.write_to_zip_bytes().expect("write zip");
-        std::fs::write(&zip_path, zip_bytes).expect("save zip");
+        std::fs::write(&zip_path, container.write_to_zip_bytes().expect("zip")).expect("save");
+
+        // Test unpack + repack round-trip
+        let unpacked = unpack_pack_to_dir(&zip_path, IoLimits::default()).expect("unpack");
+        assert!(unpacked.join("pack.mcmeta").is_file());
+        let repacked = repack_dir_to_archive(&unpacked, IoLimits::default()).expect("repack");
+        assert!(repacked.is_file());
 
         let mappings = MappingTable::default_embedded().expect("mappings");
         let packs =
             scan_directory_for_packs(dir.path(), &mappings, IoLimits::default()).expect("scan");
-        assert_eq!(packs.len(), 1);
-        assert_eq!(packs[0].file_name, "sample_java.zip");
+        assert!(packs.len() >= 2);
+
+        let diff = diff_packs(&zip_path, &repacked, &mappings, IoLimits::default()).expect("diff");
+        assert_eq!(diff.textures.shared_count, 1);
+        assert_eq!(diff.models.shared_count, 1);
 
         let audit = audit_pack_roundtrip(
             &zip_path,
@@ -1080,7 +1306,6 @@ mod tests {
         );
         assert!(audit.passed, "audit failed: {}", audit.detail);
 
-        // Verify half-block texture preview renders non-empty lines
         let tex = TextureAsset {
             id: String::from("block/stone"),
             category: TextureCategory::Block,
@@ -1088,12 +1313,11 @@ mod tests {
             payload: TexturePayload::from_raw(make_png(16, 16, Rgba([255, 80, 40, 255]))),
             animation: None,
         };
-        let preview_lines = render_texture_halfblock(&tex, 32, 16);
-        assert!(!preview_lines.is_empty());
+        assert!(!render_texture_halfblock(&tex, 32, 16).is_empty());
 
-        // Render every tab on a headless TestBackend
         let mut app = App::new(dir.path().to_path_buf(), None, mappings.clone());
         app.packs = packs;
+        app.refresh_pack_icon_cache();
         let (ed, ir, rep) = load_pack_ir(&zip_path, &mappings, IoLimits::default()).expect("ir");
         app.loaded_pack = Some(crate::app::LoadedPack {
             path: zip_path,
@@ -1101,10 +1325,12 @@ mod tests {
             ir,
             report: rep,
         });
+        app.explorer_category = crate::app::AssetCategoryFilter::Models;
         app.rebuild_explorer_items();
         app.audit_outcomes.push(audit);
+        app.pack_diff = Some(Ok(diff));
 
-        let backend = TestBackend::new(120, 36);
+        let backend = TestBackend::new(120, 38);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         for tab in ActiveTab::ALL {

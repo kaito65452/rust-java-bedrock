@@ -1,6 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Shared resource-pack manager, diffing, unpack/repack, audit, and 3D projection helpers
+/// used by both `rp-tui` and `rp-gui`.
+pub mod manager;
+
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 

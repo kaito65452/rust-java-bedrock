@@ -4,6 +4,23 @@ use ratatui::text::{Line, Span};
 
 use rp_core::{ModelAsset, TextureAsset};
 
+/// Renders raw PNG bytes (such as `pack.png` / `pack_icon.png`) as TrueColor ANSI half-blocks.
+#[must_use]
+pub fn render_png_bytes_halfblock(
+    png_bytes: &[u8],
+    max_cols: u16,
+    max_rows: u16,
+) -> Vec<Line<'static>> {
+    if max_cols == 0 || max_rows == 0 {
+        return Vec::new();
+    }
+    let decoded = match image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png) {
+        Ok(img) => img.into_rgba8(),
+        Err(_) => return Vec::new(),
+    };
+    render_rgba_halfblock(&decoded, max_cols, max_rows)
+}
+
 /// Renders a PNG `TextureAsset` as TrueColor ANSI half-block (`▀`) `ratatui` lines so textures
 /// can be previewed directly inside a Linux terminal without X11/Wayland.
 #[must_use]
@@ -39,7 +56,18 @@ pub fn render_texture_halfblock(
         decoded.into_owned()
     };
 
+    render_rgba_halfblock(&frame_img, max_cols, max_rows)
+}
+
+fn render_rgba_halfblock(
+    frame_img: &image::RgbaImage,
+    max_cols: u16,
+    max_rows: u16,
+) -> Vec<Line<'static>> {
     let (fw, fh) = frame_img.dimensions();
+    if fw == 0 || fh == 0 {
+        return Vec::new();
+    }
     let max_px_w = u32::from(max_cols).min(48);
     let max_px_h = u32::from(max_rows).saturating_mul(2).min(48);
 
@@ -50,9 +78,9 @@ pub fn render_texture_halfblock(
     let target_h = ((fh as f32 * scale).round() as u32).clamp(1, max_px_h);
 
     let resized = if target_w == fw && target_h == fh {
-        frame_img
+        frame_img.clone()
     } else {
-        image::imageops::resize(&frame_img, target_w, target_h, FilterType::Nearest)
+        image::imageops::resize(frame_img, target_w, target_h, FilterType::Nearest)
     };
 
     let (rw, rh) = resized.dimensions();

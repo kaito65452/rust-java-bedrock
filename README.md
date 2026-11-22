@@ -23,7 +23,7 @@ It parses `.zip`, `.mcpack`, and unpacked directory packs into a canonical Inter
 
 ---
 
-## Workspace Architecture (7 Crates)
+## Workspace Architecture (8 Crates)
 
 The converter decouples format parsing/emission from a shared canonical IR so `rp-java` and `rp-bedrock` never depend on each other:
 
@@ -34,22 +34,24 @@ The converter decouples format parsing/emission from a shared canonical IR so `r
 | [`crates/rp-transforms`](crates/rp-transforms) | Stateless format transformers: PNG header inspection, strip split/stitch, `.png.mcmeta` <-> `flipbook_textures.json`, `terrain_texture.json` / `item_texture.json` builders, Java <-> Bedrock 3D geometry & UV transforms, `.json` <-> `.lang` locales, and `.ogg` validation. |
 | [`crates/rp-java`](crates/rp-java) | Decoupled Java Edition parser & emitter (`pack.mcmeta`, multi-namespace `lang/`, `models/`, `items/`, `atlases/blocks.json`, `sounds.json`, `overlays`, and skipping Java-only `shaders/` / `optifine/` / `mcpatcher/`). |
 | [`crates/rp-bedrock`](crates/rp-bedrock) | Decoupled Bedrock Edition parser & emitter (`manifest.json` v1/v2/v3, UUID v4 generation, atlases, flipbooks, `.geo.json` `1.10.0`–`1.21.0`, `attachables/*.json`, `sound_definitions.json`, and `texts/*.lang`). |
-| [`crates/rp-cli`](crates/rp-cli) | `clap` CLI binary (`convert`, `inspect`, `versions`) with `indicatif` progress spinner, diagnostic tables, JSON report export, integration tests, and `proptest` fuzz/round-trip suites. |
-| [`crates/rp-tui`](crates/rp-tui) | Linux-only interactive Terminal UI (`ratatui` + `crossterm`) for browsing/managing resource packs, previewing PNG textures in TrueColor half-blocks, inspecting 3D models, converting, batch converting, and running round-trip audits. |
+| [`crates/rp-cli`](crates/rp-cli) | `clap` CLI binary (`convert`, `inspect`, `versions`) + shared pack manager/diff/audit/3D-projection library (`manager.rs`), diagnostic tables, JSON report export, integration tests, and `proptest` fuzz/round-trip suites. |
+| [`crates/rp-tui`](crates/rp-tui) | Linux-only interactive Terminal UI (`ratatui` + `crossterm`) with 6 tabs: Pack Manager (icon previews, sort, unpack/repack, safe delete), Explorer (TrueColor half-block textures + interactive 3D Braille wireframe orbit), Converter, Batch & Audit, Pack Compare/Diff, and Version Matrix. |
+| [`crates/rp-gui`](crates/rp-gui) | Native Desktop GUI Studio (`eframe` / `egui` + `rfd`) with drag-and-drop, dark/light theme, GPU-rendered animated texture viewer, interactive shaded/wireframe 3D model orbit viewport, converter, batch/audit benchmark, and pack diff view. |
 
 ---
 
 ## Build & Test
 
-### Build CLI & Linux TUI Binaries
+### Build CLI, Linux TUI, & Desktop GUI Binaries
 ```bash
-cargo build --release -p rp-cli -p rp-tui
-# Binaries: target/release/rp-cli, target/release/rp-tui (Linux-only TUI)
+cargo build --release -p rp-cli -p rp-tui -p rp-gui
+# Binaries: target/release/rp-cli, target/release/rp-tui (Linux TUI), target/release/rp-gui (Desktop GUI)
 ```
 
-Launch the interactive Linux TUI manager on any directory containing resource packs:
+Launch the interactive Linux TUI or Desktop GUI Studio on any directory containing resource packs:
 ```bash
 ./target/release/rp-tui /path/to/resource-packs
+./target/release/rp-gui /path/to/resource-packs
 ```
 
 Or debug build:

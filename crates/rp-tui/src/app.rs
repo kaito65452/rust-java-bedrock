@@ -12,9 +12,11 @@ use rp_core::{
 };
 use rp_io::IoLimits;
 
-use crate::preview::render_texture_halfblock;
+use crate::preview::{render_png_bytes_halfblock, render_texture_halfblock};
 use crate::scanner::{
-    AuditOutcome, DiscoveredPack, audit_pack_roundtrip, load_pack_ir, scan_directory_for_packs,
+    AuditOutcome, DiscoveredPack, PackDiff, PackSortKey, audit_pack_roundtrip, diff_packs,
+    export_audit_json, export_report_json, load_pack_ir, repack_dir_to_archive,
+    scan_directory_for_packs, sort_discovered_packs, suggest_output_path, unpack_pack_to_dir,
 };
 
 /// Active top-level tab in `rp-tui`.
@@ -22,23 +24,26 @@ use crate::scanner::{
 pub enum ActiveTab {
     /// Tab 1: Directory pack manager & scanner.
     Packs,
-    /// Tab 2: Deep asset explorer + terminal texture preview + 3D model inspector.
+    /// Tab 2: Deep asset explorer + terminal texture preview + interactive 3D Braille viewport.
     Explorer,
     /// Tab 3: Interactive single-pack converter & live report viewer.
     Convert,
     /// Tab 4: Multi-pack batch converter & round-trip benchmark/audit runner.
     BatchAudit,
-    /// Tab 5: Supported Minecraft version matrix & session logs.
+    /// Tab 5: Side-by-side canonical IR Pack Diff / Compare.
+    Compare,
+    /// Tab 6: Supported Minecraft version matrix & session logs.
     VersionsLogs,
 }
 
 impl ActiveTab {
     /// All tabs in visual order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Packs,
         Self::Explorer,
         Self::Convert,
         Self::BatchAudit,
+        Self::Compare,
         Self::VersionsLogs,
     ];
 
@@ -49,8 +54,9 @@ impl ActiveTab {
             Self::Packs => "1:Packs",
             Self::Explorer => "2:Explorer",
             Self::Convert => "3:Convert",
-            Self::BatchAudit => "4:Batch & Audit",
-            Self::VersionsLogs => "5:Versions & Logs",
+            Self::BatchAudit => "4:Batch",
+            Self::Compare => "5:Compare",
+            Self::VersionsLogs => "6:Versions",
         }
     }
 
@@ -62,7 +68,8 @@ impl ActiveTab {
             Self::Explorer => 1,
             Self::Convert => 2,
             Self::BatchAudit => 3,
-            Self::VersionsLogs => 4,
+            Self::Compare => 4,
+            Self::VersionsLogs => 5,
         }
     }
 
@@ -73,7 +80,8 @@ impl ActiveTab {
             Self::Packs => Self::Explorer,
             Self::Explorer => Self::Convert,
             Self::Convert => Self::BatchAudit,
-            Self::BatchAudit => Self::VersionsLogs,
+            Self::BatchAudit => Self::Compare,
+            Self::Compare => Self::VersionsLogs,
             Self::VersionsLogs => Self::Packs,
         }
     }
@@ -86,7 +94,8 @@ impl ActiveTab {
             Self::Explorer => Self::Packs,
             Self::Convert => Self::Explorer,
             Self::BatchAudit => Self::Convert,
-            Self::VersionsLogs => Self::BatchAudit,
+            Self::Compare => Self::BatchAudit,
+            Self::VersionsLogs => Self::Compare,
         }
     }
 }
@@ -282,7 +291,7 @@ impl ConvertForm {
         }
     }
 
-    /// Cycles the currently focused enum/bool field (`delta`: `+1` or `-1`).
+    /// Cycles the currently focused enum/bool field.
     pub fn cycle_current_field(&mut self, forward: bool) {
         match self.selected_field {
             2 => {
@@ -371,7 +380,7 @@ impl ConvertForm {
     }
 }
 
-/// Active inline text prompt overlay.
+/// Active modal / inline text prompt overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -385,6 +394,11 @@ pub enum InputMode {
     EditConvertInput(String),
     /// Editing `ConvertForm::output_path`.
     EditConvertOutput(String),
+    /// Confirming deletion of a resource pack file or directory (`y`/`n`).
+    ConfirmDelete {
+        path: PathBuf,
+        is_dir: bool,
+    },
 }
 
 /// Result of the last single-pack conversion.
@@ -409,6 +423,13 @@ pub enum WorkerMsg {
     },
     ConvertComplete {
         result: Result<ConversionResultState, String>,
+    },
+    DiffComplete {
+        result: Result<Box<PackDiff>, String>,
+    },
+    ArchiveOpComplete {
+        result: Result<String, String>,
+        rescan: bool,
     },
     BatchProgress {
         completed: usize,
@@ -436,15 +457,21 @@ pub struct App {
     // Tab 1: Packs
     pub packs: Vec<DiscoveredPack>,
     pub pack_filter: String,
+    pub pack_sort: PackSortKey,
     pub selected_pack_idx: usize,
+    pub cached_icon_path: Option<PathBuf>,
+    pub cached_icon_lines: Vec<Line<'static>>,
 
-    // Tab 2: Explorer
+    // Tab 2: Explorer + 3D Braille Canvas
     pub loaded_pack: Option<LoadedPack>,
     pub explorer_category: AssetCategoryFilter,
     pub explorer_filter: String,
     pub explorer_items: Vec<ExplorerItem>,
     pub selected_asset_idx: usize,
     pub detail_scroll: u16,
+    pub model_yaw_deg: f32,
+    pub model_pitch_deg: f32,
+    pub show_head_ref: bool,
     pub cached_preview_key: Option<String>,
     pub cached_preview_lines: Vec<Line<'static>>,
 
@@ -458,7 +485,11 @@ pub struct App {
     pub selected_audit_idx: usize,
     pub batch_progress: Option<(usize, usize, String)>,
 
-    // Tab 5: Versions & Logs
+    // Tab 5: Compare / Diff
+    pub pack_diff: Option<Result<PackDiff, String>>,
+    pub diff_scroll: u16,
+
+    // Tab 6: Versions & Logs
     pub version_scroll: usize,
     pub logs: Vec<String>,
 
@@ -487,13 +518,19 @@ impl App {
             limits: IoLimits::default(),
             packs: Vec::new(),
             pack_filter: String::new(),
+            pack_sort: PackSortKey::Name,
             selected_pack_idx: 0,
+            cached_icon_path: None,
+            cached_icon_lines: Vec::new(),
             loaded_pack: None,
             explorer_category: AssetCategoryFilter::All,
             explorer_filter: String::new(),
             explorer_items: Vec::new(),
             selected_asset_idx: 0,
             detail_scroll: 0,
+            model_yaw_deg: 35.0,
+            model_pitch_deg: 22.0,
+            show_head_ref: true,
             cached_preview_key: None,
             cached_preview_lines: Vec::new(),
             convert_form,
@@ -502,6 +539,8 @@ impl App {
             audit_outcomes: Vec::new(),
             selected_audit_idx: 0,
             batch_progress: None,
+            pack_diff: None,
+            diff_scroll: 0,
             version_scroll: 0,
             logs: Vec::new(),
             input_mode: InputMode::Normal,
@@ -556,6 +595,26 @@ impl App {
         self.packs.get(real_idx)
     }
 
+    /// Refreshes the cached half-block icon preview for the highlighted pack in `[1:Packs]`.
+    pub fn refresh_pack_icon_cache(&mut self) {
+        let Some(pack) = self.current_pack() else {
+            self.cached_icon_path = None;
+            self.cached_icon_lines.clear();
+            return;
+        };
+        if self.cached_icon_path.as_ref() == Some(&pack.path) {
+            return;
+        }
+        let path = pack.path.clone();
+        let lines = pack
+            .icon_png
+            .as_deref()
+            .map(|b| render_png_bytes_halfblock(b, 16, 8))
+            .unwrap_or_default();
+        self.cached_icon_path = Some(path);
+        self.cached_icon_lines = lines;
+    }
+
     /// Spawns a background scan of `self.scan_dir`.
     pub fn start_scan(&mut self) {
         if self.busy_message.is_some() {
@@ -599,6 +658,68 @@ impl App {
                 })
                 .map_err(|err| format!("{err:#}"));
             let _ = tx.send(WorkerMsg::PackLoaded { result });
+        });
+    }
+
+    /// Spawns a background Pack Diff between `path_a` and `path_b` and opens Tab 5 (`Compare`).
+    pub fn start_diff(&mut self, path_a: PathBuf, path_b: PathBuf) {
+        if self.busy_message.is_some() {
+            return;
+        }
+        let mappings = self.mappings.clone();
+        let limits = self.limits;
+        let tx = self.tx.clone();
+        self.active_tab = ActiveTab::Compare;
+        self.busy_message = Some(String::from("Comparing packs..."));
+        self.push_log(format!(
+            "Comparing '{}' vs '{}'",
+            path_a.display(),
+            path_b.display()
+        ));
+
+        thread::spawn(move || {
+            let result = diff_packs(&path_a, &path_b, &mappings, limits)
+                .map(Box::new)
+                .map_err(|err| format!("{err:#}"));
+            let _ = tx.send(WorkerMsg::DiffComplete { result });
+        });
+    }
+
+    /// Spawns a background unpack or repack operation.
+    pub fn start_unpack(&mut self, path: PathBuf) {
+        if self.busy_message.is_some() {
+            return;
+        }
+        let limits = self.limits;
+        let tx = self.tx.clone();
+        self.busy_message = Some(format!("Unpacking {}...", path.display()));
+        thread::spawn(move || {
+            let result = unpack_pack_to_dir(&path, limits)
+                .map(|out| format!("Unpacked -> {}", out.display()))
+                .map_err(|err| format!("Unpack failed: {err:#}"));
+            let _ = tx.send(WorkerMsg::ArchiveOpComplete {
+                result,
+                rescan: true,
+            });
+        });
+    }
+
+    /// Spawns a background repack of an unpacked directory into `.zip`/`.mcpack`.
+    pub fn start_repack(&mut self, path: PathBuf) {
+        if self.busy_message.is_some() {
+            return;
+        }
+        let limits = self.limits;
+        let tx = self.tx.clone();
+        self.busy_message = Some(format!("Repacking {}...", path.display()));
+        thread::spawn(move || {
+            let result = repack_dir_to_archive(&path, limits)
+                .map(|out| format!("Repacked -> {}", out.display()))
+                .map_err(|err| format!("Repack failed: {err:#}"));
+            let _ = tx.send(WorkerMsg::ArchiveOpComplete {
+                result,
+                rescan: true,
+            });
         });
     }
 
@@ -939,15 +1060,19 @@ impl App {
     /// Drains any completed background worker messages and updates UI state.
     pub fn poll_worker(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
+        let mut need_rescan = false;
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 WorkerMsg::ScanComplete { dir, result } => {
                     self.busy_message = None;
                     match result {
-                        Ok(packs) => {
+                        Ok(mut packs) => {
+                            sort_discovered_packs(&mut packs, self.pack_sort);
                             let count = packs.len();
                             self.packs = packs;
                             self.selected_pack_idx = 0;
+                            self.cached_icon_path = None;
+                            self.refresh_pack_icon_cache();
                             if let Some(first) = self.packs.first()
                                 && self.convert_form.input_path.is_empty()
                             {
@@ -1015,6 +1140,42 @@ impl App {
                     }
                     self.last_conversion = Some(result);
                 }
+                WorkerMsg::DiffComplete { result } => {
+                    self.busy_message = None;
+                    self.diff_scroll = 0;
+                    match result {
+                        Ok(diff) => {
+                            let d = *diff;
+                            self.status_banner = format!(
+                                "Diff: {} vs {} (shared tex={}, models={})",
+                                d.name_a, d.name_b, d.textures.shared_count, d.models.shared_count
+                            );
+                            self.push_log(self.status_banner.clone());
+                            self.pack_diff = Some(Ok(d));
+                        }
+                        Err(err) => {
+                            self.status_banner = format!("Diff failed: {err}");
+                            self.push_log(self.status_banner.clone());
+                            self.pack_diff = Some(Err(err));
+                        }
+                    }
+                }
+                WorkerMsg::ArchiveOpComplete { result, rescan } => {
+                    self.busy_message = None;
+                    match result {
+                        Ok(msg) => {
+                            self.status_banner = msg.clone();
+                            self.push_log(msg);
+                            if rescan {
+                                need_rescan = true;
+                            }
+                        }
+                        Err(err) => {
+                            self.status_banner = err.clone();
+                            self.push_log(err);
+                        }
+                    }
+                }
                 WorkerMsg::BatchProgress {
                     completed,
                     total,
@@ -1041,6 +1202,19 @@ impl App {
                 }
             }
         }
+        if need_rescan {
+            self.start_scan();
+        }
+    }
+
+    /// Handles mouse scroll wheel up/down cleanly in the active tab.
+    pub fn handle_scroll(&mut self, scroll_down: bool) {
+        let code = if scroll_down {
+            KeyCode::Down
+        } else {
+            KeyCode::Up
+        };
+        self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
     }
 
     /// Handles a keyboard event from `crossterm`.
@@ -1091,6 +1265,10 @@ impl App {
                 return;
             }
             KeyCode::Char('5') => {
+                self.active_tab = ActiveTab::Compare;
+                return;
+            }
+            KeyCode::Char('6') => {
                 self.active_tab = ActiveTab::VersionsLogs;
                 return;
             }
@@ -1110,12 +1288,40 @@ impl App {
             ActiveTab::Explorer => self.handle_explorer_key(key),
             ActiveTab::Convert => self.handle_convert_key(key),
             ActiveTab::BatchAudit => self.handle_batch_key(key),
+            ActiveTab::Compare => self.handle_compare_key(key),
             ActiveTab::VersionsLogs => self.handle_versions_key(key),
         }
     }
 
     fn handle_text_input_key(&mut self, key: KeyEvent) {
         let mut mode = std::mem::replace(&mut self.input_mode, InputMode::Normal);
+        if let InputMode::ConfirmDelete { path, is_dir } = mode {
+            match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    let res = if is_dir {
+                        std::fs::remove_dir_all(&path)
+                    } else {
+                        std::fs::remove_file(&path)
+                    };
+                    match res {
+                        Ok(()) => {
+                            self.status_banner = format!("Deleted '{}'", path.display());
+                            self.push_log(self.status_banner.clone());
+                            self.start_scan();
+                        }
+                        Err(err) => {
+                            self.status_banner = format!("Delete failed: {err}");
+                            self.push_log(self.status_banner.clone());
+                        }
+                    }
+                }
+                _ => {
+                    self.status_banner = String::from("Delete cancelled");
+                }
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.status_banner = String::from("Cancelled input");
@@ -1136,6 +1342,7 @@ impl App {
                 InputMode::FilterPacks(buf) => {
                     self.pack_filter = buf;
                     self.selected_pack_idx = 0;
+                    self.refresh_pack_icon_cache();
                 }
                 InputMode::FilterAssets(buf) => {
                     self.explorer_filter = buf;
@@ -1148,7 +1355,7 @@ impl App {
                 InputMode::EditConvertOutput(buf) => {
                     self.convert_form.output_path = buf.trim().to_string();
                 }
-                InputMode::Normal => {}
+                InputMode::Normal | InputMode::ConfirmDelete { .. } => {}
             },
             KeyCode::Backspace => {
                 if let Some(buf) = input_mode_buf_mut(&mut mode) {
@@ -1174,10 +1381,12 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 if count > 0 {
                     self.selected_pack_idx = (self.selected_pack_idx + 1).min(count - 1);
+                    self.refresh_pack_icon_cache();
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_pack_idx = self.selected_pack_idx.saturating_sub(1);
+                self.refresh_pack_icon_cache();
             }
             KeyCode::Char(' ') => {
                 let indices = self.filtered_pack_indices();
@@ -1192,6 +1401,13 @@ impl App {
                 for p in &mut self.packs {
                     p.selected = any_unselected;
                 }
+            }
+            KeyCode::Char('s') => {
+                self.pack_sort = self.pack_sort.next();
+                sort_discovered_packs(&mut self.packs, self.pack_sort);
+                self.selected_pack_idx = 0;
+                self.refresh_pack_icon_cache();
+                self.status_banner = format!("Sorted packs by {}", self.pack_sort.label());
             }
             KeyCode::Enter | KeyCode::Char('i') => {
                 if let Some(pack) = self.current_pack().cloned() {
@@ -1210,6 +1426,51 @@ impl App {
                     self.start_audit(vec![pack.path]);
                 }
             }
+            KeyCode::Char('=') => {
+                let marked: Vec<PathBuf> = self
+                    .packs
+                    .iter()
+                    .filter(|p| p.selected)
+                    .map(|p| p.path.clone())
+                    .collect();
+                if marked.len() >= 2 {
+                    self.start_diff(marked[0].clone(), marked[1].clone());
+                } else if self.packs.len() >= 2 {
+                    let a = self.packs[0].path.clone();
+                    let b = self.packs[1].path.clone();
+                    self.start_diff(a, b);
+                } else {
+                    self.status_banner =
+                        String::from("Mark 2 packs with Space (or have >=2 packs) to Compare");
+                }
+            }
+            KeyCode::Char('u') => {
+                if let Some(pack) = self.current_pack().cloned() {
+                    if pack.is_dir {
+                        self.status_banner = String::from("Already an unpacked directory");
+                    } else {
+                        self.start_unpack(pack.path);
+                    }
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Some(pack) = self.current_pack().cloned() {
+                    if !pack.is_dir {
+                        self.status_banner =
+                            String::from("Select an unpacked pack directory to repack");
+                    } else {
+                        self.start_repack(pack.path);
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(pack) = self.current_pack().cloned() {
+                    self.input_mode = InputMode::ConfirmDelete {
+                        path: pack.path,
+                        is_dir: pack.is_dir,
+                    };
+                }
+            }
             KeyCode::Char('r') => self.start_scan(),
             KeyCode::Char('d') => {
                 self.input_mode = InputMode::EditScanDir(self.scan_dir.display().to_string());
@@ -1220,6 +1481,7 @@ impl App {
             KeyCode::Esc => {
                 self.pack_filter.clear();
                 self.selected_pack_idx = 0;
+                self.refresh_pack_icon_cache();
             }
             _ => {}
         }
@@ -1245,6 +1507,22 @@ impl App {
             }
             KeyCode::PageUp | KeyCode::Char('K') => {
                 self.detail_scroll = self.detail_scroll.saturating_sub(5);
+            }
+            // Orbit 3D Braille model viewport
+            KeyCode::Char('a' | '[') => {
+                self.model_yaw_deg = (self.model_yaw_deg - 15.0).rem_euclid(360.0);
+            }
+            KeyCode::Char('d' | ']') => {
+                self.model_yaw_deg = (self.model_yaw_deg + 15.0).rem_euclid(360.0);
+            }
+            KeyCode::Char('w') => {
+                self.model_pitch_deg = (self.model_pitch_deg + 10.0).clamp(-85.0, 85.0);
+            }
+            KeyCode::Char('s') => {
+                self.model_pitch_deg = (self.model_pitch_deg - 10.0).clamp(-85.0, 85.0);
+            }
+            KeyCode::Char('h') => {
+                self.show_head_ref = !self.show_head_ref;
             }
             KeyCode::Char('f') | KeyCode::Right => {
                 self.explorer_category = self.explorer_category.next();
@@ -1305,6 +1583,20 @@ impl App {
             KeyCode::Char('x') | KeyCode::F(5) => {
                 self.start_convert();
             }
+            KeyCode::Char('e') => {
+                if let Some(Ok(res)) = &self.last_conversion {
+                    let out = self.scan_dir.join("conversion_report.json");
+                    match export_report_json(&res.report, &out) {
+                        Ok(()) => {
+                            self.status_banner = format!("Exported report -> {}", out.display());
+                            self.push_log(self.status_banner.clone());
+                        }
+                        Err(err) => {
+                            self.status_banner = format!("Export failed: {err:#}");
+                        }
+                    }
+                }
+            }
             KeyCode::PageDown => {
                 self.report_scroll = self.report_scroll.saturating_add(4);
             }
@@ -1341,6 +1633,43 @@ impl App {
             KeyCode::Char('b') => {
                 self.start_batch_convert();
             }
+            KeyCode::Char('e') if !self.audit_outcomes.is_empty() => {
+                let out = self.scan_dir.join("audit_results.json");
+                match export_audit_json(&self.audit_outcomes, &out) {
+                    Ok(()) => {
+                        self.status_banner = format!("Exported audit -> {}", out.display());
+                        self.push_log(self.status_banner.clone());
+                    }
+                    Err(err) => {
+                        self.status_banner = format!("Export failed: {err:#}");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_compare_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.diff_scroll = self.diff_scroll.saturating_add(2);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.diff_scroll = self.diff_scroll.saturating_sub(2);
+            }
+            KeyCode::Char('r') => {
+                let marked: Vec<PathBuf> = self
+                    .packs
+                    .iter()
+                    .filter(|p| p.selected)
+                    .map(|p| p.path.clone())
+                    .collect();
+                if marked.len() >= 2 {
+                    self.start_diff(marked[0].clone(), marked[1].clone());
+                } else if self.packs.len() >= 2 {
+                    self.start_diff(self.packs[0].path.clone(), self.packs[1].path.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -1368,21 +1697,6 @@ fn input_mode_buf_mut(mode: &mut InputMode) -> Option<&mut String> {
         | InputMode::FilterAssets(s)
         | InputMode::EditConvertInput(s)
         | InputMode::EditConvertOutput(s) => Some(s),
-        InputMode::Normal => None,
+        InputMode::Normal | InputMode::ConfirmDelete { .. } => None,
     }
-}
-
-/// Suggests a clean output archive path next to `input`.
-#[must_use]
-pub fn suggest_output_path(input: &Path, target: Edition) -> String {
-    let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("converted");
-    let out = match target {
-        Edition::Java => parent.join(format!("{stem}-java.zip")),
-        Edition::Bedrock => parent.join(format!("{stem}-bedrock.mcpack")),
-    };
-    out.display().to_string()
 }

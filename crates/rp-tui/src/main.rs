@@ -87,17 +87,17 @@ fn run_event_loop(
         if event::poll(Duration::from_millis(80))? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key),
-                Event::Mouse(mouse) => {
-                    if let MouseEventKind::Down(_) = mouse.kind
-                        && mouse.row <= 2
-                    {
-                        // Allow clicking tabs in the header bar.
-                        let idx = (mouse.column as usize) / 16;
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::Down(_) if mouse.row <= 2 => {
+                        let idx = (mouse.column as usize) / 14;
                         if let Some(&tab) = ActiveTab::ALL.get(idx) {
                             app.active_tab = tab;
                         }
                     }
-                }
+                    MouseEventKind::ScrollDown => app.handle_scroll(true),
+                    MouseEventKind::ScrollUp => app.handle_scroll(false),
+                    _ => {}
+                },
                 _ => {}
             }
         }
