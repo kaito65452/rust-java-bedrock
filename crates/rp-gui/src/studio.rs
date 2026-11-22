@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use rp_core::{ModelAsset, ResourcePackIR};
+use rp_core::{ModelAsset, ResourcePackIR, decode_minecraft_text, sanitize_minecraft_json};
 
 /// Left VS Code-style Activity Bar sections in Studio Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,9 +355,11 @@ impl ManualOverrideStore {
     }
 }
 
-/// Validates JSON text and returns a concise line/column error message on failure.
+/// Validates JSON text (after Minecraft-lenient BOM/control-char/trailing-comma sanitization)
+/// and returns a concise line/column error message on failure.
 pub fn validate_json_str(raw: &str) -> Result<(), String> {
-    serde_json::from_str::<serde_json::Value>(raw)
+    let clean = sanitize_minecraft_json(raw);
+    serde_json::from_str::<serde_json::Value>(&clean)
         .map(|_| ())
         .map_err(|err| {
             format!(
@@ -374,7 +376,9 @@ fn serialize_text_target(target: &TextAssetTarget, ir: &ResourcePackIR) -> Strin
             let val = serde_json::json!({
                 "name": ir.metadata.name,
                 "description": ir.metadata.description,
+                "source_edition": ir.metadata.source_edition,
                 "java_pack_format": ir.metadata.java_pack_format,
+                "java_supported_formats": ir.metadata.java_supported_formats,
                 "bedrock_min_engine_version": ir.metadata.bedrock_min_engine_version,
                 "version": ir.metadata.version,
             });
@@ -398,7 +402,7 @@ fn serialize_text_target(target: &TextAssetTarget, ir: &ResourcePackIR) -> Strin
         TextAssetTarget::Passthrough(path) => ir
             .passthrough_files
             .get(path)
-            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .map(|b| decode_minecraft_text(b).into_owned())
             .unwrap_or_default(),
     }
 }
@@ -410,8 +414,9 @@ fn apply_text_target_to_ir(
 ) -> Result<(), String> {
     match target {
         TextAssetTarget::MetadataJson => {
+            let clean = sanitize_minecraft_json(content);
             let val: serde_json::Value =
-                serde_json::from_str(content).map_err(|e| format!("invalid metadata JSON: {e}"))?;
+                serde_json::from_str(&clean).map_err(|e| format!("invalid metadata JSON: {e}"))?;
             if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
                 ir.metadata.name = name.to_string();
             }
@@ -423,17 +428,28 @@ fn apply_text_target_to_ir(
             {
                 ir.metadata.java_pack_format = Some(f);
             }
+            if let Some(arr) = val
+                .get("java_supported_formats")
+                .and_then(serde_json::Value::as_array)
+                && arr.len() == 2
+                && let (Some(lo), Some(hi)) = (arr[0].as_u64(), arr[1].as_u64())
+                && let (Ok(lo), Ok(hi)) = (u32::try_from(lo), u32::try_from(hi))
+            {
+                ir.metadata.java_supported_formats = Some([lo, hi]);
+            }
             Ok(())
         }
         TextAssetTarget::LocaleJson(code) => {
+            let clean = sanitize_minecraft_json(content);
             let parsed: HashMap<String, String> =
-                serde_json::from_str(content).map_err(|e| format!("invalid locale JSON: {e}"))?;
+                serde_json::from_str(&clean).map_err(|e| format!("invalid locale JSON: {e}"))?;
             let entry = ir.locales.entry(code.clone()).or_default();
             entry.entries = parsed;
             Ok(())
         }
         TextAssetTarget::AttachableJson(id) => {
-            let parsed: rp_core::AttachableAsset = serde_json::from_str(content)
+            let clean = sanitize_minecraft_json(content);
+            let parsed: rp_core::AttachableAsset = serde_json::from_str(&clean)
                 .map_err(|e| format!("invalid attachable JSON: {e}"))?;
             ir.attachables.insert(id.clone(), parsed);
             Ok(())

@@ -10,4 +10,5 @@ pub mod app;
 pub mod diagnostics;
 pub mod file_picker;
 pub mod studio;
+pub mod theme;
 pub mod viewport3d;

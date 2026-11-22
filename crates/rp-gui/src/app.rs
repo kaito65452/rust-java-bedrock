@@ -30,6 +30,10 @@ use crate::studio::{
     ActivitySection, ManualOverrideStore, SideBarFilter, StudioEditorTab, TextAssetTarget,
     validate_json_str,
 };
+use crate::theme::{
+    M3Palette, apply_material3_theme, m3_card_frame, m3_filled_button, m3_pill_badge,
+    m3_rail_frame, m3_segmented_button, m3_tonal_button,
+};
 use crate::viewport3d::ModelViewportState;
 
 /// Top-level workspace mode: streamlined Quick Manager or VS Code-style Studio Mode.
@@ -79,6 +83,15 @@ pub struct LoadedPack {
     pub report: ConversionReport,
 }
 
+/// Isolated per-edition Studio workspace state so Java and Bedrock packs never overwrite each other.
+#[derive(Debug, Clone, Default)]
+pub struct EditionStudioSlot {
+    pub loaded_pack: Option<LoadedPack>,
+    pub open_tabs: Vec<StudioEditorTab>,
+    pub active_tab_idx: usize,
+    pub overrides: ManualOverrideStore,
+}
+
 /// Last single conversion outcome.
 #[derive(Debug, Clone)]
 pub struct ConversionOutcome {
@@ -95,7 +108,11 @@ enum WorkerMsg {
         dir: PathBuf,
         result: Result<Vec<DiscoveredPack>, String>,
     },
-    PackLoaded(Result<Box<LoadedPack>, String>),
+    PackLoaded {
+        result: Result<Box<LoadedPack>, String>,
+        is_fresh_refresh: bool,
+        refreshed_packs: Option<Result<Vec<DiscoveredPack>, String>>,
+    },
     ConvertDone(Result<ConversionOutcome, String>),
     DiffDone(Result<Box<PackDiff>, String>),
     ArchiveOpDone {
@@ -123,6 +140,8 @@ pub struct RpGuiApp {
     pub mode: WorkspaceMode,
     pub page: GuiPage,
     pub dark_mode: bool,
+    applied_dark_mode: Option<bool>,
+    palette: M3Palette,
 
     pub scan_dir: PathBuf,
     pub scan_dir_input: String,
@@ -143,7 +162,10 @@ pub struct RpGuiApp {
     pub pending_delete: Option<(PathBuf, bool)>,
     icon_cache: HashMap<PathBuf, TextureHandle>,
 
-    // Studio Mode Workbench (VS Code layout + Blockbench 3D)
+    // Studio Mode Workbench (VS Code layout + Blockbench 3D, separated Java vs Bedrock slots)
+    pub studio_edition: Edition,
+    stashed_java_studio: EditionStudioSlot,
+    stashed_bedrock_studio: EditionStudioSlot,
     pub activity_section: ActivitySection,
     pub show_sidebar: bool,
     pub show_bottom_panel: bool,
@@ -211,6 +233,8 @@ impl RpGuiApp {
             mode: WorkspaceMode::Quick,
             page: GuiPage::Packs,
             dark_mode: true,
+            applied_dark_mode: None,
+            palette: M3Palette::dark(),
             scan_dir: scan_dir.clone(),
             scan_dir_input,
             recent_paths: vec![scan_dir.clone()],
@@ -225,6 +249,9 @@ impl RpGuiApp {
             pack_sort: PackSortKey::Name,
             pending_delete: None,
             icon_cache: HashMap::new(),
+            studio_edition: Edition::Java,
+            stashed_java_studio: EditionStudioSlot::default(),
+            stashed_bedrock_studio: EditionStudioSlot::default(),
             activity_section: ActivitySection::Explorer,
             show_sidebar: true,
             show_bottom_panel: true,
@@ -392,6 +419,110 @@ impl RpGuiApp {
         }
     }
 
+    /// Switches between separated Java Edition and Bedrock Edition Studio workspaces,
+    /// preserving open tabs, loaded pack IR, and manual overrides independently per edition.
+    pub fn switch_studio_edition(&mut self, target: Edition) {
+        if self.studio_edition == target {
+            return;
+        }
+        let outgoing = EditionStudioSlot {
+            loaded_pack: self.loaded_pack.take(),
+            open_tabs: std::mem::take(&mut self.open_tabs),
+            active_tab_idx: self.active_tab_idx,
+            overrides: std::mem::take(&mut self.overrides),
+        };
+        match self.studio_edition {
+            Edition::Java => self.stashed_java_studio = outgoing,
+            Edition::Bedrock => self.stashed_bedrock_studio = outgoing,
+        }
+
+        let incoming = match target {
+            Edition::Java => std::mem::take(&mut self.stashed_java_studio),
+            Edition::Bedrock => std::mem::take(&mut self.stashed_bedrock_studio),
+        };
+        self.loaded_pack = incoming.loaded_pack;
+        self.open_tabs = incoming.open_tabs;
+        self.active_tab_idx = incoming.active_tab_idx;
+        self.overrides = incoming.overrides;
+        self.studio_edition = target;
+        self.tex_preview = None;
+        self.selected_element_idx = Some(0);
+        self.custom_mapping_input.clear();
+
+        if let Some(loaded) = &self.loaded_pack {
+            let convert_target = match loaded.edition {
+                Edition::Java => Edition::Bedrock,
+                Edition::Bedrock => Edition::Java,
+            };
+            self.input_path = loaded.path.display().to_string();
+            self.target_edition = Some(convert_target);
+            self.output_path = suggest_output_path(&loaded.path, convert_target);
+        }
+        self.rebuild_review_index();
+    }
+
+    fn edition_loaded_label(&self, edition: Edition) -> Option<String> {
+        let pack = if self.studio_edition == edition {
+            self.loaded_pack.as_ref()
+        } else {
+            match edition {
+                Edition::Java => self.stashed_java_studio.loaded_pack.as_ref(),
+                Edition::Bedrock => self.stashed_bedrock_studio.loaded_pack.as_ref(),
+            }
+        };
+        pack.map(|p| {
+            p.path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.ir.metadata.name.clone())
+        })
+    }
+
+    /// Performs a fresh reload in Studio Mode: clears texture/icon caches, reloads the active
+    /// pack directly from disk (re-running all parsers/diagnostics), and refreshes workspace packs.
+    pub fn fresh_refresh_studio(&mut self) {
+        if self.busy_message.is_some() {
+            return;
+        }
+        self.tex_preview = None;
+        self.icon_cache.clear();
+        self.anim_frame_idx = 0;
+        self.custom_mapping_input.clear();
+
+        if let Some(path) = self.loaded_pack.as_ref().map(|l| l.path.clone()) {
+            let mappings = self.mappings.clone();
+            let limits = self.limits;
+            let scan_dir = self.scan_dir.clone();
+            let tx = self.tx.clone();
+            self.busy_message = Some(format!("Fresh refreshing {}...", path.display()));
+            self.push_log(format!("Studio fresh refresh: {}", path.display()));
+            thread::spawn(move || {
+                let refreshed_packs = Some(
+                    scan_directory_for_packs(&scan_dir, &mappings, limits)
+                        .map_err(|err| format!("{err:#}")),
+                );
+                let result = load_pack_ir(&path, &mappings, limits)
+                    .map(|(edition, ir, report)| {
+                        Box::new(LoadedPack {
+                            path,
+                            edition,
+                            ir,
+                            report,
+                        })
+                    })
+                    .map_err(|err| format!("{err:#}"));
+                let _ = tx.send(WorkerMsg::PackLoaded {
+                    result,
+                    is_fresh_refresh: true,
+                    refreshed_packs,
+                });
+            });
+        } else {
+            self.status_banner = String::from("Refreshing Studio workspace packs...");
+            self.start_scan();
+        }
+    }
+
     /// Loads `path` into Studio Mode asynchronously.
     pub fn start_load_studio(&mut self, path: PathBuf) {
         if self.busy_message.is_some() {
@@ -405,7 +536,7 @@ impl RpGuiApp {
         self.busy_message = Some(format!("Opening {} in Studio...", path.display()));
         self.push_log(format!("Studio open: {}", path.display()));
         thread::spawn(move || {
-            let res = load_pack_ir(&path, &mappings, limits)
+            let result = load_pack_ir(&path, &mappings, limits)
                 .map(|(edition, ir, report)| {
                     Box::new(LoadedPack {
                         path,
@@ -415,7 +546,11 @@ impl RpGuiApp {
                     })
                 })
                 .map_err(|err| format!("{err:#}"));
-            let _ = tx.send(WorkerMsg::PackLoaded(res));
+            let _ = tx.send(WorkerMsg::PackLoaded {
+                result,
+                is_fresh_refresh: false,
+                refreshed_packs: None,
+            });
         });
     }
 
@@ -858,17 +993,35 @@ impl RpGuiApp {
                         }
                     }
                 }
-                WorkerMsg::PackLoaded(res) => {
+                WorkerMsg::PackLoaded {
+                    result,
+                    is_fresh_refresh,
+                    refreshed_packs,
+                } => {
                     self.busy_message = None;
-                    match res {
+                    if let Some(Ok(mut packs)) = refreshed_packs {
+                        sort_discovered_packs(&mut packs, self.pack_sort);
+                        self.packs = packs;
+                        self.icon_cache.clear();
+                    }
+                    match result {
                         Ok(loaded) => {
                             let loaded = *loaded;
+                            // Route pack into its dedicated Java or Bedrock Studio workspace.
+                            self.switch_studio_edition(loaded.edition);
+
+                            let action_label = if is_fresh_refresh {
+                                "Fresh refreshed"
+                            } else {
+                                "Studio loaded"
+                            };
                             self.status_banner = format!(
-                                "Studio loaded {} ({}, {} tex, {} 3D models)",
+                                "{action_label} {} ({}, {} tex, {} 3D models, {} warnings)",
                                 loaded.ir.metadata.name,
                                 loaded.edition,
                                 loaded.ir.textures.len(),
-                                loaded.ir.models.len()
+                                loaded.ir.models.len(),
+                                loaded.report.warnings.len(),
                             );
                             self.push_log(self.status_banner.clone());
                             self.overrides.clear();
@@ -1086,10 +1239,19 @@ impl RpGuiApp {
     pub fn render_ui(&mut self, ctx: &Context) {
         self.poll_workers();
 
-        if self.dark_mode {
-            ctx.set_visuals(egui::Visuals::dark());
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        if self.applied_dark_mode != Some(self.dark_mode) {
+            self.palette = apply_material3_theme(ctx, self.dark_mode);
+            self.applied_dark_mode = Some(self.dark_mode);
+        }
+        let palette = self.palette;
+
+        // Keyboard shortcut: F5 or Ctrl+R triggers Fresh Refresh inside Studio Mode
+        if self.mode == WorkspaceMode::Studio
+            && ctx.input(|i| {
+                i.key_pressed(egui::Key::F5) || (i.modifiers.ctrl && i.key_pressed(egui::Key::R))
+            })
+        {
+            self.fresh_refresh_studio();
         }
 
         // Drag-and-drop .zip / .mcpack / folder anywhere in the window
@@ -1117,119 +1279,150 @@ impl RpGuiApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
 
-        // Top Bar: Mode Switcher (Quick <-> Studio) + Workspace Path Bar (Non-blocking!)
-        egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-            ui.add_space(3.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("mc-rp-converter")
-                        .strong()
-                        .size(15.0)
-                        .color(Color32::from_rgb(90, 210, 255)),
-                );
-                ui.separator();
+        // Top App Bar (Material 3 tonal surface container)
+        egui::TopBottomPanel::top("top_bar")
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.surface_container)
+                    .stroke(Stroke::new(1.0, palette.outline_variant))
+                    .inner_margin(egui::Margin::symmetric(12, 7)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("mc-rp-converter")
+                            .strong()
+                            .size(15.5)
+                            .color(palette.primary),
+                    );
+                    m3_pill_badge(
+                        ui,
+                        "M3",
+                        palette.primary_container,
+                        palette.on_primary_container,
+                    );
+                    ui.separator();
 
-                if ui
-                    .selectable_label(
+                    if m3_segmented_button(
+                        ui,
                         self.mode == WorkspaceMode::Quick,
-                        RichText::new("📦 Quick Manager").strong(),
+                        "📦 Quick Manager",
+                        palette.primary_container,
+                        palette.on_primary_container,
+                        &palette,
                     )
                     .clicked()
-                {
-                    self.mode = WorkspaceMode::Quick;
-                }
-                let studio_badge = if self.overrides.total_override_count() > 0 {
-                    format!("🛠 Studio ({})", self.overrides.total_override_count())
-                } else {
-                    String::from("🛠 Studio Mode")
-                };
-                if ui
-                    .selectable_label(
-                        self.mode == WorkspaceMode::Studio,
-                        RichText::new(studio_badge).strong(),
-                    )
-                    .clicked()
-                {
-                    self.mode = WorkspaceMode::Studio;
-                }
-
-                ui.separator();
-                let path_w = (ui.available_width() - 280.0).clamp(140.0, 360.0);
-                let resp = ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.scan_dir_input)
-                            .desired_width(path_w)
-                            .hint_text("/path/to/packs"),
-                    )
-                    .on_hover_text(self.scan_dir_input.as_str());
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let p = PathBuf::from(self.scan_dir_input.trim());
-                    if p.is_dir() {
-                        self.scan_dir = p;
-                        self.start_scan();
+                    {
+                        self.mode = WorkspaceMode::Quick;
+                    }
+                    let total_ov = self.overrides.total_override_count()
+                        + self.stashed_java_studio.overrides.total_override_count()
+                        + self.stashed_bedrock_studio.overrides.total_override_count();
+                    let studio_badge = if total_ov > 0 {
+                        format!("🛠 Studio ({total_ov})")
                     } else {
-                        self.status_banner =
-                            format!("Directory not found: {}", self.scan_dir_input);
-                    }
-                }
-                if ui
-                    .button("Browse")
-                    .on_hover_text("Non-blocking in-app folder browser (no X11 freeze)")
+                        String::from("🛠 Studio Mode")
+                    };
+                    if m3_segmented_button(
+                        ui,
+                        self.mode == WorkspaceMode::Studio,
+                        &studio_badge,
+                        palette.primary_container,
+                        palette.on_primary_container,
+                        &palette,
+                    )
                     .clicked()
-                {
-                    let start = self.scan_dir.clone();
-                    self.file_browser
-                        .open_for(FilePickerTarget::WorkspaceDir, &start, "");
-                }
-                if ui.button("Rescan").clicked() {
-                    let p = PathBuf::from(self.scan_dir_input.trim());
-                    if p.is_dir() {
-                        self.scan_dir = p;
+                    {
+                        self.mode = WorkspaceMode::Studio;
                     }
-                    self.start_scan();
-                }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.separator();
+                    let path_w = (ui.available_width() - 310.0).clamp(130.0, 340.0);
+                    let resp = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.scan_dir_input)
+                                .desired_width(path_w)
+                                .hint_text("/path/to/packs"),
+                        )
+                        .on_hover_text(self.scan_dir_input.as_str());
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let p = PathBuf::from(self.scan_dir_input.trim());
+                        if p.is_dir() {
+                            self.scan_dir = p;
+                            self.start_scan();
+                        } else {
+                            self.status_banner =
+                                format!("Directory not found: {}", self.scan_dir_input);
+                        }
+                    }
                     if ui
-                        .button(if self.dark_mode { "☀" } else { "🌙" })
-                        .on_hover_text("Toggle Dark/Light Theme")
+                        .button("Browse")
+                        .on_hover_text("Non-blocking in-app folder browser (no X11 freeze)")
                         .clicked()
                     {
-                        self.dark_mode = !self.dark_mode;
+                        let start = self.scan_dir.clone();
+                        self.file_browser
+                            .open_for(FilePickerTarget::WorkspaceDir, &start, "");
                     }
-                    if let Some(busy) = &self.busy_message {
-                        ui.spinner();
-                        ui.label(RichText::new(busy).color(Color32::YELLOW).small());
+                    if ui.button("Rescan").clicked() {
+                        let p = PathBuf::from(self.scan_dir_input.trim());
+                        if p.is_dir() {
+                            self.scan_dir = p;
+                        }
+                        self.start_scan();
                     }
-                });
-            });
-            ui.add_space(3.0);
-        });
 
-        // Bottom Status Strip
-        egui::TopBottomPanel::bottom("status_strip").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(&self.status_banner)
-                        .color(Color32::from_rgb(120, 225, 140))
-                        .small(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ov = self.overrides.total_override_count();
-                    let rev = self
-                        .review_index
-                        .count_matching(DiagnosticFilter::NeedsReview);
-                    ui.label(
-                        RichText::new(format!(
-                            "Needs Review: {rev} | Manual Overrides: {ov} | Target: {}",
-                            self.target_version
-                        ))
-                        .small()
-                        .weak(),
-                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let theme_label = if self.dark_mode {
+                            "☀ Light"
+                        } else {
+                            "🌙 Dark"
+                        };
+                        if m3_tonal_button(ui, true, theme_label, &palette)
+                            .on_hover_text("Toggle Material 3 Dark / Light Theme")
+                            .clicked()
+                        {
+                            self.dark_mode = !self.dark_mode;
+                        }
+                        if let Some(busy) = &self.busy_message {
+                            ui.spinner();
+                            ui.label(RichText::new(busy).color(palette.warning).small());
+                        }
+                    });
                 });
             });
-        });
+
+        // Bottom Status Strip (Material 3 surface container low)
+        egui::TopBottomPanel::bottom("status_strip")
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.surface_container_low)
+                    .stroke(Stroke::new(1.0, palette.outline_variant))
+                    .inner_margin(egui::Margin::symmetric(12, 5)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&self.status_banner)
+                            .color(palette.success)
+                            .small(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let ov = self.overrides.total_override_count();
+                        let rev = self
+                            .review_index
+                            .count_matching(DiagnosticFilter::NeedsReview);
+                        ui.label(
+                            RichText::new(format!(
+                                "Studio: {} | Needs Review: {rev} | Overrides: {ov} | Target: {}",
+                                self.studio_edition, self.target_version
+                            ))
+                            .small()
+                            .color(palette.on_surface_variant),
+                        );
+                    });
+                });
+            });
 
         // Render active workspace mode
         match self.mode {
@@ -2091,23 +2284,116 @@ impl RpGuiApp {
     // =========================================================================
 
     fn render_studio_mode(&mut self, ctx: &Context) {
-        // 1. VS Code-style Compact Left Activity Bar
+        let palette = self.palette;
+
+        // 0. Material 3 Studio Edition Bar (Separated Java Studio vs Bedrock Studio + Fresh Refresh)
+        egui::TopBottomPanel::top("studio_edition_bar")
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.surface_container_low)
+                    .stroke(Stroke::new(1.0, palette.outline_variant))
+                    .inner_margin(egui::Margin::symmetric(12, 6)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let java_label = match self.edition_loaded_label(Edition::Java) {
+                        Some(name) => format!("☕ Java Studio • {name}"),
+                        None => String::from("☕ Java Studio"),
+                    };
+                    let bedrock_label = match self.edition_loaded_label(Edition::Bedrock) {
+                        Some(name) => format!("🪨 Bedrock Studio • {name}"),
+                        None => String::from("🪨 Bedrock Studio"),
+                    };
+
+                    if m3_segmented_button(
+                        ui,
+                        self.studio_edition == Edition::Java,
+                        &java_label,
+                        palette.java_container,
+                        palette.on_java_container,
+                        &palette,
+                    )
+                    .on_hover_text("Switch to isolated Java Edition Studio workspace (pack.mcmeta / assets/minecraft/)")
+                    .clicked()
+                    {
+                        self.switch_studio_edition(Edition::Java);
+                    }
+
+                    if m3_segmented_button(
+                        ui,
+                        self.studio_edition == Edition::Bedrock,
+                        &bedrock_label,
+                        palette.bedrock_container,
+                        palette.on_bedrock_container,
+                        &palette,
+                    )
+                    .on_hover_text("Switch to isolated Bedrock Edition Studio workspace (manifest.json / textures/ / models/entity/)")
+                    .clicked()
+                    {
+                        self.switch_studio_edition(Edition::Bedrock);
+                    }
+
+                    ui.separator();
+                    let schema_hint = match self.studio_edition {
+                        Edition::Java => "pack.mcmeta • assets/minecraft/{models,textures,lang}",
+                        Edition::Bedrock => "manifest.json • models/entity/*.geo.json • textures/",
+                    };
+                    ui.label(
+                        RichText::new(schema_hint)
+                            .small()
+                            .color(palette.on_surface_variant),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let enabled = self.busy_message.is_none();
+                        if m3_tonal_button(ui, enabled, "↻ Fresh Refresh", &palette)
+                            .on_hover_text(
+                                "Reload active pack fresh from disk, clear texture/icon caches & rescan workspace (F5)",
+                            )
+                            .clicked()
+                        {
+                            self.fresh_refresh_studio();
+                        }
+                        if ui
+                            .button("Open Pack...")
+                            .on_hover_text("Open any Java or Bedrock .zip / .mcpack / folder")
+                            .clicked()
+                        {
+                            let start = self.scan_dir.clone();
+                            self.file_browser
+                                .open_for(FilePickerTarget::ConvertInput, &start, "");
+                        }
+                    });
+                });
+            });
+
+        // 1. Material 3 Navigation Rail (Left Activity Bar)
         egui::SidePanel::left("studio_activity_bar")
             .resizable(false)
-            .exact_width(44.0)
+            .exact_width(50.0)
+            .frame(m3_rail_frame(&palette))
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(6.0);
+                    ui.add_space(4.0);
                     for sec in ActivitySection::ALL {
                         let active = self.show_sidebar && self.activity_section == sec;
-                        let btn = ui
-                            .add_sized(
-                                Vec2::splat(34.0),
-                                egui::Button::new(RichText::new(sec.icon()).size(16.0))
-                                    .selected(active),
-                            )
-                            .on_hover_text(sec.tooltip());
-                        if btn.clicked() {
+                        let btn = egui::Button::new(RichText::new(sec.icon()).size(16.0))
+                            .fill(if active {
+                                palette.primary_container
+                            } else {
+                                Color32::TRANSPARENT
+                            })
+                            .stroke(if active {
+                                Stroke::new(1.0, palette.primary)
+                            } else {
+                                Stroke::NONE
+                            })
+                            .corner_radius(egui::CornerRadius::same(14));
+                        if ui
+                            .add_sized(Vec2::splat(34.0), btn)
+                            .on_hover_text(sec.tooltip())
+                            .clicked()
+                        {
                             if self.activity_section == sec {
                                 self.show_sidebar = !self.show_sidebar;
                             } else {
@@ -2119,12 +2405,27 @@ impl RpGuiApp {
                     }
 
                     ui.separator();
+                    let refresh_btn = egui::Button::new(RichText::new("↻").size(16.0))
+                        .fill(palette.surface_container_high)
+                        .corner_radius(egui::CornerRadius::same(14));
                     if ui
-                        .add_sized(
-                            Vec2::splat(34.0),
-                            egui::Button::new(RichText::new("⬓").size(15.0))
-                                .selected(self.show_bottom_panel),
-                        )
+                        .add_enabled(self.busy_message.is_none(), refresh_btn)
+                        .on_hover_text("Fresh Refresh Studio (F5)")
+                        .clicked()
+                    {
+                        self.fresh_refresh_studio();
+                    }
+                    ui.add_space(4.0);
+
+                    let panel_btn = egui::Button::new(RichText::new("⬓").size(15.0))
+                        .fill(if self.show_bottom_panel {
+                            palette.secondary_container
+                        } else {
+                            Color32::TRANSPARENT
+                        })
+                        .corner_radius(egui::CornerRadius::same(14));
+                    if ui
+                        .add_sized(Vec2::splat(34.0), panel_btn)
                         .on_hover_text("Toggle Bottom Panel (Summary, Warnings, Export)")
                         .clicked()
                     {
@@ -2137,9 +2438,10 @@ impl RpGuiApp {
         if self.show_sidebar {
             egui::SidePanel::left("studio_sidebar")
                 .resizable(true)
-                .default_width(250.0)
-                .min_width(180.0)
-                .max_width(420.0)
+                .default_width(265.0)
+                .min_width(190.0)
+                .max_width(430.0)
+                .frame(m3_rail_frame(&palette))
                 .show(ctx, |ui| match self.activity_section {
                     ActivitySection::Explorer => self.show_studio_explorer_sidebar(ui),
                     ActivitySection::Warnings => self.show_studio_warnings_sidebar(ui),
@@ -2151,9 +2453,10 @@ impl RpGuiApp {
         if self.show_bottom_panel {
             egui::TopBottomPanel::bottom("studio_bottom_panel")
                 .resizable(true)
-                .default_height(150.0)
+                .default_height(155.0)
                 .min_height(90.0)
                 .max_height(320.0)
+                .frame(m3_rail_frame(&palette))
                 .show(ctx, |ui| {
                     self.show_studio_bottom_panel(ui);
                 });
@@ -2166,16 +2469,73 @@ impl RpGuiApp {
     }
 
     fn show_studio_explorer_sidebar(&mut self, ui: &mut Ui) {
+        let palette = self.palette;
+        let active_ed = self.studio_edition;
+        let (ed_bg, ed_fg, _) = palette.edition_colors(active_ed);
+        let ed_badge = match active_ed {
+            Edition::Java => "☕ JAVA EXPLORER",
+            Edition::Bedrock => "🪨 BEDROCK EXPLORER",
+        };
+
         ui.horizontal(|ui| {
-            ui.strong("EXPLORER");
+            m3_pill_badge(ui, ed_badge, ed_bg, ed_fg);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("Open Pack...").clicked() {
-                    let start = self.scan_dir.clone();
-                    self.file_browser
-                        .open_for(FilePickerTarget::ConvertInput, &start, "");
+                if ui
+                    .add_enabled(self.busy_message.is_none(), egui::Button::new("↻").small())
+                    .on_hover_text("Fresh Refresh current pack & workspace (F5)")
+                    .clicked()
+                {
+                    self.fresh_refresh_studio();
                 }
             });
         });
+
+        // Separate Java vs Bedrock workspace pack quick-switcher
+        let matching_packs: Vec<(String, PathBuf)> = self
+            .packs
+            .iter()
+            .filter(|p| p.summary.as_ref().is_ok_and(|s| s.edition == active_ed))
+            .map(|p| (p.file_name.clone(), p.path.clone()))
+            .collect();
+        let other_ed = match active_ed {
+            Edition::Java => Edition::Bedrock,
+            Edition::Bedrock => Edition::Java,
+        };
+        let other_count = self
+            .packs
+            .iter()
+            .filter(|p| p.summary.as_ref().is_ok_and(|s| s.edition == other_ed))
+            .count();
+
+        if !matching_packs.is_empty() {
+            let mut open_p: Option<PathBuf> = None;
+            let active_path = self.loaded_pack.as_ref().map(|l| l.path.clone());
+            egui::CollapsingHeader::new(format!(
+                "{} Packs in Workspace ({})",
+                active_ed,
+                matching_packs.len()
+            ))
+            .id_salt(format!("studio_packs_{active_ed}"))
+            .default_open(self.loaded_pack.is_none())
+            .show(ui, |ui| {
+                for (name, path) in &matching_packs {
+                    let is_curr = active_path.as_ref() == Some(path);
+                    let icon = match active_ed {
+                        Edition::Java => "☕",
+                        Edition::Bedrock => "🪨",
+                    };
+                    if ui
+                        .selectable_label(is_curr, format!("{icon} {name}"))
+                        .clicked()
+                    {
+                        open_p = Some(path.clone());
+                    }
+                }
+            });
+            if let Some(path) = open_p {
+                self.start_load_studio(path);
+            }
+        }
 
         // Filter pills: All vs Needs Review vs Manual Overrides
         ui.horizontal_wrapped(|ui| {
@@ -2196,23 +2556,32 @@ impl RpGuiApp {
         ui.separator();
 
         let Some(loaded) = self.loaded_pack.clone() else {
-            ui.label("No pack open in Studio.");
-            ui.add_space(6.0);
-            if !self.packs.is_empty() {
-                ui.label(RichText::new("Workspace Packs:").strong().small());
-                let mut open_p: Option<PathBuf> = None;
-                for p in &self.packs {
-                    if ui
-                        .selectable_label(false, format!("📦 {}", p.file_name))
-                        .clicked()
-                    {
-                        open_p = Some(p.path.clone());
+            m3_card_frame(&palette).show(ui, |ui| {
+                ui.label(
+                    RichText::new(format!("No {active_ed} pack open in Studio."))
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(match active_ed {
+                        Edition::Java => {
+                            "Select a Java pack (.zip / folder with pack.mcmeta) above or click Open Pack."
+                        }
+                        Edition::Bedrock => {
+                            "Select a Bedrock pack (.mcpack / folder with manifest.json) above or click Open Pack."
+                        }
+                    })
+                    .small()
+                    .color(palette.on_surface_variant),
+                );
+                if other_count > 0 {
+                    ui.add_space(6.0);
+                    let switch_label = format!("Switch to {other_ed} Studio ({other_count} pack(s))");
+                    if m3_tonal_button(ui, true, &switch_label, &palette).clicked() {
+                        self.switch_studio_edition(other_ed);
                     }
                 }
-                if let Some(path) = open_p {
-                    self.start_load_studio(path);
-                }
-            }
+            });
             return;
         };
 
@@ -2223,17 +2592,21 @@ impl RpGuiApp {
         ScrollArea::vertical()
             .id_salt("studio_tree_scroll")
             .show(ui, |ui| {
-                // Pack Metadata / Manifest
+                // Pack Metadata / Manifest (edition-specific label!)
                 let meta_ov = self
                     .overrides
                     .is_text_overridden(&TextAssetTarget::MetadataJson.key());
                 if filter != SideBarFilter::NeedsReview
                     && (filter != SideBarFilter::ManualOverrides || meta_ov)
                 {
+                    let base_name = match loaded.edition {
+                        Edition::Java => "📝 pack.mcmeta (Metadata)",
+                        Edition::Bedrock => "📝 manifest.json (Metadata)",
+                    };
                     let label = if meta_ov {
-                        "📝 metadata.json  ✎"
+                        format!("{base_name}  ✎")
                     } else {
-                        "📝 metadata.json"
+                        String::from(base_name)
                     };
                     if ui.selectable_label(false, label).clicked() {
                         clicked_tab = Some(StudioEditorTab::Text(TextAssetTarget::MetadataJson));
@@ -2260,7 +2633,11 @@ impl RpGuiApp {
                     .cloned()
                     .collect();
 
-                egui::CollapsingHeader::new(format!("🧊 3D Models ({})", model_ids.len()))
+                let models_header = match loaded.edition {
+                    Edition::Java => format!("🧊 Java Models ({})", model_ids.len()),
+                    Edition::Bedrock => format!("🧊 Bedrock Geo Models ({})", model_ids.len()),
+                };
+                egui::CollapsingHeader::new(models_header)
                     .default_open(true)
                     .show(ui, |ui| {
                         for id in &model_ids {
@@ -2274,9 +2651,9 @@ impl RpGuiApp {
                                 text.push_str(" ✎");
                             }
                             let rt = if edited {
-                                RichText::new(text).color(Color32::from_rgb(100, 225, 255))
+                                RichText::new(text).color(palette.primary)
                             } else if warn {
-                                RichText::new(text).color(Color32::YELLOW)
+                                RichText::new(text).color(palette.warning)
                             } else {
                                 RichText::new(text)
                             };
@@ -2286,7 +2663,7 @@ impl RpGuiApp {
                         }
                     });
 
-                // Textures tree
+                // Textures tree (with ResolutionTier badge)
                 let tex_ids: Vec<String> = loaded
                     .ir
                     .textures
@@ -2306,13 +2683,24 @@ impl RpGuiApp {
                     .cloned()
                     .collect();
 
-                egui::CollapsingHeader::new(format!("🖼 Textures ({})", tex_ids.len()))
+                let tex_header = match loaded.edition {
+                    Edition::Java => format!("🖼 Java Textures ({})", tex_ids.len()),
+                    Edition::Bedrock => format!("🖼 Bedrock Textures ({})", tex_ids.len()),
+                };
+                egui::CollapsingHeader::new(tex_header)
                     .default_open(true)
                     .show(ui, |ui| {
                         for id in &tex_ids {
                             let warn = self.review_index.asset_needs_review(id);
                             let edited = self.overrides.is_texture_overridden(id);
-                            let mut text = id.clone();
+                            let tier_suffix = loaded
+                                .ir
+                                .textures
+                                .get(id)
+                                .and_then(|t| t.resolution_tier)
+                                .map(|tier| format!(" [{tier}]"))
+                                .unwrap_or_default();
+                            let mut text = format!("{id}{tier_suffix}");
                             if warn {
                                 text.push_str(" ⚠");
                             }
@@ -2320,9 +2708,9 @@ impl RpGuiApp {
                                 text.push_str(" ✎");
                             }
                             let rt = if edited {
-                                RichText::new(text).color(Color32::from_rgb(100, 225, 255))
+                                RichText::new(text).color(palette.primary)
                             } else if warn {
-                                RichText::new(text).color(Color32::YELLOW)
+                                RichText::new(text).color(palette.warning)
                             } else {
                                 RichText::new(text)
                             };
@@ -2332,7 +2720,7 @@ impl RpGuiApp {
                         }
                     });
 
-                // Attachables tree
+                // Attachables tree (Bedrock-native)
                 if !loaded.ir.attachables.is_empty() {
                     let att_ids: Vec<String> = loaded
                         .ir
@@ -2363,11 +2751,22 @@ impl RpGuiApp {
                         .filter(|id| needle.is_empty() || id.to_ascii_lowercase().contains(&needle))
                         .cloned()
                         .collect();
-                    egui::CollapsingHeader::new(format!("🌐 Locales ({})", loc_ids.len()))
+                    let loc_header = match loaded.edition {
+                        Edition::Java => format!("🌐 Java Locales ({})", loc_ids.len()),
+                        Edition::Bedrock => format!("🌐 Bedrock Texts ({})", loc_ids.len()),
+                    };
+                    egui::CollapsingHeader::new(loc_header)
                         .default_open(false)
                         .show(ui, |ui| {
                             for code in &loc_ids {
-                                if ui.selectable_label(false, format!("{code}.json")).clicked() {
+                                let ext = match loaded.edition {
+                                    Edition::Java => "json",
+                                    Edition::Bedrock => "lang",
+                                };
+                                if ui
+                                    .selectable_label(false, format!("{code}.{ext}"))
+                                    .clicked()
+                                {
                                     clicked_tab = Some(StudioEditorTab::Text(
                                         TextAssetTarget::LocaleJson(code.clone()),
                                     ));
@@ -2500,40 +2899,38 @@ impl RpGuiApp {
     }
 
     fn show_studio_bottom_panel(&mut self, ui: &mut Ui) {
+        let palette = self.palette;
         let mut open_asset: Option<String> = None;
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong("STUDIO CONSOLE");
+            let (ed_bg, ed_fg, _) = palette.edition_colors(self.studio_edition);
+            m3_pill_badge(
+                ui,
+                match self.studio_edition {
+                    Edition::Java => "☕ JAVA CONSOLE",
+                    Edition::Bedrock => "🪨 BEDROCK CONSOLE",
+                },
+                ed_bg,
+                ed_fg,
+            );
             ui.separator();
             let lossy = self.review_index.count_matching(DiagnosticFilter::Lossy);
             let warn = self.review_index.count_matching(DiagnosticFilter::Warning);
             let ov_count = self.overrides.total_override_count();
-            ui.colored_label(Color32::YELLOW, format!("Lossy: {lossy}"));
-            ui.colored_label(Color32::LIGHT_RED, format!("Warnings/Skip: {warn}"));
-            ui.colored_label(
-                Color32::from_rgb(100, 225, 255),
-                format!("Manual Overrides: {ov_count}"),
-            );
+            ui.colored_label(palette.warning, format!("Lossy: {lossy}"));
+            ui.colored_label(palette.error, format!("Warnings/Skip: {warn}"));
+            ui.colored_label(palette.primary, format!("Manual Overrides: {ov_count}"));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let enabled = self.busy_message.is_none() && self.loaded_pack.is_some();
-                if ui
-                    .add_enabled(
-                        enabled,
-                        egui::Button::new(
-                            RichText::new("Export Pack (with Overrides)")
-                                .strong()
-                                .color(Color32::LIGHT_GREEN),
-                        ),
-                    )
-                    .clicked()
-                {
+                let export_label = match self.studio_edition {
+                    Edition::Java => "Export to Bedrock (with Overrides)",
+                    Edition::Bedrock => "Export to Java (with Overrides)",
+                };
+                if m3_filled_button(ui, enabled, export_label, &palette).clicked() {
                     self.start_export_studio_ir();
                 }
-                if ui
-                    .add_enabled(ov_count > 0, egui::Button::new("Export Overrides JSON"))
-                    .clicked()
-                {
+                if m3_tonal_button(ui, ov_count > 0, "Export Overrides JSON", &palette).clicked() {
                     let start = self.scan_dir.clone();
                     self.file_browser.open_for(
                         FilePickerTarget::ExportOverrides,
@@ -2568,12 +2965,58 @@ impl RpGuiApp {
     }
 
     fn show_studio_editor_area(&mut self, ctx: &Context, ui: &mut Ui) {
+        let palette = self.palette;
         if self.loaded_pack.is_none() {
+            let active_ed = self.studio_edition;
+            let (ed_bg, ed_fg, _) = palette.edition_colors(active_ed);
             ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.heading("Welcome to mc-rp-converter Studio");
-                    ui.add_space(6.0);
-                    ui.label("Open any Java or Bedrock pack from the left Explorer, Quick Manager, or drag & drop a .zip / .mcpack onto this window.");
+                m3_card_frame(&palette).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        m3_pill_badge(
+                            ui,
+                            match active_ed {
+                                Edition::Java => "☕ JAVA EDITION STUDIO",
+                                Edition::Bedrock => "🪨 BEDROCK EDITION STUDIO",
+                            },
+                            ed_bg,
+                            ed_fg,
+                        );
+                        ui.add_space(8.0);
+                        ui.heading(format!("mc-rp-converter {active_ed} Studio"));
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(match active_ed {
+                                Edition::Java => {
+                                    "Inspect & edit Java Edition packs (pack.mcmeta, JSON 3D models, up to 2048x textures & lang/*.json)."
+                                }
+                                Edition::Bedrock => {
+                                    "Inspect & edit Bedrock Edition packs (manifest.json, .geo.json models, flipbooks, attachables & texts/*.lang)."
+                                }
+                            })
+                            .color(palette.on_surface_variant),
+                        );
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if m3_filled_button(ui, true, "Open Pack...", &palette).clicked() {
+                                let start = self.scan_dir.clone();
+                                self.file_browser.open_for(
+                                    FilePickerTarget::ConvertInput,
+                                    &start,
+                                    "",
+                                );
+                            }
+                            if m3_tonal_button(
+                                ui,
+                                self.busy_message.is_none(),
+                                "↻ Fresh Refresh Workspace",
+                                &palette,
+                            )
+                            .clicked()
+                            {
+                                self.fresh_refresh_studio();
+                            }
+                        });
+                    });
                 });
             });
             return;
@@ -2646,16 +3089,35 @@ impl RpGuiApp {
         let mut modified = false;
         let mut reset_requested = false;
 
-        // Top model status bar (Manual Override badge + Reset to Auto)
+        // Top model status bar (Edition Pill + Manual Override badge + Reset to Auto)
+        let palette = self.palette;
+        let active_ed = self
+            .loaded_pack
+            .as_ref()
+            .map_or(self.studio_edition, |l| l.edition);
+        let (ed_bg, ed_fg, _) = palette.edition_colors(active_ed);
         ui.horizontal_wrapped(|ui| {
+            m3_pill_badge(
+                ui,
+                match active_ed {
+                    Edition::Java => "☕ JAVA MODEL",
+                    Edition::Bedrock => "🪨 BEDROCK GEO",
+                },
+                ed_bg,
+                ed_fg,
+            );
             ui.label(RichText::new(model_id).strong().size(14.0));
             if is_overridden {
-                ui.colored_label(Color32::from_rgb(100, 225, 255), "✎ MANUAL OVERRIDE");
+                ui.colored_label(palette.primary, "✎ MANUAL OVERRIDE");
                 if ui.small_button("Reset to Auto").clicked() {
                     reset_requested = true;
                 }
             } else {
-                ui.label(RichText::new("Auto-Converted").small().weak());
+                ui.label(
+                    RichText::new("Auto-Converted")
+                        .small()
+                        .color(palette.on_surface_variant),
+                );
             }
             ui.separator();
             ui.label(
@@ -2664,7 +3126,7 @@ impl RpGuiApp {
                     model.texture_size[0], model.texture_size[1], model.category
                 ))
                 .small()
-                .weak(),
+                .color(palette.on_surface_variant),
             );
         });
 
@@ -2933,18 +3395,34 @@ impl RpGuiApp {
         let mapped_bedrock = self.mappings.java_texture_to_bedrock(&tex.id);
         let is_overridden = self.overrides.is_texture_overridden(&tex.id);
 
+        let palette = self.palette;
+        let active_ed = self
+            .loaded_pack
+            .as_ref()
+            .map_or(self.studio_edition, |l| l.edition);
+        let (ed_bg, ed_fg, _) = palette.edition_colors(active_ed);
+
         ui.horizontal_wrapped(|ui| {
+            m3_pill_badge(
+                ui,
+                match active_ed {
+                    Edition::Java => "☕ JAVA TEXTURE",
+                    Edition::Bedrock => "🪨 BEDROCK TEXTURE",
+                },
+                ed_bg,
+                ed_fg,
+            );
             ui.label(RichText::new(&tex.id).strong().size(15.0));
             if is_overridden {
-                ui.colored_label(Color32::from_rgb(100, 225, 255), "✎ CUSTOM MAPPING");
+                ui.colored_label(palette.primary, "✎ CUSTOM MAPPING");
             }
             ui.separator();
             ui.checkbox(&mut self.tex_pixel_grid, "Pixel Grid");
             ui.add(egui::Slider::new(&mut self.tex_zoom, 1.0..=16.0).text("Zoom"));
         });
 
-        // Bedrock & Java Atlas Index Status
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        // Bedrock & Java Atlas Index Status (Material 3 tonal card)
+        m3_card_frame(&palette).show(ui, |ui| {
             let atlas_file = match tex.category {
                 TextureCategory::Block => "terrain_texture.json",
                 TextureCategory::Item => "item_texture.json",
@@ -3375,5 +3853,25 @@ mod tests {
                 });
             }
         }
+
+        // 3. Verify separated Java vs Bedrock Studio slots & Material 3 Light mode
+        app.switch_studio_edition(Edition::Bedrock);
+        assert_eq!(app.studio_edition, Edition::Bedrock);
+        assert!(app.loaded_pack.is_none());
+        assert!(app.open_tabs.is_empty());
+        app.dark_mode = false;
+        let _ = ctx.run(egui::RawInput::default(), |c| {
+            app.render_ui(c);
+        });
+
+        app.switch_studio_edition(Edition::Java);
+        assert_eq!(app.studio_edition, Edition::Java);
+        assert!(app.loaded_pack.is_some());
+        assert_eq!(app.open_tabs.len(), 4);
+
+        // 4. Verify Fresh Refresh clears caches and reloads cleanly
+        app.fresh_refresh_studio();
+        assert!(app.tex_preview.is_none());
+        assert!(app.busy_message.is_some());
     }
 }
