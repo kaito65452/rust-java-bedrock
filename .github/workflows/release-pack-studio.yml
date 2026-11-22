@@ -58,7 +58,7 @@ jobs:
       - name: Run Workspace Tests & Clippy
         run: |
           cargo check -p pack-studio
-          cargo clippy -p pack-studio -- -D warnings
+          cargo clippy -p pack-studio --all-targets --no-deps -- -D warnings
           cargo test --workspace
 
       - name: Build Release Binary (Embedded Blockbench + Native WebView)

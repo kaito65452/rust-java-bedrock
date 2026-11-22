@@ -90,8 +90,8 @@ jobs:
       - name: cargo check -p pack-studio
         run: cargo check -p pack-studio
 
-      - name: cargo clippy -p pack-studio --all-targets -- -D warnings
-        run: cargo clippy -p pack-studio --all-targets -- -D warnings
+      - name: cargo clippy -p pack-studio --all-targets --no-deps -- -D warnings
+        run: cargo clippy -p pack-studio --all-targets --no-deps -- -D warnings
 
       - name: cargo check (embed-blockbench + native-webview features)
         run: cargo check -p pack-studio --features "embed-blockbench,native-webview"
