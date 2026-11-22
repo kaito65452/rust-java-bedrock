@@ -392,7 +392,7 @@ fn execute_pipeline_core(
     }
 
     // Optional: Auto-Downscale oversized textures via fast_image_resize nearest-neighbor
-    if let Some(target_sz) = options.auto_downscale.filter(|&s| s >= 8 && s <= 1024) {
+    if let Some(target_sz) = options.auto_downscale.filter(|&s| (8..=1024).contains(&s)) {
         let tex_keys: Vec<String> = output
             .files()
             .keys()

@@ -744,7 +744,7 @@ pub fn open_project(
         None
     };
 
-    if let Ok(mut guard) = state.blockbench.lock()
+    if let Ok(guard) = state.blockbench.lock()
         && let Some(host) = guard.as_ref()
     {
         host.server.set_project_root(watcher_root.clone());

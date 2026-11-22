@@ -222,7 +222,13 @@ mod tests {
 
         let side = RgbaImage::from_pixel(16, 16, Rgba([100, 70, 40, 255]));
         let overlay = RgbaImage::from_pixel(16, 16, Rgba([0, 255, 0, 255]));
-        let tga_bytes = composite_grass_side_tga(&side, Some(&overlay)).unwrap();
+        let (_comp_img, tga_bytes) = composite_grass_side_tga(
+            &side,
+            Some(&overlay),
+            glam::Vec3::new(0.474, 0.753, 0.353),
+            false,
+        )
+        .unwrap();
         let decoded = image::load_from_memory_with_format(&tga_bytes, image::ImageFormat::Tga)
             .unwrap()
             .into_rgba8();
