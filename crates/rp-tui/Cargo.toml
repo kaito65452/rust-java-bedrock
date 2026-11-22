@@ -1,0 +1,22 @@
+[package]
+name = "rp-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Linux Terminal UI (TUI) for managing, inspecting, converting, and auditing Minecraft Java/Bedrock resource packs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+image.workspace = true
+ratatui.workspace = true
+rp-bedrock.workspace = true
+rp-cli.workspace = true
+rp-core.workspace = true
+rp-io.workspace = true
+rp-java.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

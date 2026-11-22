@@ -23,7 +23,7 @@ It parses `.zip`, `.mcpack`, and unpacked directory packs into a canonical Inter
 
 ---
 
-## Workspace Architecture (6 Crates)
+## Workspace Architecture (7 Crates)
 
 The converter decouples format parsing/emission from a shared canonical IR so `rp-java` and `rp-bedrock` never depend on each other:
 
@@ -35,15 +35,21 @@ The converter decouples format parsing/emission from a shared canonical IR so `r
 | [`crates/rp-java`](crates/rp-java) | Decoupled Java Edition parser & emitter (`pack.mcmeta`, multi-namespace `lang/`, `models/`, `items/`, `atlases/blocks.json`, `sounds.json`, `overlays`, and skipping Java-only `shaders/` / `optifine/` / `mcpatcher/`). |
 | [`crates/rp-bedrock`](crates/rp-bedrock) | Decoupled Bedrock Edition parser & emitter (`manifest.json` v1/v2/v3, UUID v4 generation, atlases, flipbooks, `.geo.json` `1.10.0`–`1.21.0`, `attachables/*.json`, `sound_definitions.json`, and `texts/*.lang`). |
 | [`crates/rp-cli`](crates/rp-cli) | `clap` CLI binary (`convert`, `inspect`, `versions`) with `indicatif` progress spinner, diagnostic tables, JSON report export, integration tests, and `proptest` fuzz/round-trip suites. |
+| [`crates/rp-tui`](crates/rp-tui) | Linux-only interactive Terminal UI (`ratatui` + `crossterm`) for browsing/managing resource packs, previewing PNG textures in TrueColor half-blocks, inspecting 3D models, converting, batch converting, and running round-trip audits. |
 
 ---
 
 ## Build & Test
 
-### Build CLI Binary
+### Build CLI & Linux TUI Binaries
 ```bash
-cargo build --release -p rp-cli
-# Binary output: target/release/rp-cli
+cargo build --release -p rp-cli -p rp-tui
+# Binaries: target/release/rp-cli, target/release/rp-tui (Linux-only TUI)
+```
+
+Launch the interactive Linux TUI manager on any directory containing resource packs:
+```bash
+./target/release/rp-tui /path/to/resource-packs
 ```
 
 Or debug build:
