@@ -1,4 +1,5 @@
 /target
 /.cache/
 /dist-web/
+/dist-deb/
 /assets/vendor/blockbench-web.tar.zst
