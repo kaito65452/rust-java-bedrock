@@ -594,17 +594,19 @@ pub fn run_semantic_audit_sync(
     }
 }
 
-fn execute_core_pipeline(
-    input: &PackContainer,
-    config: &ConversionConfig,
-    mappings: &MappingTable,
-) -> Result<(
+type CorePipelineResult = (
     PackContainer,
     Edition,
     Edition,
     ConversionReport,
     Vec<(String, String)>,
-)> {
+);
+
+fn execute_core_pipeline(
+    input: &PackContainer,
+    config: &ConversionConfig,
+    mappings: &MappingTable,
+) -> Result<CorePipelineResult> {
     let source = detect_pack_edition(input)?;
     let target = config.direction.target_edition();
 

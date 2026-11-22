@@ -1192,7 +1192,7 @@ impl PackStudioApp {
             .frame(
                 Frame::new()
                     .fill(Color32::from_rgb(0x1E, 0x3A, 0x5F))
-                    .stroke(Stroke::new(1.0, theme::ACCENT_BLUE))
+                    .stroke(Stroke::new(1.0_f32, theme::ACCENT_BLUE))
                     .inner_margin(Margin::symmetric(10, 5)),
             )
             .show(ctx, |ui| {
@@ -1362,7 +1362,7 @@ impl PackStudioApp {
             .frame(
                 Frame::new()
                     .fill(theme::BG_ACTIVITY_BAR)
-                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .stroke(Stroke::new(1.0_f32, theme::BORDER))
                     .inner_margin(Margin::symmetric(0, 6)),
             )
             .show(ctx, |ui| {
@@ -1442,7 +1442,7 @@ impl PackStudioApp {
             .frame(
                 Frame::new()
                     .fill(theme::BG_SIDEBAR)
-                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .stroke(Stroke::new(1.0_f32, theme::BORDER))
                     .inner_margin(Margin::same(8)),
             )
             .show(ctx, |ui| {
@@ -2587,7 +2587,7 @@ impl PackStudioApp {
             .frame(
                 Frame::new()
                     .fill(theme::BG_EDITOR)
-                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .stroke(Stroke::new(1.0_f32, theme::BORDER))
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ctx, |ui| {
@@ -2834,7 +2834,7 @@ impl PackStudioApp {
             .show(ctx, |ui| {
                 Frame::new()
                     .fill(theme::BG_SIDEBAR)
-                    .stroke(Stroke::new(1.0, theme::ACCENT_BLUE))
+                    .stroke(Stroke::new(1.0_f32, theme::ACCENT_BLUE))
                     .corner_radius(CornerRadius::same(4))
                     .inner_margin(Margin::same(8))
                     .shadow(egui::Shadow {
@@ -2966,7 +2966,7 @@ impl PackStudioApp {
             .show(ctx, |ui| {
                 Frame::new()
                     .fill(theme::BG_SIDEBAR)
-                    .stroke(Stroke::new(1.0, theme::ACCENT_BLUE))
+                    .stroke(Stroke::new(1.0_f32, theme::ACCENT_BLUE))
                     .corner_radius(CornerRadius::same(4))
                     .inner_margin(Margin::same(8))
                     .show(ui, |ui| {
@@ -3058,7 +3058,7 @@ impl PackStudioApp {
                                 theme::BG_EDITOR
                             })
                             .stroke(Stroke::new(
-                                1.0,
+                                1.0_f32,
                                 if selected {
                                     theme::ACCENT_BLUE
                                 } else {
@@ -4034,7 +4034,7 @@ impl PackTabViewer<'_> {
     fn render_texture_tab(&mut self, ui: &mut egui::Ui, tex: &mut TextureTabState) {
         Frame::new()
             .fill(theme::BG_SIDEBAR)
-            .stroke(Stroke::new(1.0, theme::BORDER))
+            .stroke(Stroke::new(1.0_f32, theme::BORDER))
             .inner_margin(Margin::symmetric(8, 5))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -4251,7 +4251,7 @@ impl PackTabViewer<'_> {
             && base_img.width() <= 256
             && base_img.height() <= 256
         {
-            let grid_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
+            let grid_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
             for x in 0..=base_img.width() {
                 let px = img_rect.left() + x as f32 * tex.zoom;
                 painter.line_segment(
@@ -4271,7 +4271,7 @@ impl PackTabViewer<'_> {
         painter.rect_stroke(
             img_rect,
             0.0,
-            Stroke::new(1.0, theme::BORDER),
+            Stroke::new(1.0_f32, theme::BORDER),
             egui::StrokeKind::Outside,
         );
     }
@@ -4284,7 +4284,7 @@ impl PackTabViewer<'_> {
 
         Frame::new()
             .fill(theme::BG_SIDEBAR)
-            .stroke(Stroke::new(1.0, theme::BORDER))
+            .stroke(Stroke::new(1.0_f32, theme::BORDER))
             .inner_margin(Margin::symmetric(8, 5))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {

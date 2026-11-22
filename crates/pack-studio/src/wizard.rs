@@ -703,7 +703,7 @@ pub fn parse_minecraft_formatted_text(input: &str) -> Vec<McFormattedSpan> {
 pub fn render_minecraft_formatted_preview(ui: &mut Ui, text: &str) {
     egui::Frame::new()
         .fill(Color32::from_rgb(0x14, 0x14, 0x16))
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0x2D, 0x2D, 0x2D)))
+        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(0x2D, 0x2D, 0x2D)))
         .corner_radius(egui::CornerRadius::same(3))
         .inner_margin(egui::Margin::same(6))
         .show(ui, |ui| {

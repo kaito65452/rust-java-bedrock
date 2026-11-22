@@ -148,8 +148,10 @@ mod tests {
                 .any(|c| c.command == StudioCommand::RunSemanticAudit)
         );
 
-        let mut form = PackMetadataForm::default();
-        form.bedrock_min_engine_version = [26, 60, 0];
+        let mut form = PackMetadataForm {
+            bedrock_min_engine_version: [26, 60, 0],
+            ..PackMetadataForm::default()
+        };
         form.enforce_bedrock_engine_version_invariant();
         assert_eq!(form.bedrock_min_engine_version[0], 1);
         form.regenerate_uuids();

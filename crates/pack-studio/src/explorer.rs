@@ -524,9 +524,9 @@ pub fn paste_pack_asset(
     } else {
         format!("{}/{fname}", target_dir.trim_matches('/'))
     };
-    let final_target = if pack.container.contains(&base_target) && base_target != src_path {
-        make_unique_rel_path(&pack.container, &base_target)
-    } else if base_target == src_path && !is_cut {
+    let final_target = if (pack.container.contains(&base_target) && base_target != src_path)
+        || (base_target == src_path && !is_cut)
+    {
         make_unique_rel_path(&pack.container, &base_target)
     } else {
         base_target

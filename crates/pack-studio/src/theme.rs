@@ -52,42 +52,42 @@ pub fn apply_vscode_dark_plus(ctx: &Context) {
     visuals.faint_bg_color = Color32::from_rgb(0x22, 0x22, 0x23);
     visuals.extreme_bg_color = Color32::from_rgb(0x18, 0x18, 0x18);
     visuals.code_bg_color = Color32::from_rgb(0x1B, 0x1B, 0x1C);
-    visuals.window_stroke = Stroke::new(1.0, BORDER);
+    visuals.window_stroke = Stroke::new(1.0_f32, BORDER);
     visuals.window_corner_radius = CornerRadius::same(4);
     visuals.override_text_color = Some(TEXT_PRIMARY);
     visuals.hyperlink_color = Color32::from_rgb(0x37, 0x94, 0xFF);
 
     visuals.selection.bg_fill = BG_SELECTION;
-    visuals.selection.stroke = Stroke::new(1.0, ACCENT_BLUE);
+    visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT_BLUE);
 
     visuals.widgets.noninteractive.bg_fill = BG_SIDEBAR;
     visuals.widgets.noninteractive.weak_bg_fill = BG_SIDEBAR;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
     visuals.widgets.noninteractive.corner_radius = CornerRadius::same(2);
 
     visuals.widgets.inactive.bg_fill = BG_INPUT;
     visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(0x2F, 0x2F, 0x31);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
     visuals.widgets.inactive.corner_radius = CornerRadius::same(2);
 
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(0x46, 0x46, 0x49);
     visuals.widgets.hovered.weak_bg_fill = BG_HOVER;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT_BLUE);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_BRIGHT);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT_BLUE);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT_BRIGHT);
     visuals.widgets.hovered.corner_radius = CornerRadius::same(2);
 
     visuals.widgets.active.bg_fill = BG_SELECTION;
     visuals.widgets.active.weak_bg_fill = BG_SELECTION;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT_BLUE);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, TEXT_BRIGHT);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT_BLUE);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, TEXT_BRIGHT);
     visuals.widgets.active.corner_radius = CornerRadius::same(2);
 
     visuals.widgets.open.bg_fill = BG_LIST_ACTIVE;
     visuals.widgets.open.weak_bg_fill = BG_LIST_ACTIVE;
-    visuals.widgets.open.bg_stroke = Stroke::new(1.0, ACCENT_BLUE);
-    visuals.widgets.open.fg_stroke = Stroke::new(1.0, TEXT_BRIGHT);
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, ACCENT_BLUE);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, TEXT_BRIGHT);
     visuals.widgets.open.corner_radius = CornerRadius::same(2);
 
     let mut style = Style {
@@ -106,7 +106,7 @@ pub fn apply_vscode_dark_plus(ctx: &Context) {
 pub fn vscode_dock_style(style: &Style) -> DockStyle {
     let mut dock = DockStyle::from_egui(style);
     dock.dock_area_padding = Some(Margin::ZERO);
-    dock.main_surface_border_stroke = Stroke::new(1.0, BORDER);
+    dock.main_surface_border_stroke = Stroke::new(1.0_f32, BORDER);
     dock.main_surface_border_rounding = CornerRadius::ZERO;
 
     dock.tab_bar.bg_fill = BG_SIDEBAR;
@@ -116,7 +116,7 @@ pub fn vscode_dock_style(style: &Style) -> DockStyle {
     dock.tab_bar.fill_tab_bar = true;
 
     dock.tab.tab_body.bg_fill = BG_EDITOR;
-    dock.tab.tab_body.stroke = Stroke::new(1.0, BORDER);
+    dock.tab.tab_body.stroke = Stroke::new(1.0_f32, BORDER);
     dock.tab.tab_body.corner_radius = CornerRadius::ZERO;
     dock.tab.tab_body.inner_margin = Margin::same(0);
 
