@@ -1174,3 +1174,176 @@ fn modern_java_euler_min_max_multi_ns_and_bedrock_attachable_item_map() {
     assert!(j_out.contains("assets/minecraft/models/item/chainmail_chestplate.json"));
     assert!(j_out.contains("assets/minecraft/items/chainmail_chestplate.json"));
 }
+
+#[test]
+fn java_26_3_euler_shade_override_and_bedrock_se3_roundtrip() {
+    let mappings = MappingTable::default_embedded().expect("mappings");
+
+    // 1. Bedrock hierarchical parent-rotated rig -> Java 26.3 (`pack_format 97.1`)
+    let mut b_in = PackContainer::new();
+    b_in.insert(
+        "manifest.json",
+        BedrockManifest::new("SE3 Rig Pack", "26.3 SE3 test", [1, 0, 0], [26, 50, 0])
+            .to_json_vec_versioned(2)
+            .expect("manifest"),
+    )
+    .expect("manifest");
+    b_in.insert(
+        "textures/models/armor/mask.png",
+        encode_png(32, 32, Rgba([240, 40, 60, 255])),
+    )
+    .expect("mask png");
+    b_in.insert(
+        "models/entity/kitsune_rig.json",
+        br#"{
+            "format_version": "1.12.0",
+            "minecraft:geometry": [{
+                "description": { "identifier": "geometry.kitsune_rig", "texture_width": 32, "texture_height": 32 },
+                "bones": [
+                    { "name": "head", "pivot": [0, 24, 0] },
+                    { "name": "ribbon", "parent": "head", "pivot": [8, 21, 7], "rotation": [-71.32319, -74.20678, 71.98187] },
+                    {
+                        "name": "mask",
+                        "parent": "ribbon",
+                        "pivot": [0, 29, 15],
+                        "cubes": [{
+                            "origin": [-2, 26, 13],
+                            "size": [4, 4, 2],
+                            "uv": {
+                                "north": { "uv": [0, 0], "uv_size": [4, 4], "uv_rotation": 90 },
+                                "up": { "uv": [8, 4], "uv_size": [-4, -2] }
+                            }
+                        }]
+                    }
+                ]
+            }]
+        }"#
+        .to_vec(),
+    )
+    .expect("geo");
+    b_in.insert(
+        "attachables/kitsune_rig.json",
+        br#"{
+            "format_version": "1.10.0",
+            "minecraft:attachable": {
+                "description": {
+                    "identifier": "minecraft:diamond_helmet",
+                    "textures": { "default": "textures/models/armor/mask" },
+                    "geometry": { "default": "geometry.kitsune_rig" }
+                }
+            }
+        }"#
+        .to_vec(),
+    )
+    .expect("attachable");
+
+    let (j263, _, _, report) = convert_container_with_options(
+        &b_in,
+        Some(Edition::Java),
+        Some("26.3"),
+        &mappings,
+        true,
+        &VersionSpecificOptions::default(),
+    )
+    .expect("convert Bedrock rig -> Java 26.3");
+    assert_eq!(report.lossy_count, 0);
+
+    let mcmeta: serde_json::Value =
+        serde_json::from_slice(j263.get("pack.mcmeta").expect("pack.mcmeta")).expect("mcmeta");
+    assert_eq!(mcmeta["pack"]["min_format"], serde_json::json!([97, 0]));
+    assert_eq!(mcmeta["pack"]["max_format"], serde_json::json!([97, 1]));
+
+    let model_val: serde_json::Value = serde_json::from_slice(
+        j263.get("assets/minecraft/models/item/diamond_helmet.json")
+            .expect("diamond_helmet model"),
+    )
+    .expect("parse model");
+    let el = &model_val["elements"][0];
+    // Multi-axis Euler emitted with x/y/z (NOT legacy axis/angle!)
+    assert!(el["rotation"]["x"].is_number());
+    assert!(el["rotation"]["y"].is_number());
+    assert!(el["rotation"]["z"].is_number());
+    assert!(el["rotation"]["axis"].is_null());
+    assert!(el["rotation"]["angle"].is_null());
+    // North uv_rotation preserved, Up face UV flipped 180° from Bedrock [8,4]+[-4,-2] => [4,2,8,4] * 0.5 = [2,1,4,2]
+    assert_eq!(el["faces"]["north"]["rotation"], 90);
+    assert_eq!(
+        el["faces"]["up"]["uv"],
+        serde_json::json!([2.0, 1.0, 4.0, 2.0])
+    );
+    // Display head scale matches exact 1:1 CustomHeadLayer (0.625 * 1.6 = 1.0)
+    assert_eq!(
+        model_val["display"]["head"]["scale"],
+        serde_json::json!([1.6, 1.6, 1.6])
+    );
+
+    // 2. Java 26.3 model with shade_direction_override + light_emission -> Java 26.3 & 1.21.11
+    let mut j_in = PackContainer::new();
+    j_in.insert(
+        "pack.mcmeta",
+        br#"{"pack":{"description":"26.3 Shade Test","min_format":[97,0],"max_format":[97,1]}}"#
+            .to_vec(),
+    )
+    .expect("mcmeta");
+    j_in.insert(
+        "assets/minecraft/textures/block/glow_tile.png",
+        encode_png(16, 16, Rgba([255, 220, 80, 255])),
+    )
+    .expect("tex");
+    j_in.insert(
+        "assets/minecraft/models/block/glow_tile.json",
+        br##"{
+            "textures": { "all": "block/glow_tile" },
+            "elements": [{
+                "from": [0, 0, 0],
+                "to": [16, 16, 16],
+                "shade_direction_override": "up",
+                "light_emission": 15,
+                "rotation": { "x": 15, "y": 60, "z": -30, "origin": [8, 8, 8] },
+                "faces": { "up": { "uv": [0, 0, 16, 16], "texture": "#all" } }
+            }]
+        }"##
+        .to_vec(),
+    )
+    .expect("model");
+
+    // Roundtrip Java 26.3 -> Java 26.3 (preserves shade_direction_override + light_emission + {x,y,z})
+    let (j_same, _, _, _) = convert_container_with_options(
+        &j_in,
+        Some(Edition::Java),
+        Some("26.3"),
+        &mappings,
+        true,
+        &VersionSpecificOptions::default(),
+    )
+    .expect("Java 26.3 -> Java 26.3");
+    let m263: serde_json::Value = serde_json::from_slice(
+        j_same
+            .get("assets/minecraft/models/block/glow_tile.json")
+            .expect("glow_tile 26.3"),
+    )
+    .expect("parse 26.3");
+    assert_eq!(m263["elements"][0]["shade_direction_override"], "up");
+    assert!(m263["elements"][0]["shade"].is_null());
+    assert_eq!(m263["elements"][0]["light_emission"], 15);
+    assert_eq!(m263["elements"][0]["rotation"]["y"], 60.0);
+
+    // Downgrade Java 26.3 -> Java 26.2 (maps shade_direction_override back to shade: false)
+    let (j_down, _, _, _) = convert_container_with_options(
+        &j_in,
+        Some(Edition::Java),
+        Some("26.2"),
+        &mappings,
+        true,
+        &VersionSpecificOptions::default(),
+    )
+    .expect("Java 26.3 -> Java 26.2");
+    let m262: serde_json::Value = serde_json::from_slice(
+        j_down
+            .get("assets/minecraft/models/block/glow_tile.json")
+            .expect("glow_tile 26.2"),
+    )
+    .expect("parse 26.2");
+    assert_eq!(m262["elements"][0]["shade"], false);
+    assert!(m262["elements"][0]["shade_direction_override"].is_null());
+}

@@ -131,6 +131,26 @@ proptest! {
                 tintindex: None,
             },
         );
+        faces.insert(
+            FaceDirection::Up,
+            ElementFace {
+                uv: Some([0.0, 0.0, f32::from(dx), f32::from(dz)]),
+                texture: String::from("#all"),
+                cullface: None,
+                rotation: 90,
+                tintindex: None,
+            },
+        );
+        faces.insert(
+            FaceDirection::Down,
+            ElementFace {
+                uv: Some([0.0, 0.0, f32::from(dx), f32::from(dz)]),
+                texture: String::from("#all"),
+                cullface: None,
+                rotation: 180,
+                tintindex: None,
+            },
+        );
 
         let model = ModelAsset {
             id: String::from("block/prop_cube"),
@@ -152,6 +172,8 @@ proptest! {
                 }),
                 faces,
                 shade: true,
+                shade_direction_override: None,
+                light_emission: None,
             }],
             display: BTreeMap::new(),
             has_overrides: false,

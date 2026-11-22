@@ -476,8 +476,8 @@ fn default_wearable_display_transforms() -> BTreeMap<String, DisplayTransform> {
             String::from("head"),
             DisplayTransform {
                 rotation: [0.0, 0.0, 0.0],
-                translation: [0.0, 0.0, -4.25],
-                scale: [1.1, 1.1, 1.1],
+                translation: [0.0, 0.0, 0.0],
+                scale: [1.6, 1.6, 1.6],
             },
         ),
         (

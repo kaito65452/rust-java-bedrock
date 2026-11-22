@@ -32,7 +32,7 @@ enum Commands {
         /// Target edition (defaults to opposite of detected source edition).
         #[arg(long = "to", value_enum)]
         to: Option<TargetEdition>,
-        /// Target Minecraft version or Java pack_format (e.g. "1.8.9", "1.20.1", "1.21.4", "26.1", "26.2", "88").
+        /// Target Minecraft version or Java pack_format (e.g. "1.8.9", "1.20.1", "1.21.11", "26.1", "26.2", "26.3", "97").
         #[arg(long = "target-version")]
         target_version: Option<String>,
         /// Multi-version Java compatibility range `MIN,MAX` (e.g. "15,88").
@@ -215,9 +215,13 @@ fn describe_java_features(pack_format: u32) -> &'static str {
     } else if pack_format < 63 {
         "items/*.json (1.21.4+)"
     } else if pack_format < 69 {
-        "items/*.json + arbitrary model rot"
+        "items/*.json + arb angle in [-45,45]"
+    } else if pack_format < 75 {
+        "min/max_format + items/*.json + [-45,45]"
+    } else if pack_format < 97 {
+        "min/max_format + multi-axis Euler {x,y,z}"
     } else {
-        "min_format/max_format + items/*.json + arb rot"
+        "97.1 + multi-axis Euler + shade_direction_override"
     }
 }
 

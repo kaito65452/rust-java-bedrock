@@ -33,7 +33,10 @@
     { "minecraft_version": "26.1", "java_pack_format": 84, "bedrock_min_engine_version": [26, 1, 0] },
     { "minecraft_version": "26.10", "java_pack_format": 84, "bedrock_min_engine_version": [26, 10, 0] },
     { "minecraft_version": "26.2", "java_pack_format": 88, "bedrock_min_engine_version": [26, 2, 0] },
-    { "minecraft_version": "26.20", "java_pack_format": 88, "bedrock_min_engine_version": [26, 20, 0] }
+    { "minecraft_version": "26.20", "java_pack_format": 88, "bedrock_min_engine_version": [26, 20, 0] },
+    { "minecraft_version": "26.30", "java_pack_format": 88, "bedrock_min_engine_version": [26, 30, 0] },
+    { "minecraft_version": "26.3", "java_pack_format": 97, "bedrock_min_engine_version": [26, 50, 0] },
+    { "minecraft_version": "26.50", "java_pack_format": 97, "bedrock_min_engine_version": [26, 50, 0] }
   ],
   "textures": [
     { "java": "block/stone", "bedrock": "textures/blocks/stone", "atlas_key": "stone" },

@@ -306,9 +306,15 @@ pub struct JavaModelElementJson {
     /// Optional element rotation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation: Option<JavaElementRotationJson>,
-    /// Shading flag.
+    /// Shading flag (`< 26.3`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shade: Option<bool>,
+    /// Java `26.3+` (`pack_format >= 97`) shade direction override (replaces `shade: false`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shade_direction_override: Option<String>,
+    /// Java `1.21.4+` / `26.x` per-element light emission (`0..=15`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light_emission: Option<u8>,
     /// Per-face UV/texture definitions.
     #[serde(default)]
     pub faces: BTreeMap<String, JavaElementFaceJson>,
@@ -451,7 +457,7 @@ impl JavaModelElementJson {
                         } else {
                             (RotationAxis::Z, clean_zero_f32(rz))
                         };
-                        let extra_bedrock_euler = if non_zero_count > 1 {
+                        let extra_bedrock_euler = if non_zero_count > 1 || angle.abs() > 45.0 {
                             Some([clean_zero_f32(-rx), clean_zero_f32(-ry), clean_zero_f32(rz)])
                         } else {
                             None
@@ -477,19 +483,35 @@ impl JavaModelElementJson {
             None => None,
         };
 
+        let shade = match (self.shade, &self.shade_direction_override) {
+            (Some(s), _) => s,
+            (None, Some(_)) => false,
+            (None, None) => true,
+        };
+
         Ok(ModelElement {
             group: self.name.clone(),
             from: self.from,
             to: self.to,
             rotation,
             faces,
-            shade: self.shade.unwrap_or(true),
+            shade,
+            shade_direction_override: self.shade_direction_override.clone(),
+            light_emission: self.light_emission,
         })
     }
 
-    /// Converts a canonical `ModelElement` into Java JSON representation.
+    /// Converts a canonical `ModelElement` into legacy Java JSON representation (`pack_format < 75`).
     #[must_use]
     pub fn from_ir(el: &ModelElement) -> Self {
+        Self::from_ir_versioned(el, 15)
+    }
+
+    /// Converts a canonical `ModelElement` into version-aware Java JSON representation:
+    /// - `pack_format >= 75` (`1.21.11+` / `26.x`): emits `{x, y, z, origin}` when multi-axis or `|angle| > 45°`
+    /// - `pack_format >= 97` (`26.3+`): emits `shade_direction_override` instead of `shade: false`
+    #[must_use]
+    pub fn from_ir_versioned(el: &ModelElement, pack_format: u32) -> Self {
         let mut faces = BTreeMap::new();
         for (dir, face) in &el.faces {
             faces.insert(
@@ -508,20 +530,69 @@ impl JavaModelElementJson {
             );
         }
 
+        let rotation = el.rotation.as_ref().map(|r| {
+            let [rx, ry, rz] = if let Some(b) = r.extra_bedrock_euler {
+                [
+                    clean_zero_f32(-b[0]),
+                    clean_zero_f32(-b[1]),
+                    clean_zero_f32(b[2]),
+                ]
+            } else {
+                match r.axis {
+                    RotationAxis::X => [clean_zero_f32(r.angle), 0.0, 0.0],
+                    RotationAxis::Y => [0.0, clean_zero_f32(r.angle), 0.0],
+                    RotationAxis::Z => [0.0, 0.0, clean_zero_f32(r.angle)],
+                }
+            };
+            let non_zero_axes = [rx, ry, rz].iter().filter(|v| v.abs() > 1e-5).count();
+            let exceeds_45 = [rx, ry, rz].iter().any(|v| v.abs() > 45.0 + 1e-4);
+
+            if pack_format >= 75 && (non_zero_axes > 1 || exceeds_45) {
+                JavaElementRotationJson {
+                    origin: r.origin,
+                    axis: None,
+                    angle: None,
+                    x: Some(rx),
+                    y: Some(ry),
+                    z: Some(rz),
+                    rescale: r.rescale,
+                }
+            } else {
+                JavaElementRotationJson {
+                    origin: r.origin,
+                    axis: Some(r.axis),
+                    angle: Some(r.angle),
+                    x: None,
+                    y: None,
+                    z: None,
+                    rescale: r.rescale,
+                }
+            }
+        });
+
+        let (shade, shade_direction_override) = if pack_format >= 97 {
+            let override_dir = el
+                .shade_direction_override
+                .clone()
+                .or_else(|| (!el.shade).then(|| String::from("up")));
+            (None, override_dir)
+        } else {
+            let legacy_shade = if !el.shade || el.shade_direction_override.is_some() {
+                Some(false)
+            } else {
+                None
+            };
+            (legacy_shade, None)
+        };
+
         Self {
             name: el.group.clone(),
             from: el.from,
             to: el.to,
-            rotation: el.rotation.as_ref().map(|r| JavaElementRotationJson {
-                origin: r.origin,
-                axis: Some(r.axis),
-                angle: Some(r.angle),
-                x: None,
-                y: None,
-                z: None,
-                rescale: r.rescale,
-            }),
-            shade: if el.shade { None } else { Some(false) },
+            rotation,
+            shade,
+            shade_direction_override,
+            light_emission: el.light_emission.filter(|&v| v > 0),
             faces,
         }
     }

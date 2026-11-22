@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use rp_core::{
     AnimationFrame, AnimationSpec, ConversionReport, CoreError, FaceDirection, MappingTable,
-    ModelAsset, ModelElement, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
+    ModelAsset, ModelElement, RotationAxis, TextureAsset, TextureCategory, TexturePayload,
+    WarningSeverity,
 };
+
+use crate::model::{auto_java_uv_for_face, euler_zyx_to_mat3};
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -366,7 +369,9 @@ pub fn build_item_texture_json(
     }
 }
 
-/// Renders an orthographic 128x64 humanoid helmet armor sheet PNG from a 3D `ModelAsset` and its texture.
+/// Renders a 3D-rotation-aware orthographic 128x64 humanoid helmet armor sheet PNG
+/// from a 3D `ModelAsset` and its texture (matching Minecraft's 2× scaled 64×32 head Box UV:
+/// East `(0,16)`, North `(16,16)`, West `(32,16)`, South `(48,16)`, Up `(16,0)`, Down `(32,0)`).
 pub fn render_model_to_humanoid_helmet_png(
     model: &ModelAsset,
     tex_payload: &TexturePayload,
@@ -381,138 +386,282 @@ pub fn render_model_to_humanoid_helmet_png(
         return Ok(buf);
     }
 
-    let mut min_c = [f32::INFINITY; 3];
-    let mut max_c = [f32::NEG_INFINITY; 3];
+    // Collect all transformed 3D face quads with their rotated normals and UV corners.
+    struct WorldQuad {
+        verts: [[f32; 3]; 4],
+        normal: [f32; 3],
+        uvs: [[f32; 2]; 4],
+    }
+
+    let mut quads: Vec<WorldQuad> = Vec::new();
+    let mut min_c = [4.0_f32, 4.0, 4.0];
+    let mut max_c = [12.0_f32, 12.0, 12.0];
+
     for el in &model.elements {
-        for i in 0..3 {
-            min_c[i] = min_c[i].min(el.from[i]).min(el.to[i]);
-            max_c[i] = max_c[i].max(el.from[i]).max(el.to[i]);
+        let (origin, rot_mat) = element_rotation_matrix(el);
+        for (&dir, face) in &el.faces {
+            let local_verts = face_local_quad_verts(dir, el.from, el.to);
+            let local_normal = face_local_normal(dir);
+            let mut world_verts = [[0.0_f32; 3]; 4];
+            for (idx, v) in local_verts.iter().enumerate() {
+                let w = apply_rot_around(rot_mat, origin, *v);
+                for axis in 0..3 {
+                    min_c[axis] = min_c[axis].min(w[axis]);
+                    max_c[axis] = max_c[axis].max(w[axis]);
+                }
+                world_verts[idx] = w;
+            }
+            let world_normal = apply_rot_vec(rot_mat, local_normal);
+            let uv_rect = face
+                .uv
+                .unwrap_or_else(|| auto_java_uv_for_face(dir, el.from, el.to));
+            let uvs = rotated_uv_corners(uv_rect, face.rotation);
+            quads.push(WorldQuad {
+                verts: world_verts,
+                normal: world_normal,
+                uvs,
+            });
         }
     }
+
     let span_x = (max_c[0] - min_c[0]).max(0.001);
     let span_y = (max_c[1] - min_c[1]).max(0.001);
     let span_z = (max_c[2] - min_c[2]).max(0.001);
 
-    let mut project_face = |dir: FaceDirection, ox: u32, oy: u32| {
-        let mut refs: Vec<&ModelElement> = model
-            .elements
-            .iter()
-            .filter(|el| el.faces.contains_key(&dir))
-            .collect();
-        refs.sort_by(|a, b| match dir {
-            FaceDirection::North => b.from[2].total_cmp(&a.from[2]),
-            FaceDirection::South => a.to[2].total_cmp(&b.to[2]),
-            FaceDirection::West => b.from[0].total_cmp(&a.from[0]),
-            FaceDirection::East => a.to[0].total_cmp(&b.to[0]),
-            FaceDirection::Up => a.to[1].total_cmp(&b.to[1]),
-            FaceDirection::Down => b.from[1].total_cmp(&a.from[1]),
-        });
+    let views: [(FaceDirection, u32, u32, [f32; 3]); 6] = [
+        (FaceDirection::East, 0, 16, [1.0, 0.0, 0.0]),
+        (FaceDirection::North, 16, 16, [0.0, 0.0, -1.0]),
+        (FaceDirection::West, 32, 16, [-1.0, 0.0, 0.0]),
+        (FaceDirection::South, 48, 16, [0.0, 0.0, 1.0]),
+        (FaceDirection::Up, 16, 0, [0.0, 1.0, 0.0]),
+        (FaceDirection::Down, 32, 0, [0.0, -1.0, 0.0]),
+    ];
 
-        for el in refs {
-            let Some(face) = el.faces.get(&dir) else {
+    for (view_dir, ox, oy, view_norm) in views {
+        let mut zbuf = [f32::NEG_INFINITY; 16 * 16];
+        for quad in &quads {
+            let dot = quad.normal[0] * view_norm[0]
+                + quad.normal[1] * view_norm[1]
+                + quad.normal[2] * view_norm[2];
+            if dot <= 0.05 {
                 continue;
-            };
-            let uv = face.uv.unwrap_or([0.0, 0.0, 16.0, 16.0]);
-            let (u0, u1, v0, v1) = match dir {
-                FaceDirection::North => (
-                    (max_c[0] - el.to[0]) / span_x,
-                    (max_c[0] - el.from[0]) / span_x,
-                    (max_c[1] - el.to[1]) / span_y,
-                    (max_c[1] - el.from[1]) / span_y,
-                ),
-                FaceDirection::South => (
-                    (el.from[0] - min_c[0]) / span_x,
-                    (el.to[0] - min_c[0]) / span_x,
-                    (max_c[1] - el.to[1]) / span_y,
-                    (max_c[1] - el.from[1]) / span_y,
-                ),
-                FaceDirection::West => (
-                    (max_c[2] - el.to[2]) / span_z,
-                    (max_c[2] - el.from[2]) / span_z,
-                    (max_c[1] - el.to[1]) / span_y,
-                    (max_c[1] - el.from[1]) / span_y,
-                ),
-                FaceDirection::East => (
-                    (el.from[2] - min_c[2]) / span_z,
-                    (el.to[2] - min_c[2]) / span_z,
-                    (max_c[1] - el.to[1]) / span_y,
-                    (max_c[1] - el.from[1]) / span_y,
-                ),
-                FaceDirection::Up => (
-                    (el.from[0] - min_c[0]) / span_x,
-                    (el.to[0] - min_c[0]) / span_x,
-                    (el.from[2] - min_c[2]) / span_z,
-                    (el.to[2] - min_c[2]) / span_z,
-                ),
-                FaceDirection::Down => (
-                    (el.from[0] - min_c[0]) / span_x,
-                    (el.to[0] - min_c[0]) / span_x,
-                    (max_c[2] - el.to[2]) / span_z,
-                    (max_c[2] - el.from[2]) / span_z,
-                ),
-            };
-            draw_projected_quad(&mut out, ox, oy, [u0, v0, u1, v1], &decoded, uv);
+            }
+            let mut proj = [[0.0_f32; 3]; 4];
+            for i in 0..4 {
+                let p = quad.verts[i];
+                let (u, v, depth) = match view_dir {
+                    FaceDirection::North => (
+                        (max_c[0] - p[0]) / span_x,
+                        (max_c[1] - p[1]) / span_y,
+                        -p[2],
+                    ),
+                    FaceDirection::South => {
+                        ((p[0] - min_c[0]) / span_x, (max_c[1] - p[1]) / span_y, p[2])
+                    }
+                    FaceDirection::East => {
+                        ((max_c[2] - p[2]) / span_z, (max_c[1] - p[1]) / span_y, p[0])
+                    }
+                    FaceDirection::West => (
+                        (p[2] - min_c[2]) / span_z,
+                        (max_c[1] - p[1]) / span_y,
+                        -p[0],
+                    ),
+                    FaceDirection::Up => {
+                        ((max_c[0] - p[0]) / span_x, (max_c[2] - p[2]) / span_z, p[1])
+                    }
+                    FaceDirection::Down => (
+                        (max_c[0] - p[0]) / span_x,
+                        (p[2] - min_c[2]) / span_z,
+                        -p[1],
+                    ),
+                };
+                proj[i] = [u * 16.0, v * 16.0, depth];
+            }
+            rasterize_tri(
+                &mut out,
+                &mut zbuf,
+                ox,
+                oy,
+                [proj[0], proj[1], proj[2]],
+                [quad.uvs[0], quad.uvs[1], quad.uvs[2]],
+                &decoded,
+            );
+            rasterize_tri(
+                &mut out,
+                &mut zbuf,
+                ox,
+                oy,
+                [proj[0], proj[2], proj[3]],
+                [quad.uvs[0], quad.uvs[2], quad.uvs[3]],
+                &decoded,
+            );
         }
-    };
-
-    project_face(FaceDirection::Up, 16, 0);
-    project_face(FaceDirection::West, 0, 16);
-    project_face(FaceDirection::North, 16, 16);
-    project_face(FaceDirection::East, 32, 16);
-    project_face(FaceDirection::South, 48, 16);
+    }
 
     let mut png_bytes = Vec::new();
     out.write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)?;
     Ok(png_bytes)
 }
 
-fn draw_projected_quad(
+fn element_rotation_matrix(el: &ModelElement) -> ([f32; 3], [[f64; 3]; 3]) {
+    let Some(rot) = &el.rotation else {
+        return (
+            [0.0; 3],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        );
+    };
+    let deg = if let Some(b) = rot.extra_bedrock_euler {
+        [-f64::from(b[0]), -f64::from(b[1]), f64::from(b[2])]
+    } else {
+        match rot.axis {
+            RotationAxis::X => [f64::from(rot.angle), 0.0, 0.0],
+            RotationAxis::Y => [0.0, f64::from(rot.angle), 0.0],
+            RotationAxis::Z => [0.0, 0.0, f64::from(rot.angle)],
+        }
+    };
+    (rot.origin, euler_zyx_to_mat3(deg))
+}
+
+fn apply_rot_around(m: [[f64; 3]; 3], origin: [f32; 3], p: [f32; 3]) -> [f32; 3] {
+    let rx = f64::from(p[0] - origin[0]);
+    let ry = f64::from(p[1] - origin[1]);
+    let rz = f64::from(p[2] - origin[2]);
+    [
+        (m[0][0] * rx + m[0][1] * ry + m[0][2] * rz + f64::from(origin[0])) as f32,
+        (m[1][0] * rx + m[1][1] * ry + m[1][2] * rz + f64::from(origin[1])) as f32,
+        (m[2][0] * rx + m[2][1] * ry + m[2][2] * rz + f64::from(origin[2])) as f32,
+    ]
+}
+
+fn apply_rot_vec(m: [[f64; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    let vx = f64::from(v[0]);
+    let vy = f64::from(v[1]);
+    let vz = f64::from(v[2]);
+    [
+        (m[0][0] * vx + m[0][1] * vy + m[0][2] * vz) as f32,
+        (m[1][0] * vx + m[1][1] * vy + m[1][2] * vz) as f32,
+        (m[2][0] * vx + m[2][1] * vy + m[2][2] * vz) as f32,
+    ]
+}
+
+fn face_local_normal(dir: FaceDirection) -> [f32; 3] {
+    match dir {
+        FaceDirection::North => [0.0, 0.0, -1.0],
+        FaceDirection::South => [0.0, 0.0, 1.0],
+        FaceDirection::East => [1.0, 0.0, 0.0],
+        FaceDirection::West => [-1.0, 0.0, 0.0],
+        FaceDirection::Up => [0.0, 1.0, 0.0],
+        FaceDirection::Down => [0.0, -1.0, 0.0],
+    }
+}
+
+fn face_local_quad_verts(dir: FaceDirection, f: [f32; 3], t: [f32; 3]) -> [[f32; 3]; 4] {
+    // Ordered to match Java UV corners: (u1,v1), (u2,v1), (u2,v2), (u1,v2).
+    match dir {
+        FaceDirection::North => [
+            [t[0], t[1], f[2]],
+            [f[0], t[1], f[2]],
+            [f[0], f[1], f[2]],
+            [t[0], f[1], f[2]],
+        ],
+        FaceDirection::South => [
+            [f[0], t[1], t[2]],
+            [t[0], t[1], t[2]],
+            [t[0], f[1], t[2]],
+            [f[0], f[1], t[2]],
+        ],
+        FaceDirection::East => [
+            [t[0], t[1], t[2]],
+            [t[0], t[1], f[2]],
+            [t[0], f[1], f[2]],
+            [t[0], f[1], t[2]],
+        ],
+        FaceDirection::West => [
+            [f[0], t[1], f[2]],
+            [f[0], t[1], t[2]],
+            [f[0], f[1], t[2]],
+            [f[0], f[1], f[2]],
+        ],
+        FaceDirection::Up => [
+            [f[0], t[1], f[2]],
+            [t[0], t[1], f[2]],
+            [t[0], t[1], t[2]],
+            [f[0], t[1], t[2]],
+        ],
+        FaceDirection::Down => [
+            [f[0], f[1], t[2]],
+            [t[0], f[1], t[2]],
+            [t[0], f[1], f[2]],
+            [f[0], f[1], f[2]],
+        ],
+    }
+}
+
+fn rotated_uv_corners(uv: [f32; 4], rotation_deg: u16) -> [[f32; 2]; 4] {
+    let base = [
+        [uv[0], uv[1]],
+        [uv[2], uv[1]],
+        [uv[2], uv[3]],
+        [uv[0], uv[3]],
+    ];
+    let steps = ((rotation_deg / 90) % 4) as usize;
+    [
+        base[(4 - steps) % 4],
+        base[(5 - steps) % 4],
+        base[(6 - steps) % 4],
+        base[(7 - steps) % 4],
+    ]
+}
+
+fn rasterize_tri(
     dst: &mut RgbaImage,
+    zbuf: &mut [f32; 16 * 16],
     ox: u32,
     oy: u32,
-    norm_bounds: [f32; 4],
+    p: [[f32; 3]; 3],
+    uv: [[f32; 2]; 3],
     src: &RgbaImage,
-    java_uv: [f32; 4],
 ) {
     let (src_w, src_h) = src.dimensions();
     if src_w == 0 || src_h == 0 {
         return;
     }
 
-    let x_start = (norm_bounds[0].min(norm_bounds[2]) * 16.0).floor() as i32;
-    let x_end = (norm_bounds[0].max(norm_bounds[2]) * 16.0).ceil() as i32;
-    let y_start = (norm_bounds[1].min(norm_bounds[3]) * 16.0).floor() as i32;
-    let y_end = (norm_bounds[1].max(norm_bounds[3]) * 16.0).ceil() as i32;
+    let min_x = p[0][0].min(p[1][0]).min(p[2][0]).floor().clamp(0.0, 15.0) as i32;
+    let max_x = p[0][0].max(p[1][0]).max(p[2][0]).ceil().clamp(0.0, 15.0) as i32;
+    let min_y = p[0][1].min(p[1][1]).min(p[2][1]).floor().clamp(0.0, 15.0) as i32;
+    let max_y = p[0][1].max(p[1][1]).max(p[2][1]).ceil().clamp(0.0, 15.0) as i32;
 
-    let x_lo = x_start.clamp(0, 15);
-    let x_hi = x_end.saturating_sub(1).max(x_lo).clamp(0, 15);
-    let y_lo = y_start.clamp(0, 15);
-    let y_hi = y_end.saturating_sub(1).max(y_lo).clamp(0, 15);
+    let edge = |a: [f32; 3], b: [f32; 3], x: f32, y: f32| -> f32 {
+        (x - a[0]) * (b[1] - a[1]) - (y - a[1]) * (b[0] - a[0])
+    };
+    let area = edge(p[0], p[1], p[2][0], p[2][1]);
+    if area.abs() < 1e-4 {
+        return;
+    }
 
-    let dx_norm = (norm_bounds[2] - norm_bounds[0]).abs();
-    let dy_norm = (norm_bounds[3] - norm_bounds[1]).abs();
-
-    for py in y_lo..=y_hi {
-        let ty = if dy_norm < 1e-5 {
-            0.5
-        } else {
-            (((py as f32 + 0.5) / 16.0 - norm_bounds[1]) / (norm_bounds[3] - norm_bounds[1]))
-                .clamp(0.0, 1.0)
-        };
-        let v = (java_uv[1] + (java_uv[3] - java_uv[1]) * ty) * (src_h as f32 / 16.0);
-        let sy = (v.floor() as i32).clamp(0, (src_h - 1) as i32) as u32;
-
-        for px in x_lo..=x_hi {
-            let tx = if dx_norm < 1e-5 {
-                0.5
-            } else {
-                (((px as f32 + 0.5) / 16.0 - norm_bounds[0]) / (norm_bounds[2] - norm_bounds[0]))
-                    .clamp(0.0, 1.0)
-            };
-            let u = (java_uv[0] + (java_uv[2] - java_uv[0]) * tx) * (src_w as f32 / 16.0);
+    for py in min_y..=max_y {
+        let cy = py as f32 + 0.5;
+        for px in min_x..=max_x {
+            let cx = px as f32 + 0.5;
+            let w0 = edge(p[1], p[2], cx, cy) / area;
+            let w1 = edge(p[2], p[0], cx, cy) / area;
+            let w2 = edge(p[0], p[1], cx, cy) / area;
+            if w0 < -1e-3 || w1 < -1e-3 || w2 < -1e-3 {
+                continue;
+            }
+            let z = w0 * p[0][2] + w1 * p[1][2] + w2 * p[2][2];
+            let z_idx = (py as usize) * 16 + (px as usize);
+            if z < zbuf[z_idx] {
+                continue;
+            }
+            let u = (w0 * uv[0][0] + w1 * uv[1][0] + w2 * uv[2][0]) * (src_w as f32 / 16.0);
+            let v = (w0 * uv[0][1] + w1 * uv[1][1] + w2 * uv[2][1]) * (src_h as f32 / 16.0);
             let sx = (u.floor() as i32).clamp(0, (src_w - 1) as i32) as u32;
+            let sy = (v.floor() as i32).clamp(0, (src_h - 1) as i32) as u32;
             let src_px = *src.get_pixel(sx, sy);
             if src_px[3] > 0 {
+                zbuf[z_idx] = z;
                 let dx = ox + px as u32;
                 let dy = oy + py as u32;
                 if src_px[3] == 255 {

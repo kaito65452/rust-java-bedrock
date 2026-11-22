@@ -45,6 +45,7 @@ pub fn emit_java_pack(
     let range = ir.metadata.java_supported_formats;
     let (emit_pack_format, supported_formats, min_format, max_format) = if pack_format >= 69 {
         let [lo, hi] = range.unwrap_or([pack_format, pack_format]);
+        let hi_minor = if range.is_none() && hi == 97 { 1 } else { 0 };
         let legacy_compat = if lo < 69 { Some(pack_format) } else { None };
         let legacy_sup = if lo < 69 {
             Some(json!({ "min_inclusive": lo, "max_inclusive": hi }))
@@ -55,7 +56,7 @@ pub fn emit_java_pack(
             legacy_compat,
             legacy_sup,
             Some(json!([lo, 0])),
-            Some(json!([hi, 0])),
+            Some(json!([hi, hi_minor])),
         )
     } else if pack_format >= 18 {
         let sup = range.map(|[lo, hi]| json!({ "min_inclusive": lo, "max_inclusive": hi }));
@@ -174,7 +175,7 @@ pub fn emit_java_pack(
                     .elements
                     .iter()
                     .map(|el| {
-                        let mut json_el = JavaModelElementJson::from_ir(el);
+                        let mut json_el = JavaModelElementJson::from_ir_versioned(el, pack_format);
                         for face in json_el.faces.values_mut() {
                             if !face.texture.starts_with('#') && tex_map.contains_key(&face.texture)
                             {

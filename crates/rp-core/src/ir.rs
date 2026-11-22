@@ -442,8 +442,14 @@ pub struct ModelElement {
     pub rotation: Option<ElementRotation>,
     /// Per-face UV and texture assignments.
     pub faces: BTreeMap<FaceDirection, ElementFace>,
-    /// Whether directional face shading is enabled.
+    /// Whether directional face shading is enabled (`< 26.3`).
     pub shade: bool,
+    /// Java `26.3+` (`pack_format >= 97`) shade direction override (e.g. `"up"`, `"down"`, `"north"`).
+    #[serde(default)]
+    pub shade_direction_override: Option<String>,
+    /// Java `1.21.4+` / `26.x` per-element light emission (`0..=15`).
+    #[serde(default)]
+    pub light_emission: Option<u8>,
 }
 
 /// Display transform slot for Java item/block rendering contexts.
