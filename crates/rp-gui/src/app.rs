@@ -1038,14 +1038,29 @@ impl RpGuiApp {
         let mut frames = Vec::new();
         let frametime_ticks = tex.animation.as_ref().map_or(2, |a| a.frametime.max(1));
 
+        const MAX_PREVIEW_DIM: u32 = 512;
+        let downscale_if_needed = |img: image::RgbaImage| -> ColorImage {
+            let (iw, ih) = img.dimensions();
+            if iw > MAX_PREVIEW_DIM || ih > MAX_PREVIEW_DIM {
+                let scale =
+                    (MAX_PREVIEW_DIM as f32 / iw as f32).min(MAX_PREVIEW_DIM as f32 / ih as f32);
+                let nw = ((iw as f32 * scale).round() as u32).max(1);
+                let nh = ((ih as f32 * scale).round() as u32).max(1);
+                let resized =
+                    image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Nearest);
+                ColorImage::from_rgba_unmultiplied([nw as usize, nh as usize], resized.as_raw())
+            } else {
+                ColorImage::from_rgba_unmultiplied([iw as usize, ih as usize], img.as_raw())
+            }
+        };
+
         if let Some(anim) = &tex.animation {
             let fh = anim.frame_height.unwrap_or(w).min(h).max(1);
             let count = (h / fh).clamp(1, 64);
             for i in 0..count {
                 let cropped =
                     image::imageops::crop_imm(decoded.as_ref(), 0, i * fh, w, fh).to_image();
-                let ci =
-                    ColorImage::from_rgba_unmultiplied([w as usize, fh as usize], cropped.as_raw());
+                let ci = downscale_if_needed(cropped);
                 frames.push(ctx.load_texture(
                     format!("tex:{}:f{i}", tex.id),
                     ci,
@@ -1053,7 +1068,7 @@ impl RpGuiApp {
                 ));
             }
         } else {
-            let ci = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], decoded.as_raw());
+            let ci = downscale_if_needed(decoded.into_owned());
             frames.push(ctx.load_texture(format!("tex:{}", tex.id), ci, TextureOptions::NEAREST));
         }
 
@@ -2940,7 +2955,15 @@ impl RpGuiApp {
             } else {
                 "Static PNG"
             };
+            let res_label = match (tex.width, tex.height, tex.resolution_tier) {
+                (Some(w), Some(h), Some(tier)) => format!("{w}x{h} ({tier})"),
+                (Some(w), Some(h), None) => format!("{w}x{h}"),
+                _ => String::from("?"),
+            };
             ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Res:").strong());
+                ui.monospace(res_label);
+                ui.separator();
                 ui.label(RichText::new("Index:").strong());
                 ui.monospace(atlas_file);
                 ui.separator();

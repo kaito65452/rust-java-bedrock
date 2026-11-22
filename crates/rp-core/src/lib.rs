@@ -16,11 +16,12 @@ pub use error::CoreError;
 pub use ir::{
     AnimationFrame, AnimationSpec, AttachableAsset, BedrockGeoVersion, DisplayTransform, Edition,
     ElementFace, ElementRotation, FaceDirection, LocaleTable, ModelAsset, ModelCategory,
-    ModelElement, PackMetadata, ResourcePackIR, RotationAxis, RotationSnapMode, SoundAsset,
-    SoundEntry, SoundEventDef, SoundRegistry, TextureAsset, TextureCategory, TexturePayload,
+    ModelElement, PackMetadata, ResolutionTier, ResourcePackIR, RotationAxis, RotationSnapMode,
+    SoundAsset, SoundEntry, SoundEventDef, SoundRegistry, TextureAsset, TextureCategory,
+    TexturePayload,
 };
 pub use jsonc::{
-    decode_minecraft_text, sanitize_java_resource_path, sanitize_jsonc_bytes,
+    decode_minecraft_text, parse_minecraft_json, sanitize_java_resource_path, sanitize_jsonc_bytes,
     sanitize_minecraft_json, sanitize_minecraft_json_bytes,
 };
 pub use mapping::{BedrockTextureTarget, MappingTable, PackVersionEntry, TextureMappingEntry};

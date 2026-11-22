@@ -3,16 +3,16 @@ use std::sync::Arc;
 
 use rp_core::{
     AnimationSpec, BedrockGeoVersion, ConversionReport, DisplayTransform, Edition, MappingTable,
-    ModelAsset, ModelCategory, PackMetadata, ResourcePackIR, RotationSnapMode, SoundAsset,
-    TextureAsset, TextureCategory, TexturePayload, WarningSeverity, decode_minecraft_text,
-    sanitize_minecraft_json, sanitize_minecraft_json_bytes,
+    ModelAsset, ModelCategory, PackMetadata, ResolutionTier, ResourcePackIR, RotationSnapMode,
+    SoundAsset, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
+    decode_minecraft_text, parse_minecraft_json,
 };
 use rp_io::PackContainer;
 use rp_transforms::locale::{
     normalize_locale_to_java, parse_bedrock_lang, parse_java_locale_json, transform_locale_keys,
 };
 use rp_transforms::sound::validate_sound_asset_ogg;
-use rp_transforms::texture::{compute_animation_strip_geometry, inspect_png_dimensions};
+use rp_transforms::texture::{inspect_png_dimensions, resolve_animation_strip_geometry};
 
 use crate::JavaPackError;
 use crate::schema::{JavaAnimationMcmeta, JavaModelJson, JavaPackMcmeta, JavaSoundEventJson};
@@ -27,11 +27,14 @@ pub fn parse_java_pack(
     let mcmeta_bytes = container
         .get("pack.mcmeta")
         .ok_or(JavaPackError::MissingPackMcmeta)?;
-    let mcmeta_decoded = decode_minecraft_text(mcmeta_bytes);
-    let mcmeta_clean = sanitize_minecraft_json(&mcmeta_decoded);
-    let overlay_dirs = extract_overlay_dirs(&mcmeta_clean);
+    let mcmeta_val: serde_json::Value =
+        parse_minecraft_json(mcmeta_bytes).map_err(|err| JavaPackError::ParseError {
+            path: String::from("pack.mcmeta"),
+            detail: err.to_string(),
+        })?;
+    let overlay_dirs = extract_overlay_dirs(&mcmeta_val);
     let mcmeta: JavaPackMcmeta =
-        serde_json::from_str(&mcmeta_clean).map_err(|err| JavaPackError::ParseError {
+        serde_json::from_value(mcmeta_val).map_err(|err| JavaPackError::ParseError {
             path: String::from("pack.mcmeta"),
             detail: err.to_string(),
         })?;
@@ -92,12 +95,23 @@ pub fn parse_java_pack(
         {
             let id = normalize_pre_flattening_tex_id(rel_tex);
             let category = TextureCategory::infer_from_id(&id);
+            let (width, height, resolution_tier) = match png_dims.get(path) {
+                Some(&(w, h)) => (
+                    Some(w),
+                    Some(h),
+                    Some(ResolutionTier::from_dimensions(w, h)),
+                ),
+                None => (None, None, None),
+            };
             ir.textures.insert(
                 id.clone(),
                 TextureAsset {
                     id,
                     category,
                     atlas_key: None,
+                    width,
+                    height,
+                    resolution_tier,
                     payload: TexturePayload::from_raw(bytes.clone()),
                     animation: None,
                 },
@@ -109,9 +123,8 @@ pub fn parse_java_pack(
             .strip_prefix("assets/minecraft/textures/")
             .and_then(|s| s.strip_suffix(".png.mcmeta"))
         {
-            let mcmeta_clean = sanitize_minecraft_json_bytes(bytes);
             let mcmeta: JavaAnimationMcmeta =
-                serde_json::from_str(&mcmeta_clean).map_err(|err| JavaPackError::ParseError {
+                parse_minecraft_json(bytes).map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -126,9 +139,8 @@ pub fn parse_java_pack(
             .strip_prefix("assets/minecraft/models/")
             .and_then(|s| s.strip_suffix(".json"))
         {
-            let model_clean = sanitize_minecraft_json_bytes(bytes);
             let model_json: JavaModelJson =
-                serde_json::from_str(&model_clean).map_err(|err| JavaPackError::ParseError {
+                parse_minecraft_json(bytes).map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -186,8 +198,7 @@ pub fn parse_java_pack(
         }
 
         if path == "assets/minecraft/sounds.json" {
-            let sounds_clean = sanitize_minecraft_json_bytes(bytes);
-            let parsed: BTreeMap<String, JavaSoundEventJson> = serde_json::from_str(&sounds_clean)
+            let parsed: BTreeMap<String, JavaSoundEventJson> = parse_minecraft_json(bytes)
                 .map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
@@ -259,9 +270,8 @@ pub fn parse_java_pack(
         }
 
         if path.starts_with("assets/minecraft/items/") && path.ends_with(".json") {
-            let clean = sanitize_minecraft_json_bytes(bytes);
             let _: serde_json::Value =
-                serde_json::from_str(&clean).map_err(|err| JavaPackError::ParseError {
+                parse_minecraft_json(bytes).map_err(|err| JavaPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -301,7 +311,7 @@ pub fn parse_java_pack(
         }
     }
 
-    for (tex_id, spec) in pending_animations {
+    for (tex_id, mut spec) in pending_animations {
         let png_path = format!("assets/minecraft/textures/{tex_id}.png");
         let legacy_png_path = tex_id
             .strip_prefix("block/")
@@ -316,9 +326,23 @@ pub fn parse_java_pack(
                 .get(&png_path)
                 .or_else(|| legacy_png_path.as_ref().and_then(|p| png_dims.get(p)));
             if let Some(&(w, h)) = found_dims {
-                compute_animation_strip_geometry(w, h, &spec)?;
+                if let Some(resolved) =
+                    resolve_animation_strip_geometry(&png_path, w, h, &spec, &mut report)
+                {
+                    if resolved.fell_back_to_static {
+                        tex.animation = None;
+                    } else {
+                        if spec.frame_height.is_none()
+                            && resolved.frame_height != resolved.frame_width
+                        {
+                            spec.frame_height = Some(resolved.frame_height);
+                        }
+                        tex.animation = Some(spec);
+                    }
+                }
+            } else {
+                tex.animation = Some(spec);
             }
-            tex.animation = Some(spec);
         } else {
             report.record_warning(
                 format!("{png_path}.mcmeta"),
@@ -331,11 +355,8 @@ pub fn parse_java_pack(
     Ok((ir, report))
 }
 
-fn extract_overlay_dirs(mcmeta_str: &str) -> BTreeSet<String> {
+fn extract_overlay_dirs(val: &serde_json::Value) -> BTreeSet<String> {
     let mut dirs = BTreeSet::new();
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(mcmeta_str) else {
-        return dirs;
-    };
     if let Some(entries) = val
         .get("overlays")
         .and_then(|o| o.get("entries"))

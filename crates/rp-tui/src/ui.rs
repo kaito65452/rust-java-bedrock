@@ -456,18 +456,25 @@ fn render_explorer_tab(frame: &mut Frame<'_>, app: &App, area: Rect) {
     match app.explorer_items.get(app.selected_asset_idx) {
         Some(ExplorerItem::Texture(id)) => {
             if let Some(tex) = loaded.ir.textures.get(id) {
-                let dims = tex
-                    .payload
-                    .dimensions()
-                    .map(|(w, h)| format!("{w}x{h}"))
-                    .unwrap_or_else(|_| String::from("?"));
+                let dims = match (tex.width, tex.height) {
+                    (Some(w), Some(h)) => format!("{w}x{h}"),
+                    _ => tex
+                        .payload
+                        .dimensions()
+                        .map(|(w, h)| format!("{w}x{h}"))
+                        .unwrap_or_else(|_| String::from("?")),
+                };
+                let tier_label = tex
+                    .resolution_tier
+                    .map(|t| format!(" [{t}]"))
+                    .unwrap_or_default();
                 detail_lines.push(Line::from(vec![
                     Span::styled("Texture ID:  ", Style::default().fg(Color::Cyan)),
                     Span::raw(tex.id.clone()),
                 ]));
                 detail_lines.push(Line::from(vec![
                     Span::styled("Dimensions:  ", Style::default().fg(Color::Cyan)),
-                    Span::raw(format!("{dims} ({:?})", tex.category)),
+                    Span::raw(format!("{dims}{tier_label} ({:?})", tex.category)),
                 ]));
                 if let Some(key) = &tex.atlas_key {
                     detail_lines.push(Line::from(vec![
@@ -1310,6 +1317,9 @@ mod tests {
             id: String::from("block/stone"),
             category: TextureCategory::Block,
             atlas_key: None,
+            width: Some(16),
+            height: Some(16),
+            resolution_tier: Some(rp_core::ResolutionTier::R16),
             payload: TexturePayload::from_raw(make_png(16, 16, Rgba([255, 80, 40, 255]))),
             animation: None,
         };

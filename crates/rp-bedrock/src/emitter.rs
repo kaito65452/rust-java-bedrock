@@ -11,6 +11,7 @@ use rp_transforms::locale::{
 use rp_transforms::model::model_asset_to_bedrock_geo_with_head_bind;
 use rp_transforms::texture::{
     FlipbookEntry, build_item_texture_json, build_terrain_texture_json, java_animation_to_flipbook,
+    resolve_animation_strip_geometry,
 };
 
 use crate::BedrockPackError;
@@ -68,8 +69,25 @@ pub fn emit_bedrock_pack(
         }
 
         if let Some(anim) = &tex.animation {
+            let dims = match (tex.width, tex.height) {
+                (Some(w), Some(h)) => Some((w, h)),
+                _ => tex.payload.dimensions().ok(),
+            };
+            let resolved_opt = dims.and_then(|(w, h)| {
+                resolve_animation_strip_geometry(&png_path, w, h, anim, &mut report)
+            });
+            if resolved_opt.is_some_and(|r| r.fell_back_to_static) {
+                continue;
+            }
             let atlas_tile = tex.atlas_key.clone().unwrap_or(target.atlas_key);
-            let flip = java_animation_to_flipbook(&atlas_tile, &target.path, anim, &mut report);
+            let mut flip = java_animation_to_flipbook(&atlas_tile, &target.path, anim, &mut report);
+            if let Some(resolved) = resolved_opt
+                && flip.frames.is_none()
+                && resolved.frame_height != resolved.frame_width
+                && resolved.frame_count > 1
+            {
+                flip.frames = Some((0..resolved.frame_count).collect());
+            }
             flipbook_entries.push(flip);
             report.record_converted();
         }

@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use rp_core::{
     AnimationSpec, AttachableAsset, BedrockGeoVersion, ConversionReport, DisplayTransform, Edition,
-    MappingTable, ModelAsset, ModelCategory, PackMetadata, ResourcePackIR, RotationSnapMode,
-    SoundAsset, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
-    decode_minecraft_text, sanitize_java_resource_path, sanitize_minecraft_json_bytes,
+    MappingTable, ModelAsset, ModelCategory, PackMetadata, ResolutionTier, ResourcePackIR,
+    RotationSnapMode, SoundAsset, TextureAsset, TextureCategory, TexturePayload, WarningSeverity,
+    decode_minecraft_text, parse_minecraft_json, sanitize_java_resource_path,
 };
 use rp_io::PackContainer;
 use rp_transforms::locale::{normalize_locale_to_java, parse_bedrock_lang, transform_locale_keys};
@@ -13,7 +13,7 @@ use rp_transforms::model::{BedrockGeoFile, bedrock_geo_to_model_assets_with_opti
 use rp_transforms::sound::validate_sound_asset_ogg;
 use rp_transforms::texture::{
     AtlasTexturePath, AtlasVariant, FlipbookEntry, ItemTextureJson, TerrainTextureJson,
-    compute_animation_strip_geometry, flipbook_to_java_animation, inspect_png_dimensions,
+    flipbook_to_java_animation, inspect_png_dimensions, resolve_animation_strip_geometry,
 };
 
 use crate::BedrockPackError;
@@ -41,9 +41,8 @@ pub fn parse_bedrock_pack_with_options(
     let manifest_bytes = container
         .get("manifest.json")
         .ok_or(BedrockPackError::MissingManifest)?;
-    let manifest_clean = sanitize_minecraft_json_bytes(manifest_bytes);
     let manifest: BedrockManifest =
-        serde_json::from_str(&manifest_clean).map_err(|err| BedrockPackError::ParseError {
+        parse_minecraft_json(manifest_bytes).map_err(|err| BedrockPackError::ParseError {
             path: String::from("manifest.json"),
             detail: err.to_string(),
         })?;
@@ -78,9 +77,8 @@ pub fn parse_bedrock_pack_with_options(
     // Parse optional terrain_texture.json & item_texture.json for atlas key recovery.
     let mut atlas_lookup: HashMap<String, (String, TextureCategory)> = HashMap::new();
     if let Some(terrain_bytes) = container.get("textures/terrain_texture.json") {
-        let terrain_clean = sanitize_minecraft_json_bytes(terrain_bytes);
         let terrain: TerrainTextureJson =
-            serde_json::from_str(&terrain_clean).map_err(|err| BedrockPackError::ParseError {
+            parse_minecraft_json(terrain_bytes).map_err(|err| BedrockPackError::ParseError {
                 path: String::from("textures/terrain_texture.json"),
                 detail: err.to_string(),
             })?;
@@ -94,9 +92,8 @@ pub fn parse_bedrock_pack_with_options(
         }
     }
     if let Some(item_bytes) = container.get("textures/item_texture.json") {
-        let item_clean = sanitize_minecraft_json_bytes(item_bytes);
         let items: ItemTextureJson =
-            serde_json::from_str(&item_clean).map_err(|err| BedrockPackError::ParseError {
+            parse_minecraft_json(item_bytes).map_err(|err| BedrockPackError::ParseError {
                 path: String::from("textures/item_texture.json"),
                 detail: err.to_string(),
             })?;
@@ -112,9 +109,8 @@ pub fn parse_bedrock_pack_with_options(
 
     let mut pending_animations: BTreeMap<String, (AnimationSpec, Option<String>)> = BTreeMap::new();
     if let Some(flipbook_bytes) = container.get("textures/flipbook_textures.json") {
-        let flipbook_clean = sanitize_minecraft_json_bytes(flipbook_bytes);
         let entries: Vec<FlipbookEntry> =
-            serde_json::from_str(&flipbook_clean).map_err(|err| BedrockPackError::ParseError {
+            parse_minecraft_json(flipbook_bytes).map_err(|err| BedrockPackError::ParseError {
                 path: String::from("textures/flipbook_textures.json"),
                 detail: err.to_string(),
             })?;
@@ -173,12 +169,23 @@ pub fn parse_bedrock_pack_with_options(
                 )
             };
 
+            let (width, height, resolution_tier) = match png_dims.get(path) {
+                Some(&(w, h)) => (
+                    Some(w),
+                    Some(h),
+                    Some(ResolutionTier::from_dimensions(w, h)),
+                ),
+                None => (None, None, None),
+            };
             ir.textures.insert(
                 canonical_id.clone(),
                 TextureAsset {
                     id: canonical_id,
                     category,
                     atlas_key,
+                    width,
+                    height,
+                    resolution_tier,
                     payload: TexturePayload::from_raw(bytes.clone()),
                     animation: None,
                 },
@@ -187,14 +194,12 @@ pub fn parse_bedrock_pack_with_options(
         }
 
         if path.starts_with("models/") && path.ends_with(".json") {
-            let model_clean = sanitize_minecraft_json_bytes(bytes);
-            let geo_file =
-                BedrockGeoFile::from_json_slice(model_clean.as_bytes()).map_err(|err| {
-                    BedrockPackError::ParseError {
-                        path: path.clone(),
-                        detail: err.to_string(),
-                    }
-                })?;
+            let geo_file = BedrockGeoFile::from_json_slice(bytes).map_err(|err| {
+                BedrockPackError::ParseError {
+                    path: path.clone(),
+                    detail: err.to_string(),
+                }
+            })?;
             let (model_id_hint, category_hint) = infer_bedrock_model_id_and_category(path);
             let models = bedrock_geo_to_model_assets_with_options(
                 &geo_file,
@@ -215,9 +220,8 @@ pub fn parse_bedrock_pack_with_options(
         }
 
         if path == "sounds/sound_definitions.json" {
-            let sounds_clean = sanitize_minecraft_json_bytes(bytes);
-            let parsed: BedrockSoundDefinitionsInput = serde_json::from_str(&sounds_clean)
-                .map_err(|err| BedrockPackError::ParseError {
+            let parsed: BedrockSoundDefinitionsInput =
+                parse_minecraft_json(bytes).map_err(|err| BedrockPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -263,9 +267,8 @@ pub fn parse_bedrock_pack_with_options(
             .strip_prefix("attachables/")
             .and_then(|s| s.strip_suffix(".json"))
         {
-            let att_clean = sanitize_minecraft_json_bytes(bytes);
             let parsed: BedrockAttachableFile =
-                serde_json::from_str(&att_clean).map_err(|err| BedrockPackError::ParseError {
+                parse_minecraft_json(bytes).map_err(|err| BedrockPackError::ParseError {
                     path: path.clone(),
                     detail: err.to_string(),
                 })?;
@@ -315,7 +318,7 @@ pub fn parse_bedrock_pack_with_options(
         report.record_passthrough();
     }
 
-    for (bedrock_rel, (spec, atlas_tile)) in pending_animations {
+    for (bedrock_rel, (mut spec, atlas_tile)) in pending_animations {
         let canonical_id = mappings.bedrock_texture_to_java(&bedrock_rel);
         let tex_key = ir
             .textures
@@ -332,13 +335,27 @@ pub fn parse_bedrock_pack_with_options(
                     .find(|(k, _)| k.eq_ignore_ascii_case(&png_path))
                     .map(|(_, v)| v)
             });
-            if let Some(&(w, h)) = dims_opt {
-                compute_animation_strip_geometry(w, h, &spec)?;
-            }
             if tex.atlas_key.is_none() {
                 tex.atlas_key = atlas_tile;
             }
-            tex.animation = Some(spec);
+            if let Some(&(w, h)) = dims_opt {
+                if let Some(resolved) =
+                    resolve_animation_strip_geometry(&png_path, w, h, &spec, &mut report)
+                {
+                    if resolved.fell_back_to_static {
+                        tex.animation = None;
+                    } else {
+                        if spec.frame_height.is_none()
+                            && resolved.frame_height != resolved.frame_width
+                        {
+                            spec.frame_height = Some(resolved.frame_height);
+                        }
+                        tex.animation = Some(spec);
+                    }
+                }
+            } else {
+                tex.animation = Some(spec);
+            }
         } else {
             report.record_warning(
                 "textures/flipbook_textures.json",

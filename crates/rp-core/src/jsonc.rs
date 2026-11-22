@@ -212,6 +212,15 @@ pub fn sanitize_minecraft_json_bytes(bytes: &[u8]) -> Cow<'_, str> {
     }
 }
 
+/// Decodes raw Minecraft JSON bytes (`decode_minecraft_text`), sanitizes control characters,
+/// comments, and trailing commas (`sanitize_minecraft_json`), and deserializes into `T`.
+pub fn parse_minecraft_json<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, serde_json::Error> {
+    let clean = sanitize_minecraft_json_bytes(bytes);
+    serde_json::from_str(&clean)
+}
+
 /// Strips UTF-8/UTF-16 BOMs, decodes ISO-8859-1 fallback, escapes stray control characters
 /// in JSON strings, and removes JSONC comments and trailing commas.
 ///

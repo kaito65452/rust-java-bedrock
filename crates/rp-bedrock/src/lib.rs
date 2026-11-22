@@ -92,4 +92,174 @@ mod tests {
             "§6Golden Stone"
         );
     }
+
+    fn make_header_png(width: u32, height: u32) -> Vec<u8> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= u32::from(b);
+                for _ in 0..8 {
+                    if crc & 1 != 0 {
+                        crc = (crc >> 1) ^ 0xEDB8_8320;
+                    } else {
+                        crc >>= 1;
+                    }
+                }
+            }
+            !crc
+        }
+        fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], payload: &[u8]) {
+            out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(payload);
+            let mut crc_buf = Vec::with_capacity(4 + payload.len());
+            crc_buf.extend_from_slice(kind);
+            crc_buf.extend_from_slice(payload);
+            out.extend_from_slice(&crc32(&crc_buf).to_be_bytes());
+        }
+
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let mut ihdr = Vec::with_capacity(13);
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        push_chunk(&mut out, b"IHDR", &ihdr);
+        push_chunk(
+            &mut out,
+            b"IDAT",
+            &[0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01],
+        );
+        push_chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    #[test]
+    fn bedrock_flipbook_224_by_40_mismatch_succeeds_with_warning_and_lossy_report() {
+        let mappings = MappingTable::default_embedded().expect("mappings");
+        let mut container = rp_io::PackContainer::new();
+        container
+            .insert(
+                "manifest.json",
+                br#"{
+                  "format_version": 2,
+                  "header": {
+                    "name": "256x Pack",
+                    "description": "Converted 256x pack",
+                    "uuid": "11111111-1111-4111-8111-111111111111",
+                    "version": [1, 0, 0],
+                    "min_engine_version": [1, 20, 10]
+                  },
+                  "modules": [{
+                    "type": "resources",
+                    "uuid": "22222222-2222-4222-8222-222222222222",
+                    "version": [1, 0, 0]
+                  }]
+                }"#
+                .to_vec(),
+            )
+            .expect("insert manifest");
+        container
+            .insert(
+                "textures/blocks/custom_flipbook.png",
+                make_header_png(40, 224),
+            )
+            .expect("insert 40x224 png");
+        container
+            .insert("textures/blocks/stone.png", make_header_png(256, 256))
+            .expect("insert 256x256 png");
+        container
+            .insert("textures/blocks/ultra_hd.png", make_header_png(2048, 2048))
+            .expect("insert 2048x2048 png");
+        container
+            .insert(
+                "textures/flipbook_textures.json",
+                br#"[{
+                  "flipbook_texture": "textures/blocks/custom_flipbook",
+                  "atlas_tile": "custom_flipbook",
+                  "ticks_per_frame": 2
+                }]"#
+                .to_vec(),
+            )
+            .expect("insert flipbook");
+
+        let (ir, report) =
+            parse_bedrock_pack(&container, &mappings).expect("non-fatal flipbook mismatch");
+
+        assert_eq!(ir.textures.len(), 3);
+        let flip_tex = &ir.textures["block/custom_flipbook"];
+        assert_eq!(flip_tex.width, Some(40));
+        assert_eq!(flip_tex.height, Some(224));
+        assert!(flip_tex.animation.is_none());
+
+        let stone = &ir.textures["block/stone"];
+        assert_eq!(stone.width, Some(256));
+        assert_eq!(stone.height, Some(256));
+        assert_eq!(stone.resolution_tier, Some(rp_core::ResolutionTier::R256));
+        assert!(!stone.payload.is_decoded());
+
+        let ultra = &ir.textures["block/ultra_hd"];
+        assert_eq!(ultra.width, Some(2048));
+        assert_eq!(ultra.height, Some(2048));
+        assert_eq!(ultra.resolution_tier, Some(rp_core::ResolutionTier::R2048));
+        assert!(!ultra.payload.is_decoded());
+
+        assert_eq!(report.lossy_count, 1);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.severity == rp_core::WarningSeverity::Warning
+                    && w.message.contains("40x224")
+                    && w.message.contains("40")),
+            "expected structured warning for 40x224 mismatch, got {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn bedrock_roundtrip_infers_non_square_flipbook_frame_height_from_emitted_frames() {
+        let mappings = MappingTable::default_embedded().expect("mappings");
+        let mut ir = ResourcePackIR {
+            metadata: PackMetadata {
+                name: String::from("NonSquareAnim"),
+                description: String::from("Test"),
+                source_edition: Edition::Java,
+                java_pack_format: Some(15),
+                bedrock_min_engine_version: Some([1, 20, 10]),
+                version: [1, 0, 0],
+                ..PackMetadata::default()
+            },
+            ..ResourcePackIR::default()
+        };
+        ir.textures.insert(
+            String::from("block/custom_strip"),
+            rp_core::TextureAsset {
+                id: String::from("block/custom_strip"),
+                category: rp_core::TextureCategory::Block,
+                atlas_key: Some(String::from("custom_strip")),
+                width: Some(40),
+                height: Some(224),
+                resolution_tier: Some(rp_core::ResolutionTier::from_dimensions(40, 224)),
+                payload: rp_core::TexturePayload::from_raw(make_header_png(40, 224)),
+                animation: Some(rp_core::AnimationSpec {
+                    frametime: 3,
+                    interpolate: false,
+                    frames: Vec::new(),
+                    frame_width: Some(40),
+                    frame_height: Some(32),
+                }),
+            },
+        );
+
+        let (bedrock_pack, _) = emit_bedrock_pack(&ir, &mappings).expect("emit bedrock");
+        let (reparsed, reparse_report) =
+            parse_bedrock_pack(&bedrock_pack, &mappings).expect("reparse bedrock");
+        assert_eq!(reparse_report.lossy_count, 0);
+        let anim = reparsed.textures["block/custom_strip"]
+            .animation
+            .as_ref()
+            .expect("preserved animation");
+        assert_eq!(anim.frame_height, Some(32));
+        assert_eq!(anim.frames.len(), 7);
+    }
 }

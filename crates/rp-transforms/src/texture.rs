@@ -1,18 +1,23 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use image::{ImageFormat, ImageReader, Rgba, RgbaImage, imageops};
 use serde::{Deserialize, Serialize};
 
 use rp_core::{
     AnimationFrame, AnimationSpec, ConversionReport, CoreError, FaceDirection, MappingTable,
-    ModelAsset, ModelElement, RotationAxis, TextureAsset, TextureCategory, TexturePayload,
-    WarningSeverity,
+    ModelAsset, ModelElement, ResolutionTier, RotationAxis, TextureAsset, TextureCategory,
+    TexturePayload, WarningSeverity,
 };
 
 use crate::model::{auto_java_uv_for_face, euler_zyx_to_mat3};
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// Maximum number of concurrent high-resolution (`1024x`/`2048x`) RGBA pixel decodes
+/// permitted at once to keep peak memory bounded on ARM64 / mobile / proot environments.
+pub const MAX_CONCURRENT_HIGH_RES_DECODES: usize = 2;
 
 /// Bedrock `textures/flipbook_textures.json` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +121,173 @@ pub fn inspect_png_dimensions(bytes: &[u8]) -> Result<(u32, u32), CoreError> {
         )));
     }
     Ok((width, height))
+}
+
+/// Reads PNG header dimensions and classifies the `ResolutionTier` without decoding pixel buffers.
+pub fn inspect_png_metadata(bytes: &[u8]) -> Result<(u32, u32, ResolutionTier), CoreError> {
+    let (w, h) = inspect_png_dimensions(bytes)?;
+    Ok((w, h, ResolutionTier::from_dimensions(w, h)))
+}
+
+/// Resolved animation strip dimensions after applying inference and non-fatal fallbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedAnimationGeometry {
+    /// Effective width of a single frame in pixels.
+    pub frame_width: u32,
+    /// Effective height of a single frame in pixels.
+    pub frame_height: u32,
+    /// Number of complete frames along the vertical strip.
+    pub frame_count: u32,
+    /// `true` when the texture height was not divisible by the requested/inferred frame height
+    /// and the parser safely degraded the texture to a static single frame (`1` frame).
+    pub fell_back_to_static: bool,
+}
+
+/// Non-fatally resolves animation strip geometry for `(width, height)` and `spec`.
+///
+/// Unlike [`compute_animation_strip_geometry`], dimension mismatches (such as a `40x224` strip
+/// with inferred square `frame_height = 40`) never return a pack-aborting error: instead, they
+/// record structured `Warning` and `Lossy` entries in `report` and fall back safely to a static
+/// single-frame geometry (`frame_width = width, frame_height = height, frame_count = 1`).
+pub fn resolve_animation_strip_geometry(
+    asset_id: &str,
+    width: u32,
+    height: u32,
+    spec: &AnimationSpec,
+    report: &mut ConversionReport,
+) -> Option<ResolvedAnimationGeometry> {
+    if width == 0 || height == 0 {
+        let msg = format!(
+            "Animation texture has zero dimensions ({width}x{height}); skipping animation metadata"
+        );
+        report.record_warning(asset_id, WarningSeverity::Warning, msg.clone());
+        report.record_lossy(asset_id, msg);
+        return None;
+    }
+
+    let frame_w = match spec.frame_width {
+        Some(fw) if fw > 0 && width.is_multiple_of(fw) => fw,
+        Some(fw) => {
+            let msg = format!(
+                "Animation frame width {fw} does not divide texture width {width}; using full texture width {width}"
+            );
+            report.record_warning(asset_id, WarningSeverity::Warning, msg.clone());
+            report.record_lossy(asset_id, msg);
+            width
+        }
+        None => width,
+    };
+
+    // 1. Explicit positive frame_height that evenly divides texture height.
+    if let Some(fh) = spec.frame_height
+        && fh > 0
+        && height.is_multiple_of(fh)
+    {
+        return Some(ResolvedAnimationGeometry {
+            frame_width: frame_w,
+            frame_height: fh,
+            frame_count: height / fh,
+            fell_back_to_static: false,
+        });
+    }
+
+    // 2. No explicit frame_height: standard square frames (`frame_h == frame_w`).
+    if spec.frame_height.is_none() && height.is_multiple_of(frame_w) {
+        return Some(ResolvedAnimationGeometry {
+            frame_width: frame_w,
+            frame_height: frame_w,
+            frame_count: height / frame_w,
+            fell_back_to_static: false,
+        });
+    }
+
+    // 3. No explicit frame_height, but explicit frame indices let us infer non-square frame count.
+    if spec.frame_height.is_none() && !spec.frames.is_empty() {
+        let max_idx = spec.frames.iter().map(|f| f.index).max().unwrap_or(0);
+        let inferred_count = max_idx.saturating_add(1);
+        if inferred_count > 0 && height.is_multiple_of(inferred_count) {
+            let inferred_h = height / inferred_count;
+            if inferred_h > 0 {
+                report.record_warning(
+                    asset_id,
+                    WarningSeverity::Info,
+                    format!(
+                        "Inferred non-square animation frame height {inferred_h} ({inferred_count} frames) for {width}x{height} texture"
+                    ),
+                );
+                return Some(ResolvedAnimationGeometry {
+                    frame_width: frame_w,
+                    frame_height: inferred_h,
+                    frame_count: inferred_count,
+                    fell_back_to_static: false,
+                });
+            }
+        }
+    }
+
+    // 4. Non-divisible mismatch (e.g., 40x224 with frame_height 40): never fail the whole pack.
+    let requested_h = spec.frame_height.unwrap_or(frame_w);
+    let msg = format!(
+        "Texture dimensions {width}x{height} are not divisible by animation frame height {requested_h}; falling back to static single-frame texture ({width}x{height})"
+    );
+    report.record_warning(asset_id, WarningSeverity::Warning, msg.clone());
+    report.record_lossy(asset_id, msg);
+    Some(ResolvedAnimationGeometry {
+        frame_width: width,
+        frame_height: height,
+        frame_count: 1,
+        fell_back_to_static: true,
+    })
+}
+
+/// Executes pixel-processing work across `items` with bounded concurrency
+/// (`1..=MAX_CONCURRENT_HIGH_RES_DECODES`) to cap peak decoded RGBA memory for `1024x`/`2048x` packs.
+pub fn map_textures_bounded<T, F>(
+    items: &[&TexturePayload],
+    max_concurrency: usize,
+    work: F,
+) -> Result<Vec<T>, CoreError>
+where
+    T: Send,
+    F: Fn(&TexturePayload) -> Result<T, CoreError> + Sync,
+{
+    let workers = max_concurrency.clamp(1, MAX_CONCURRENT_HIGH_RES_DECODES);
+    if items.len() <= 1 || workers == 1 {
+        return items.iter().map(|payload| work(payload)).collect();
+    }
+
+    let worker_count = workers.min(items.len());
+    let next_index = AtomicUsize::new(0);
+    let mut indexed_results: Vec<(usize, T)> = Vec::with_capacity(items.len());
+
+    std::thread::scope(|scope| -> Result<(), CoreError> {
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            handles.push(scope.spawn(|| -> Result<Vec<(usize, T)>, CoreError> {
+                let mut local = Vec::new();
+                loop {
+                    let idx = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(payload) = items.get(idx) else {
+                        break;
+                    };
+                    let value = work(payload)?;
+                    local.push((idx, value));
+                }
+                Ok(local)
+            }));
+        }
+
+        for handle in handles {
+            let chunk = handle.join().map_err(|_| {
+                CoreError::InvalidFormat(String::from("bounded texture worker thread panicked"))
+            })??;
+            indexed_results.extend(chunk);
+        }
+        Ok(())
+    })?;
+
+    indexed_results.sort_by_key(|(idx, _)| *idx);
+    Ok(indexed_results.into_iter().map(|(_, val)| val).collect())
 }
 
 /// Computes `(frame_width, frame_height, frame_count)` for a vertical animation strip.
@@ -818,5 +990,114 @@ mod tests {
         img.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
             .expect("encode png");
         assert_eq!(inspect_png_dimensions(&buf).expect("inspect"), (32, 64));
+    }
+
+    #[test]
+    fn resolve_animation_geometry_falls_back_non_fatally_for_224_by_40_mismatch() {
+        let spec = AnimationSpec {
+            frametime: 2,
+            interpolate: false,
+            frames: Vec::new(),
+            frame_width: None,
+            frame_height: None,
+        };
+        let mut report = ConversionReport::new();
+        let resolved = resolve_animation_strip_geometry(
+            "textures/blocks/custom_256x.png",
+            40,
+            224,
+            &spec,
+            &mut report,
+        )
+        .expect("non-fatal resolution");
+
+        assert!(resolved.fell_back_to_static);
+        assert_eq!(resolved.frame_width, 40);
+        assert_eq!(resolved.frame_height, 224);
+        assert_eq!(resolved.frame_count, 1);
+        assert_eq!(report.lossy_count, 1);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.severity == WarningSeverity::Warning
+                    && w.message.contains("40x224")
+                    && w.message.contains("40")),
+            "expected structured warning mentioning 40x224 and frame height 40, got {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn resolve_animation_geometry_infers_non_square_frames_from_indices() {
+        let spec = AnimationSpec {
+            frametime: 1,
+            interpolate: false,
+            frames: (0..7)
+                .map(|index| AnimationFrame { index, time: None })
+                .collect(),
+            frame_width: None,
+            frame_height: None,
+        };
+        let mut report = ConversionReport::new();
+        let resolved = resolve_animation_strip_geometry(
+            "textures/blocks/strip.png",
+            40,
+            224,
+            &spec,
+            &mut report,
+        )
+        .expect("inferred resolution");
+
+        assert!(!resolved.fell_back_to_static);
+        assert_eq!(resolved.frame_width, 40);
+        assert_eq!(resolved.frame_height, 32);
+        assert_eq!(resolved.frame_count, 7);
+        assert_eq!(report.lossy_count, 0);
+    }
+
+    #[test]
+    fn resolution_tier_and_bounded_decode_support_high_res_textures() {
+        assert_eq!(ResolutionTier::from_dimensions(16, 16), ResolutionTier::R16);
+        assert_eq!(
+            ResolutionTier::from_dimensions(128, 128),
+            ResolutionTier::R128
+        );
+        assert_eq!(
+            ResolutionTier::from_dimensions(256, 256),
+            ResolutionTier::R256
+        );
+        assert_eq!(
+            ResolutionTier::from_dimensions(256, 4096),
+            ResolutionTier::R256
+        );
+        assert_eq!(
+            ResolutionTier::from_dimensions(1024, 1024),
+            ResolutionTier::R1024
+        );
+        assert_eq!(
+            ResolutionTier::from_dimensions(2048, 2048),
+            ResolutionTier::R2048
+        );
+        assert_eq!(
+            ResolutionTier::from_dimensions(40, 224),
+            ResolutionTier::Custom(224)
+        );
+
+        let mut payloads = Vec::new();
+        for dim in [16u32, 32, 64, 128] {
+            let img = RgbaImage::new(dim, dim);
+            let mut buf = Vec::new();
+            img.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
+                .expect("encode png");
+            payloads.push(TexturePayload::from_raw(buf));
+        }
+        let refs: Vec<&TexturePayload> = payloads.iter().collect();
+        let dims = map_textures_bounded(&refs, MAX_CONCURRENT_HIGH_RES_DECODES, |p| {
+            let decoded = p.decode()?;
+            Ok(decoded.dimensions())
+        })
+        .expect("bounded decode");
+        assert_eq!(dims, vec![(16, 16), (32, 32), (64, 64), (128, 128)]);
     }
 }

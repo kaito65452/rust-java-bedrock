@@ -196,6 +196,76 @@ impl Default for AnimationSpec {
     }
 }
 
+/// Classified texture resolution tier (`16x` up to `2048x` or arbitrary `Custom(u32)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ResolutionTier {
+    /// Vanilla 16×16 resolution.
+    R16,
+    /// 32×32 faithful resolution.
+    R32,
+    /// 64×64 HD resolution.
+    R64,
+    /// 128×128 HD resolution.
+    R128,
+    /// 256×256 ultra-HD resolution.
+    R256,
+    /// 512×512 resolution.
+    R512,
+    /// 1024×1024 resolution.
+    R1024,
+    /// 2048×2048 resolution.
+    R2048,
+    /// Non-power-of-two or higher resolution (stores nominal pixel edge size).
+    Custom(u32),
+}
+
+impl ResolutionTier {
+    /// Classifies a texture's resolution tier from header dimensions `(width, height)`.
+    ///
+    /// For vertical animation strips (`height > width` where `width` is a standard tile size or
+    /// divides `height`), classifies by tile `width` so a `256x4096` strip reports `R256`.
+    #[must_use]
+    pub const fn from_dimensions(width: u32, height: u32) -> Self {
+        let base = if height > width
+            && width >= 8
+            && (height.is_multiple_of(width) || width.is_power_of_two())
+        {
+            width
+        } else if width >= height {
+            width
+        } else {
+            height
+        };
+        match base {
+            16 => Self::R16,
+            32 => Self::R32,
+            64 => Self::R64,
+            128 => Self::R128,
+            256 => Self::R256,
+            512 => Self::R512,
+            1024 => Self::R1024,
+            2048 => Self::R2048,
+            other => Self::Custom(other),
+        }
+    }
+}
+
+impl fmt::Display for ResolutionTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::R16 => write!(f, "16x"),
+            Self::R32 => write!(f, "32x"),
+            Self::R64 => write!(f, "64x"),
+            Self::R128 => write!(f, "128x"),
+            Self::R256 => write!(f, "256x"),
+            Self::R512 => write!(f, "512x"),
+            Self::R1024 => write!(f, "1024x"),
+            Self::R2048 => write!(f, "2048x"),
+            Self::Custom(n) => write!(f, "{n}x"),
+        }
+    }
+}
+
 /// Texture asset stored in the canonical intermediate representation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextureAsset {
@@ -205,6 +275,12 @@ pub struct TextureAsset {
     pub category: TextureCategory,
     /// Optional Bedrock atlas short key preserved across round-trips (e.g. `"grass_side"`).
     pub atlas_key: Option<String>,
+    /// Header-inspected pixel width (populated lazily without decoding pixel buffers).
+    pub width: Option<u32>,
+    /// Header-inspected pixel height (populated lazily without decoding pixel buffers).
+    pub height: Option<u32>,
+    /// Classified texture resolution tier (`16x`..`2048x` / `Custom`).
+    pub resolution_tier: Option<ResolutionTier>,
     /// Lazy PNG byte payload or decoded RGBA image.
     pub payload: TexturePayload,
     /// Optional animation metadata for vertical flipbook strips.
