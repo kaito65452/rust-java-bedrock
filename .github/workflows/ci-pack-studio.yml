@@ -78,6 +78,13 @@ jobs:
           npm install --no-audit --no-fund
           npm run build
 
+      - name: Verify Built Frontend & Tauri frontendDist Config
+        run: |
+          test -f apps/pack-studio/dist/index.html
+          ! grep -q "PackStudio frontend placeholder" apps/pack-studio/dist/index.html
+          grep -q '"frontendDist":[[:space:]]*"../dist"' apps/pack-studio/src-tauri/tauri.conf.json
+          ls -lh apps/pack-studio/dist/index.html
+
       - name: Install Linux GUI & WebKitGTK deps
         run: |
           sudo apt-get update
@@ -107,9 +114,9 @@ jobs:
       - name: cargo clippy -p pack-studio --all-targets --no-deps -- -D warnings
         run: cargo clippy -p pack-studio --all-targets --no-deps -- -D warnings
 
-      - name: cargo check (embed-blockbench feature)
+      - name: cargo check (embed-blockbench & custom-protocol features)
         run: |
-          cargo check -p pack-studio-tauri --features embed-blockbench
+          cargo check -p pack-studio-tauri --features "embed-blockbench,custom-protocol"
           cargo check -p pack-studio --features "embed-blockbench,native-webview"
 
       - name: cargo test -p pack-studio-tauri (verbose)
@@ -121,7 +128,8 @@ jobs:
       - name: Build & Upload PackStudio Tauri Release Binary
         if: ${{ inputs.build_release == true || github.event_name == 'push' }}
         run: |
-          cargo build -p pack-studio-tauri --release --features embed-blockbench
+          test -f apps/pack-studio/dist/index.html
+          cargo build --release -p pack-studio-tauri --features "embed-blockbench,custom-protocol"
           ls -lh target/release/pack-studio-tauri
 
       - name: Upload PackStudio Tauri Linux Release Artifact

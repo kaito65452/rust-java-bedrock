@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Packages a compiled release binary of `pack-studio` or `pack-studio-tauri`
+# Packages a compiled release binary of `pack-studio-tauri` (or legacy `pack-studio`)
 # into a Debian (.deb) package for ARM64 (`arm64`) or AMD64 (`amd64`).
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${DEB_ARCH:-$(dpkg --print-architecture)}"
-VERSION="${DEB_VERSION:-0.1.0}"
+VERSION="${DEB_VERSION:-0.2.1}"
 BINARY_PATH="${1:-${REPO_ROOT}/target/release/pack-studio-tauri}"
 OUT_DIR="${2:-${REPO_ROOT}/dist-deb}"
 
 if [[ ! -f "${BINARY_PATH}" ]]; then
   echo "ERROR: Release binary not found at '${BINARY_PATH}'" >&2
+  echo "Hint: build frontend + release binary first:" >&2
+  echo "  (cd apps/pack-studio && npm install && npm run build)" >&2
+  echo '  cargo build --release -p pack-studio-tauri --features "embed-blockbench,custom-protocol"' >&2
   exit 1
 fi
 
@@ -22,6 +25,23 @@ OUT_SHA="${OUT_DEB}.sha256"
 IS_TAURI=0
 if [[ "$(basename "${BINARY_PATH}")" == *"tauri"* ]] || (command -v ldd >/dev/null 2>&1 && ldd "${BINARY_PATH}" 2>/dev/null | grep -q "webkit2gtk"); then
   IS_TAURI=1
+fi
+
+if [[ "${IS_TAURI}" -eq 1 ]]; then
+  DIST_INDEX="${REPO_ROOT}/apps/pack-studio/dist/index.html"
+  TAURI_CONF="${REPO_ROOT}/apps/pack-studio/src-tauri/tauri.conf.json"
+  if [[ ! -f "${DIST_INDEX}" ]]; then
+    echo "ERROR: Built frontend missing at '${DIST_INDEX}'. Run 'npm run build' in apps/pack-studio before cargo build --release." >&2
+    exit 1
+  fi
+  if grep -q "PackStudio frontend placeholder" "${DIST_INDEX}"; then
+    echo "ERROR: '${DIST_INDEX}' is still the placeholder HTML! Run 'npm run build' in apps/pack-studio and rebuild with '--features \"embed-blockbench,custom-protocol\"'." >&2
+    exit 1
+  fi
+  if ! grep -q '"frontendDist":[[:space:]]*"../dist"' "${TAURI_CONF}"; then
+    echo "ERROR: '${TAURI_CONF}' must set frontendDist to '../dist'." >&2
+    exit 1
+  fi
 fi
 
 rm -rf "${STAGE_ROOT}"
@@ -44,10 +64,20 @@ if [[ "${IS_TAURI}" -eq 1 ]]; then
   cat > "${STAGE_ROOT}/usr/bin/${PKG_NAME}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Safe WebKitGTK defaults for Linux X11, Wayland, containers, and Termux proot
+# (existing environment variables are preserved if set by the user).
+export NO_AT_BRIDGE="${NO_AT_BRIDGE:-1}"
+export GDK_BACKEND="${GDK_BACKEND:-x11}"
 export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
-if [[ ! -d /dev/dri ]] && [[ -z "${LIBGL_ALWAYS_SOFTWARE:-}" ]]; then
-  export LIBGL_ALWAYS_SOFTWARE=1
+export WEBKIT_DISABLE_COMPOSITING_MODE="${WEBKIT_DISABLE_COMPOSITING_MODE:-1}"
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS="${WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS:-1}"
+
+if [[ ! -e /dev/dri/renderD128 ]] && [[ ! -e /dev/dri/card0 ]]; then
+  export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+  export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
 fi
+
 exec /usr/bin/pack-studio-bin "$@"
 EOF
   chmod 0755 "${STAGE_ROOT}/usr/bin/${PKG_NAME}"

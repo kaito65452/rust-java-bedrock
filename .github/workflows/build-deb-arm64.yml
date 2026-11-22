@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Debian package version (e.g. 0.1.0)"
+        description: "Debian package version (e.g. 0.2.1)"
         type: string
-        default: "0.1.0"
+        default: "0.2.1"
 
 concurrency:
   group: build-deb-arm64-${{ github.ref }}
@@ -70,6 +70,13 @@ jobs:
           npm install --no-audit --no-fund
           npm run build
 
+      - name: Verify Built Frontend & Tauri frontendDist Config
+        run: |
+          test -f apps/pack-studio/dist/index.html
+          ! grep -q "PackStudio frontend placeholder" apps/pack-studio/dist/index.html
+          grep -q '"frontendDist":[[:space:]]*"../dist"' apps/pack-studio/src-tauri/tauri.conf.json
+          ls -lh apps/pack-studio/dist/index.html
+
       - name: Install Linux ARM64 Build Dependencies (GTK3 + WebKitGTK 4.1)
         run: |
           sudo apt-get update
@@ -94,16 +101,17 @@ jobs:
         with:
           prefix-key: "v2-tauri-arm64-deb"
 
-      - name: Build pack-studio-tauri Release Binary (ARM64 + Embedded Blockbench)
+      - name: Build pack-studio-tauri Release Binary (ARM64 + Embedded Blockbench + Custom Protocol)
         run: |
-          cargo build -p pack-studio-tauri --release --features embed-blockbench
+          test -f apps/pack-studio/dist/index.html
+          cargo build --release -p pack-studio-tauri --features "embed-blockbench,custom-protocol"
           ls -lh target/release/pack-studio-tauri
           file target/release/pack-studio-tauri
 
       - name: Build Debian Package (.deb) for arm64
         env:
           DEB_ARCH: arm64
-          DEB_VERSION: ${{ inputs.version || '0.2.0' }}
+          DEB_VERSION: ${{ inputs.version || '0.2.1' }}
         run: |
           chmod +x scripts/build_deb_arm64.sh
           bash scripts/build_deb_arm64.sh target/release/pack-studio-tauri dist-deb
@@ -114,6 +122,7 @@ jobs:
           dpkg-deb --contents "${DEB_FILE}"
           sudo apt-get install -y "./${DEB_FILE}"
           which pack-studio
+          cat /usr/bin/pack-studio
           ls -lh /usr/bin/pack-studio /usr/bin/pack-studio-bin /usr/share/applications/pack-studio.desktop
 
       - name: Upload ARM64 Debian Package Artifact

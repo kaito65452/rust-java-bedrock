@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+    println!("cargo:rerun-if-changed=../dist/index.html");
     let dist_dir = Path::new("../dist");
     let dist_index = dist_dir.join("index.html");
     if !dist_index.exists() {
