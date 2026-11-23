@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -9,6 +9,8 @@ use rp_io::PackContainer;
 use serde::Serialize;
 
 use crate::blockbench::BlockbenchHost;
+use crate::extensions::{BUILTIN_MINECRAFT_EXT_ID, default_extensions_dir, load_persisted_state};
+use crate::lsp::LspClientHandle;
 use crate::pty::PtySession;
 
 /// Hierarchical tree node sent to the VS Code-style Explorer frontend.
@@ -112,16 +114,22 @@ pub struct StudioState {
     pub blockbench: Mutex<Option<BlockbenchHost>>,
     pub pty_sessions: Mutex<HashMap<u32, PtySession>>,
     pub next_pty_id: AtomicU32,
+    pub lsp_clients: Arc<Mutex<HashMap<String, LspClientHandle>>>,
+    pub builtin_lsp_enabled: Arc<AtomicBool>,
 }
 
 impl Default for StudioState {
     fn default() -> Self {
+        let persisted = load_persisted_state(&default_extensions_dir());
+        let builtin_on = !persisted.disabled_ids.contains(BUILTIN_MINECRAFT_EXT_ID);
         Self {
             active_pack: Arc::new(Mutex::new(None)),
             watcher: Mutex::new(None),
             blockbench: Mutex::new(None),
             pty_sessions: Mutex::new(HashMap::new()),
             next_pty_id: AtomicU32::new(1),
+            lsp_clients: Arc::new(Mutex::new(HashMap::new())),
+            builtin_lsp_enabled: Arc::new(AtomicBool::new(builtin_on)),
         }
     }
 }

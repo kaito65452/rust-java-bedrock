@@ -215,11 +215,103 @@ export interface PtyExitEvent {
   session_id: number;
 }
 
+export interface LspContributionDto {
+  server_id: string;
+  display_name: string;
+  command: string;
+  args: string[];
+  language_ids: string[];
+  builtin: boolean;
+}
+
+export interface ExtensionJsonSchemaDto {
+  uri: string;
+  file_match: string[];
+  schema: Record<string, unknown>;
+  source_extension_id: string;
+}
+
+export interface ExtensionSnippetDto {
+  prefix: string;
+  body: string[];
+  description: string;
+  language: string;
+  source_extension_id: string;
+}
+
+export interface InstalledExtensionDto {
+  id: string;
+  display_name: string;
+  publisher: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  builtin: boolean;
+  install_path: string | null;
+  has_js_entrypoint: boolean;
+  runtime_note: string | null;
+  schema_count: number;
+  snippet_count: number;
+  grammar_languages: string[];
+  lsp_contributions: LspContributionDto[];
+  raw_manifest_json: string;
+}
+
+export interface ExtensionsSnapshotDto {
+  extensions_dir: string;
+  extensions: InstalledExtensionDto[];
+  active_schemas: ExtensionJsonSchemaDto[];
+  active_snippets: ExtensionSnippetDto[];
+}
+
+export interface LspDiagnosticDto {
+  server_id: string;
+  rel_path: string;
+  line: number;
+  column: number;
+  end_line: number;
+  end_column: number;
+  severity: WarningSeverity;
+  message: string;
+  source: string;
+}
+
+export interface LspDiagnosticsEvent {
+  server_id: string;
+  rel_path: string;
+  diagnostics: LspDiagnosticDto[];
+}
+
+export interface LspCompletionItemDto {
+  label: string;
+  detail: string;
+  documentation: string;
+  insert_text: string;
+  kind: string;
+}
+
+export interface LspHoverDto {
+  contents: string;
+  source: string;
+}
+
+export interface LspServerStatusDto {
+  server_id: string;
+  display_name: string;
+  command: string;
+  args: string[];
+  language_ids: string[];
+  builtin: boolean;
+  binary_found: boolean;
+  running: boolean;
+}
+
 export type ActivityView =
   | "explorer"
   | "search"
   | "converter"
   | "metadata"
+  | "extensions"
   | "settings";
 
 export type BottomTab = "problems" | "output" | "terminal";
@@ -229,6 +321,7 @@ export type EditorTabKind =
   | "texture"
   | "converter"
   | "metadata"
+  | "extensions"
   | "blockbench";
 
 export interface EditorTab {
@@ -239,6 +332,7 @@ export interface EditorTab {
   dirty?: boolean;
   revealLine?: number;
   blockbenchUrl?: string;
+  selectedExtensionId?: string;
 }
 
 export interface OutputLogLine {

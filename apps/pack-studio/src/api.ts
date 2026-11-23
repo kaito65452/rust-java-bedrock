@@ -6,7 +6,12 @@ import type {
   ConversionResultDto,
   ConverterOptions,
   DetectedFileManagers,
+  ExtensionsSnapshotDto,
   ImportResult,
+  LspCompletionItemDto,
+  LspDiagnosticDto,
+  LspHoverDto,
+  LspServerStatusDto,
   NewProjectConfig,
   PackageExportConfig,
   PackageExportSummary,
@@ -161,5 +166,97 @@ export const api = {
     invoke<BlockbenchLaunchInfo>("blockbench_new_bedrock_geo", {
       relPath,
       identifier,
+    }),
+
+  extList: () => invoke<ExtensionsSnapshotDto>("ext_list"),
+
+  extInstall: (sourcePath: string) =>
+    invoke<ExtensionsSnapshotDto>("ext_install", { sourcePath }),
+
+  extSetEnabled: (extId: string, enabled: boolean) =>
+    invoke<ExtensionsSnapshotDto>("ext_set_enabled", { extId, enabled }),
+
+  extUninstall: (extId: string) =>
+    invoke<ExtensionsSnapshotDto>("ext_uninstall", { extId }),
+
+  lspListServers: () => invoke<LspServerStatusDto[]>("lsp_list_servers"),
+
+  lspRegisterCustomServer: (
+    serverId: string,
+    displayName: string,
+    command: string,
+    args: string[],
+    languageIds: string[],
+  ) =>
+    invoke<void>("lsp_register_custom_server", {
+      serverId,
+      displayName,
+      command,
+      args,
+      languageIds,
+    }),
+
+  lspUnregisterCustomServer: (serverId: string) =>
+    invoke<void>("lsp_unregister_custom_server", { serverId }),
+
+  lspStartServer: (
+    serverId: string,
+    command: string,
+    args: string[],
+    languageIds: string[],
+  ) =>
+    invoke<void>("lsp_start_server", {
+      serverId,
+      command,
+      args,
+      languageIds,
+    }),
+
+  lspStopServer: (serverId: string) =>
+    invoke<void>("lsp_stop_server", { serverId }),
+
+  lspSyncDocument: (
+    relPath: string,
+    languageId: string,
+    content: string,
+    version: number,
+    eventKind: "open" | "change" | "save",
+  ) =>
+    invoke<LspDiagnosticDto[]>("lsp_sync_document", {
+      relPath,
+      languageId,
+      content,
+      version,
+      eventKind,
+    }),
+
+  lspCompletion: (
+    relPath: string,
+    languageId: string,
+    line: number,
+    character: number,
+    prefix: string,
+  ) =>
+    invoke<LspCompletionItemDto[]>("lsp_completion", {
+      relPath,
+      languageId,
+      line,
+      character,
+      prefix,
+    }),
+
+  lspHover: (
+    relPath: string,
+    languageId: string,
+    line: number,
+    character: number,
+    word: string,
+  ) =>
+    invoke<LspHoverDto | null>("lsp_hover", {
+      relPath,
+      languageId,
+      line,
+      character,
+      word,
     }),
 };

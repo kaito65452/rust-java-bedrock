@@ -1,5 +1,7 @@
 pub mod blockbench;
 pub mod converter;
+pub mod extensions;
+pub mod lsp;
 pub mod pty;
 pub mod state;
 pub mod texture;
@@ -46,6 +48,18 @@ pub fn run() {
             blockbench::blockbench_start,
             blockbench::blockbench_open_asset,
             blockbench::blockbench_new_bedrock_geo,
+            extensions::ext_list,
+            extensions::ext_install,
+            extensions::ext_set_enabled,
+            extensions::ext_uninstall,
+            lsp::lsp_list_servers,
+            lsp::lsp_register_custom_server,
+            lsp::lsp_unregister_custom_server,
+            lsp::lsp_start_server,
+            lsp::lsp_stop_server,
+            lsp::lsp_sync_document,
+            lsp::lsp_completion,
+            lsp::lsp_hover,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pack-Studio Tauri application");
@@ -337,5 +351,78 @@ mod tests {
         assert_eq!(saved.len(), 2);
         assert!(tmp.path().join("models/entity/chair.geo.json").is_file());
         assert!(tmp.path().join("textures/entity/chair.png").is_file());
+    }
+
+    #[test]
+    fn lsp_framing_and_builtin_minecraft_diagnostics_work() {
+        use std::io::BufReader;
+
+        let payload = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" });
+        let framed = crate::lsp::frame_lsp_message(&payload);
+        let mut reader = BufReader::new(&framed[..]);
+        let decoded = crate::lsp::read_lsp_message(&mut reader).unwrap().unwrap();
+        assert_eq!(decoded["id"], 1);
+        assert_eq!(decoded["method"], "initialize");
+
+        let bad_manifest = r#"{"format_version":2,"header":{"name":"X","min_engine_version":[26,0,0]},"modules":[]}"#;
+        let diags = crate::lsp::builtin_minecraft_diagnostics("manifest.json", bad_manifest, &[]);
+        assert!(diags.len() >= 2);
+
+        let atlas = r#"{"texture_data":{"missing_tex":{"textures":"textures/blocks/missing"}}}"#;
+        let atlas_diags = crate::lsp::builtin_minecraft_diagnostics(
+            "textures/terrain_texture.json",
+            atlas,
+            &[String::from("textures/blocks/stone.png")],
+        );
+        assert_eq!(atlas_diags.len(), 1);
+        assert!(atlas_diags[0].message.contains("missing"));
+    }
+
+    #[test]
+    fn vsix_extension_installs_declarative_schemas_and_snippets_safely() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let tmp = TempDir::new().unwrap();
+        let vsix_path = tmp.path().join("sample-mc.vsix");
+        let ext_root = tmp.path().join("extensions");
+
+        let file = fs::File::create(&vsix_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = SimpleFileOptions::default();
+        zip.start_file("extension/package.json", opts).unwrap();
+        zip.write_all(
+            br#"{
+              "name": "mc-helper",
+              "publisher": "community",
+              "displayName": "Minecraft Helper Pack",
+              "version": "1.2.0",
+              "main": "./dist/extension.js",
+              "contributes": {
+                "jsonValidation": [{ "fileMatch": ["*.mc.json"], "url": "./schemas/mc.json" }],
+                "snippets": [{ "language": "json", "path": "./snippets/mc.json" }]
+              }
+            }"#,
+        )
+        .unwrap();
+        zip.start_file("extension/schemas/mc.json", opts).unwrap();
+        zip.write_all(br#"{"type":"object"}"#).unwrap();
+        zip.start_file("extension/snippets/mc.json", opts).unwrap();
+        zip.write_all(
+            br#"{"Sample Item":{"prefix":"mc-item","body":["{\"format_version\":\"1.20.0\"}"],"description":"Item"}}"#,
+        )
+        .unwrap();
+        zip.finish().unwrap();
+
+        let installed = crate::extensions::install_extension_core(&vsix_path, &ext_root).unwrap();
+        assert_eq!(installed.id, "community.mc-helper");
+        assert!(installed.has_js_entrypoint);
+        assert!(installed.runtime_note.is_some());
+        assert_eq!(installed.schema_count, 1);
+        assert_eq!(installed.snippet_count, 1);
+
+        let snap = crate::extensions::scan_extensions_snapshot(&ext_root);
+        assert!(snap.extensions.iter().any(|e| e.id == "community.mc-helper"));
+        assert!(snap.active_snippets.iter().any(|s| s.prefix == "mc-item"));
     }
 }

@@ -6,6 +6,8 @@ import { Allotment } from "allotment";
 import { api } from "./api";
 import { ConverterTab } from "./components/ConverterTab";
 import { ExplorerSidebar } from "./components/ExplorerSidebar";
+import { ExtensionsSidebar } from "./components/ExtensionsSidebar";
+import { ExtensionsTab } from "./components/ExtensionsTab";
 import { MetadataPackagingTab } from "./components/MetadataPackagingTab";
 import { MonacoCodeTab } from "./components/MonacoCodeTab";
 import { NewProjectWizardModal } from "./components/NewProjectWizardModal";
@@ -19,6 +21,10 @@ import type {
   ConversionWarning,
   DetectedFileManagers,
   EditorTab,
+  ExtensionsSnapshotDto,
+  LspDiagnosticDto,
+  LspDiagnosticsEvent,
+  LspServerStatusDto,
   NewProjectConfig,
   OutputLogLine,
   ProjectSnapshot,
@@ -82,6 +88,12 @@ export default function App() {
   const [settings, setSettings] = useState<StudioSettings>(loadInitialSettings);
   const [fileManagers, setFileManagers] =
     useState<DetectedFileManagers | null>(null);
+  const [extensionsSnapshot, setExtensionsSnapshot] =
+    useState<ExtensionsSnapshotDto | null>(null);
+  const [lspServers, setLspServers] = useState<LspServerStatusDto[]>([]);
+  const [lspDiagMap, setLspDiagMap] = useState<
+    Record<string, LspDiagnosticDto[]>
+  >({});
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [paletteMode, setPaletteMode] = useState<null | "commands" | "files">(
@@ -144,13 +156,27 @@ export default function App() {
     }
   }, [appendLog]);
 
+  const refreshExtensionsAndLsp = useCallback(async () => {
+    try {
+      const [extSnap, srvs] = await Promise.all([
+        api.extList(),
+        api.lspListServers(),
+      ]);
+      setExtensionsSnapshot(extSnap);
+      setLspServers(srvs);
+    } catch (e) {
+      appendLog("warn", `Extension/LSP scan error: ${String(e)}`);
+    }
+  }, [appendLog]);
+
   useEffect(() => {
     appendLog(
       "info",
       "PackStudio Tauri v2 Workbench ready. Use Ctrl+Shift+P for Command Palette.",
     );
     void refreshFileManagers();
-  }, [appendLog, refreshFileManagers]);
+    void refreshExtensionsAndLsp();
+  }, [appendLog, refreshFileManagers, refreshExtensionsAndLsp]);
 
   const refreshActiveProject = useCallback(async () => {
     const src = projectRef.current?.source_path;
@@ -181,9 +207,20 @@ export default function App() {
         void refreshActiveProject();
       },
     );
+    const unlistenLsp = listen<LspDiagnosticsEvent>(
+      "lsp://diagnostics",
+      (ev) => {
+        const key = `${ev.payload.server_id}::${ev.payload.rel_path}`;
+        setLspDiagMap((prev) => ({
+          ...prev,
+          [key]: ev.payload.diagnostics,
+        }));
+      },
+    );
     return () => {
       void unlistenFs.then((f) => f());
       void unlistenBb.then((f) => f());
+      void unlistenLsp.then((f) => f());
     };
   }, [appendLog, refreshActiveProject, showToast]);
 
@@ -487,6 +524,10 @@ export default function App() {
         e.preventDefault();
         setActivity("search");
         setSidebarOpen(true);
+      } else if (ctrl && e.shiftKey && e.key.toLowerCase() === "x") {
+        e.preventDefault();
+        setActivity("extensions");
+        setSidebarOpen(true);
       } else if (e.key === "Escape") {
         setPaletteMode(null);
       }
@@ -546,6 +587,18 @@ export default function App() {
           }),
       },
       {
+        label: "Extensions: Open Extensions & LSP Manager (Ctrl+Shift+X)",
+        action: () => {
+          setActivity("extensions");
+          setSidebarOpen(true);
+          openOrFocusTab({
+            id: "tool:extensions",
+            kind: "extensions",
+            title: "Extensions & LSP",
+          });
+        },
+      },
+      {
         label: "Blockbench: Launch Embedded 3D Studio",
         action: () => void handleOpenBlockbench(),
       },
@@ -581,8 +634,27 @@ export default function App() {
     )
     .slice(0, 60);
 
-  const errorCount = problems.filter((p) => p.severity === "error").length;
-  const warnCount = problems.filter((p) => p.severity === "warning").length;
+  const allLspDiagnostics = useMemo(
+    () => Object.values(lspDiagMap).flat(),
+    [lspDiagMap],
+  );
+
+  const mergedProblems = useMemo(() => {
+    const lspWarnings: ConversionWarning[] = allLspDiagnostics.map((d) => ({
+      source_path: d.rel_path,
+      stage: "audit",
+      severity: d.severity,
+      reason: `${d.message} (L${d.line}:${d.column})`,
+      actionable_fix: `LSP: ${d.source}`,
+      asset: d.rel_path,
+      message: d.message,
+    }));
+    return [...problems, ...lspWarnings];
+  }, [problems, allLspDiagnostics]);
+
+  const errorCount = mergedProblems.filter((p) => p.severity === "error").length;
+  const warnCount = mergedProblems.filter((p) => p.severity === "warning").length;
+  const runningLspCount = lspServers.filter((s) => s.running).length;
 
   const setTabDirty = (tabId: string, dirty: boolean) => {
     setTabs((prev) =>
@@ -752,6 +824,24 @@ export default function App() {
               }}
             >
               <span className="codicon codicon-package" />
+            </button>
+
+            <button
+              className={`activity-btn ${activity === "extensions" && sidebarOpen ? "active" : ""}`}
+              title="Extensions & LSP (Ctrl+Shift+X)"
+              onClick={() => {
+                if (activity === "extensions" && sidebarOpen) {
+                  setSidebarOpen(false);
+                } else {
+                  setActivity("extensions");
+                  setSidebarOpen(true);
+                }
+              }}
+            >
+              <span className="codicon codicon-extensions" />
+              {runningLspCount > 0 && (
+                <span className="activity-badge">{runningLspCount}</span>
+              )}
             </button>
           </div>
 
@@ -985,6 +1075,87 @@ export default function App() {
                   </div>
                 )}
 
+                {activity === "extensions" && (
+                  <ExtensionsSidebar
+                    snapshot={extensionsSnapshot}
+                    servers={lspServers}
+                    onRefresh={() => void refreshExtensionsAndLsp()}
+                    onInstallPath={(src) => {
+                      void api
+                        .extInstall(src)
+                        .then((snap) => {
+                          setExtensionsSnapshot(snap);
+                          void refreshExtensionsAndLsp();
+                          appendLog("success", `Installed extension from ${src}`);
+                        })
+                        .catch((e) => appendLog("error", `Extension install failed: ${String(e)}`));
+                    }}
+                    onToggleEnabled={(extId, enabled) => {
+                      void api
+                        .extSetEnabled(extId, enabled)
+                        .then((snap) => {
+                          setExtensionsSnapshot(snap);
+                          void refreshExtensionsAndLsp();
+                          appendLog(
+                            "info",
+                            `Extension '${extId}' ${enabled ? "enabled" : "disabled"}`,
+                          );
+                        })
+                        .catch((e) => appendLog("error", String(e)));
+                    }}
+                    onUninstall={(extId) => {
+                      void api
+                        .extUninstall(extId)
+                        .then((snap) => {
+                          setExtensionsSnapshot(snap);
+                          void refreshExtensionsAndLsp();
+                          appendLog("info", `Uninstalled extension '${extId}'`);
+                        })
+                        .catch((e) => appendLog("error", String(e)));
+                    }}
+                    onStartServer={(srv) => {
+                      void api
+                        .lspStartServer(
+                          srv.server_id,
+                          srv.command,
+                          srv.args,
+                          srv.language_ids,
+                        )
+                        .then(() => {
+                          void refreshExtensionsAndLsp();
+                          appendLog("success", `Started LSP server: ${srv.display_name}`);
+                        })
+                        .catch((e) => appendLog("error", `LSP start failed: ${String(e)}`));
+                    }}
+                    onStopServer={(sid) => {
+                      void api
+                        .lspStopServer(sid)
+                        .then(() => {
+                          void refreshExtensionsAndLsp();
+                          appendLog("info", `Stopped LSP server: ${sid}`);
+                        })
+                        .catch((e) => appendLog("error", String(e)));
+                    }}
+                    onRegisterCustomServer={(id, name, cmd, args, langs) => {
+                      void api
+                        .lspRegisterCustomServer(id, name, cmd, args, langs)
+                        .then(() => {
+                          void refreshExtensionsAndLsp();
+                          appendLog("success", `Registered stdio LSP '${id}' (${cmd})`);
+                        })
+                        .catch((e) => appendLog("error", String(e)));
+                    }}
+                    onOpenExtensionTab={(extId) =>
+                      openOrFocusTab({
+                        id: "tool:extensions",
+                        kind: "extensions",
+                        title: "Extensions & LSP",
+                        selectedExtensionId: extId,
+                      })
+                    }
+                  />
+                )}
+
                 {activity === "settings" && (
                   <div className="sidebar-pane">
                     <div className="sidebar-header">
@@ -1139,9 +1310,11 @@ export default function App() {
                                   ? "codicon-arrow-swap"
                                   : tab.kind === "metadata"
                                     ? "codicon-package"
-                                    : tab.kind === "blockbench"
-                                      ? "codicon-cube"
-                                      : fileIconClass(tab.relPath || "", false)
+                                    : tab.kind === "extensions"
+                                      ? "codicon-extensions"
+                                      : tab.kind === "blockbench"
+                                        ? "codicon-cube"
+                                        : fileIconClass(tab.relPath || "", false)
                               }`}
                             />
                             <span className="editor-tab-title">{tab.title}</span>
@@ -1227,6 +1400,8 @@ export default function App() {
                           initialContent={textCache[activeTab.relPath] ?? ""}
                           revealLine={activeTab.revealLine}
                           problems={problems}
+                          extensions={extensionsSnapshot}
+                          lspDiagnostics={allLspDiagnostics}
                           onDirtyChange={(dirty) => setTabDirty(activeTab.id, dirty)}
                           onSave={async (rel, content) => {
                             const snap = await api.fsWriteText(rel, content);
@@ -1321,6 +1496,99 @@ export default function App() {
                         />
                       )}
 
+                      {activeTab?.kind === "extensions" && (
+                        <ExtensionsTab
+                          snapshot={extensionsSnapshot}
+                          servers={lspServers}
+                          selectedExtensionId={activeTab.selectedExtensionId}
+                          lspDiagCount={allLspDiagnostics.length}
+                          onSelectExtension={(extId) =>
+                            openOrFocusTab({
+                              id: "tool:extensions",
+                              kind: "extensions",
+                              title: "Extensions & LSP",
+                              selectedExtensionId: extId,
+                            })
+                          }
+                          onInstallPath={(src) => {
+                            void api
+                              .extInstall(src)
+                              .then((snap) => {
+                                setExtensionsSnapshot(snap);
+                                void refreshExtensionsAndLsp();
+                                appendLog("success", `Installed extension from ${src}`);
+                              })
+                              .catch((e) =>
+                                appendLog("error", `Extension install failed: ${String(e)}`),
+                              );
+                          }}
+                          onToggleEnabled={(extId, enabled) => {
+                            void api
+                              .extSetEnabled(extId, enabled)
+                              .then((snap) => {
+                                setExtensionsSnapshot(snap);
+                                void refreshExtensionsAndLsp();
+                                appendLog(
+                                  "info",
+                                  `Extension '${extId}' ${enabled ? "enabled" : "disabled"}`,
+                                );
+                              })
+                              .catch((e) => appendLog("error", String(e)));
+                          }}
+                          onUninstall={(extId) => {
+                            void api
+                              .extUninstall(extId)
+                              .then((snap) => {
+                                setExtensionsSnapshot(snap);
+                                void refreshExtensionsAndLsp();
+                                appendLog("info", `Uninstalled extension '${extId}'`);
+                              })
+                              .catch((e) => appendLog("error", String(e)));
+                          }}
+                          onStartServer={(srv) => {
+                            void api
+                              .lspStartServer(
+                                srv.server_id,
+                                srv.command,
+                                srv.args,
+                                srv.language_ids,
+                              )
+                              .then(() => {
+                                void refreshExtensionsAndLsp();
+                                appendLog("success", `Started LSP server: ${srv.display_name}`);
+                              })
+                              .catch((e) => appendLog("error", `LSP start failed: ${String(e)}`));
+                          }}
+                          onStopServer={(sid) => {
+                            void api
+                              .lspStopServer(sid)
+                              .then(() => {
+                                void refreshExtensionsAndLsp();
+                                appendLog("info", `Stopped LSP server: ${sid}`);
+                              })
+                              .catch((e) => appendLog("error", String(e)));
+                          }}
+                          onRegisterCustomServer={(id, name, cmd, args, langs) => {
+                            void api
+                              .lspRegisterCustomServer(id, name, cmd, args, langs)
+                              .then(() => {
+                                void refreshExtensionsAndLsp();
+                                appendLog("success", `Registered stdio LSP '${id}' (${cmd})`);
+                              })
+                              .catch((e) => appendLog("error", String(e)));
+                          }}
+                          onUnregisterCustomServer={(sid) => {
+                            void api
+                              .lspUnregisterCustomServer(sid)
+                              .then(() => {
+                                void refreshExtensionsAndLsp();
+                                appendLog("info", `Removed custom LSP '${sid}'`);
+                              })
+                              .catch((e) => appendLog("error", String(e)));
+                          }}
+                        />
+                      )}
+
                       {activeTab?.kind === "blockbench" &&
                         activeTab.blockbenchUrl && (
                           <div
@@ -1399,7 +1667,7 @@ export default function App() {
                             className={`bottom-tab-btn ${bottomTab === "problems" ? "active" : ""}`}
                             onClick={() => setBottomTab("problems")}
                           >
-                            PROBLEMS ({problems.length})
+                            PROBLEMS ({mergedProblems.length})
                           </button>
                           <button
                             className={`bottom-tab-btn ${bottomTab === "output" ? "active" : ""}`}
@@ -1438,14 +1706,14 @@ export default function App() {
                       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
                         {bottomTab === "problems" && (
                           <div style={{ padding: "4px 8px" }}>
-                            {problems.length === 0 ? (
+                            {mergedProblems.length === 0 ? (
                               <div
                                 style={{
                                   padding: 12,
                                   color: "var(--vsc-text-dim)",
                                 }}
                               >
-                                No problems reported by Semantic Auditor. Click
+                                No problems reported by LSP or Semantic Auditor. Click
                                 &ldquo;Audit&rdquo; to inspect the pack.
                               </div>
                             ) : (
@@ -1458,7 +1726,7 @@ export default function App() {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {problems.map((p, idx) => (
+                                  {mergedProblems.map((p, idx) => (
                                     <tr
                                       key={idx}
                                       style={{ cursor: "pointer" }}
@@ -1593,6 +1861,22 @@ export default function App() {
         </div>
 
         <div className="status-group">
+          <span
+            className="status-item"
+            onClick={() => {
+              setActivity("extensions");
+              setSidebarOpen(true);
+              openOrFocusTab({
+                id: "tool:extensions",
+                kind: "extensions",
+                title: "Extensions & LSP",
+              });
+            }}
+            title="Manage Extensions & Language Servers"
+          >
+            <span className="codicon codicon-extensions" />
+            LSP: {runningLspCount}/{lspServers.length}
+          </span>
           {fileManagers && (
             <span
               className="status-item"

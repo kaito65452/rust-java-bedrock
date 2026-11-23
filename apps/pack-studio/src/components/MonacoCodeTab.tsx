@@ -3,7 +3,13 @@ import Editor, { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import type { ConversionWarning } from "../types";
+import { api } from "../api";
+import type {
+  ConversionWarning,
+  ExtensionSnippetDto,
+  ExtensionsSnapshotDto,
+  LspDiagnosticDto,
+} from "../types";
 
 // Configure Monaco offline workers inside Tauri bundle (no external CDN requests).
 if (typeof self !== "undefined") {
@@ -27,6 +33,10 @@ if (typeof self !== "undefined") {
 loader.config({ monaco });
 
 let customLanguagesRegistered = false;
+let lspProvidersRegistered = false;
+let activeRelPathForProviders = "";
+let activeLanguageForProviders = "json";
+let activeSnippetsForProviders: ExtensionSnippetDto[] = [];
 
 function registerMinecraftLanguages(m: typeof monaco) {
   if (customLanguagesRegistered) return;
@@ -59,6 +69,99 @@ function registerMinecraftLanguages(m: typeof monaco) {
   });
 }
 
+function ensureLspProvidersRegistered(m: typeof monaco) {
+  if (lspProvidersRegistered) return;
+  lspProvidersRegistered = true;
+
+  for (const langId of ["json", "mc-lang", "molang"]) {
+    m.languages.registerCompletionItemProvider(langId, {
+      triggerCharacters: [".", '"', "/", "§"],
+      async provideCompletionItems(model, position) {
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+
+        const suggestions: monaco.languages.CompletionItem[] = [];
+        for (const snip of activeSnippetsForProviders) {
+          if (snip.language === langId || (langId === "json" && snip.language === "jsonc")) {
+            suggestions.push({
+              label: snip.prefix,
+              kind: m.languages.CompletionItemKind.Snippet,
+              detail: `${snip.description} (${snip.source_extension_id})`,
+              insertText: snip.body.join("\n"),
+              insertTextRules: m.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+              range,
+            });
+          }
+        }
+
+        try {
+          const lspItems = await api.lspCompletion(
+            activeRelPathForProviders,
+            activeLanguageForProviders,
+            position.lineNumber,
+            position.column,
+            word.word,
+          );
+          for (const item of lspItems) {
+            suggestions.push({
+              label: item.label,
+              kind:
+                item.kind === "Function"
+                  ? m.languages.CompletionItemKind.Function
+                  : item.kind === "File"
+                    ? m.languages.CompletionItemKind.File
+                    : item.kind === "Keyword"
+                      ? m.languages.CompletionItemKind.Keyword
+                      : m.languages.CompletionItemKind.Property,
+              detail: item.detail,
+              documentation: item.documentation,
+              insertText: item.insert_text,
+              insertTextRules: item.insert_text.includes("${")
+                ? m.languages.CompletionItemInsertTextRule.InsertAsSnippet
+                : undefined,
+              range,
+            });
+          }
+        } catch {
+          // ignore transient LSP completion failures
+        }
+
+        return { suggestions };
+      },
+    });
+
+    m.languages.registerHoverProvider(langId, {
+      async provideHover(model, position) {
+        const word = model.getWordAtPosition(position);
+        const term = word?.word ?? "";
+        try {
+          const hovered = await api.lspHover(
+            activeRelPathForProviders,
+            activeLanguageForProviders,
+            position.lineNumber,
+            position.column,
+            term,
+          );
+          if (!hovered) return null;
+          return {
+            contents: [
+              { value: hovered.contents },
+              { value: `*Source: ${hovered.source}*` },
+            ],
+          };
+        } catch {
+          return null;
+        }
+      },
+    });
+  }
+}
+
 function detectMonacoLanguage(relPath: string): string {
   const lower = relPath.toLowerCase();
   if (lower.endsWith(".json") || lower.endsWith(".mcmeta") || lower.endsWith(".material")) {
@@ -75,6 +178,8 @@ interface MonacoCodeTabProps {
   initialContent: string;
   revealLine?: number;
   problems: ConversionWarning[];
+  extensions?: ExtensionsSnapshotDto | null;
+  lspDiagnostics?: LspDiagnosticDto[];
   onDirtyChange: (dirty: boolean) => void;
   onSave: (relPath: string, content: string) => Promise<void>;
   onOpenBlockbench?: (relPath: string) => void;
@@ -85,6 +190,8 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
   initialContent,
   revealLine,
   problems,
+  extensions,
+  lspDiagnostics = [],
   onDirtyChange,
   onSave,
   onOpenBlockbench,
@@ -94,10 +201,13 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
   const [saving, setSaving] = useState(false);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof monaco | null>(null);
+  const versionRef = useRef<number>(1);
 
   useEffect(() => {
     setContent(initialContent);
     setSavedContent(initialContent);
+    versionRef.current = 1;
     onDirtyChange(false);
   }, [relPath, initialContent]);
 
@@ -106,6 +216,68 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
   const isModel =
     relPath.toLowerCase().endsWith(".geo.json") ||
     relPath.toLowerCase().includes("/models/");
+
+  useEffect(() => {
+    activeRelPathForProviders = relPath;
+    activeLanguageForProviders = lang;
+    activeSnippetsForProviders = extensions?.active_snippets ?? [];
+  }, [relPath, lang, extensions]);
+
+  // Apply extension JSON schemas dynamically into Monaco jsonDefaults
+  useEffect(() => {
+    const m = monacoRef.current ?? monaco;
+    const schemas = (extensions?.active_schemas ?? []).map((s) => ({
+      uri: s.uri,
+      fileMatch: s.file_match,
+      schema: s.schema,
+    }));
+    m.languages.json.jsonDefaults.setDiagnosticsOptions({
+      validate: true,
+      allowComments: true,
+      trailingCommas: "ignore",
+      schemas,
+    });
+  }, [extensions?.active_schemas]);
+
+  // Sync open & incremental changes to Rust stdio LSP + built-in Minecraft LSP
+  useEffect(() => {
+    void api.lspSyncDocument(relPath, lang, initialContent, 1, "open").catch(() => {});
+  }, [relPath, lang, initialContent]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      versionRef.current += 1;
+      void api
+        .lspSyncDocument(relPath, lang, content, versionRef.current, "change")
+        .catch(() => {});
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [relPath, lang, content]);
+
+  // Apply live LSP diagnostics markers to the active Monaco model
+  useEffect(() => {
+    const ed = editorRef.current;
+    const m = monacoRef.current;
+    if (!ed || !m) return;
+    const model = ed.getModel();
+    if (!model) return;
+    const markers: monaco.editor.IMarkerData[] = lspDiagnostics
+      .filter((d) => d.rel_path === relPath)
+      .map((d) => ({
+        startLineNumber: Math.max(1, d.line),
+        startColumn: Math.max(1, d.column),
+        endLineNumber: Math.max(1, d.end_line),
+        endColumn: Math.max(2, d.end_column),
+        message: `[${d.source}] ${d.message}`,
+        severity:
+          d.severity === "error"
+            ? m.MarkerSeverity.Error
+            : d.severity === "warning"
+              ? m.MarkerSeverity.Warning
+              : m.MarkerSeverity.Info,
+      }));
+    m.editor.setModelMarkers(model, "packstudio-lsp", markers);
+  }, [relPath, lspDiagnostics]);
 
   useEffect(() => {
     if (lang === "json") {
@@ -137,6 +309,11 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
     [problems, relPath],
   );
 
+  const fileLspDiags = useMemo(
+    () => lspDiagnostics.filter((d) => d.rel_path === relPath),
+    [lspDiagnostics, relPath],
+  );
+
   const handleSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -144,6 +321,10 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
       await onSave(relPath, content);
       setSavedContent(content);
       onDirtyChange(false);
+      versionRef.current += 1;
+      void api
+        .lspSyncDocument(relPath, lang, content, versionRef.current, "save")
+        .catch(() => {});
     } finally {
       setSaving(false);
     }
@@ -178,9 +359,9 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
               <span className="codicon codicon-check" /> Valid JSON
             </span>
           ) : null}
-          {fileProblems.length > 0 && (
+          {(fileProblems.length > 0 || fileLspDiags.length > 0) && (
             <span style={{ color: "var(--vsc-warn)", fontSize: 11 }}>
-              {fileProblems.length} diagnostic(s)
+              {fileProblems.length + fileLspDiags.length} diagnostic(s)
             </span>
           )}
         </div>
@@ -218,11 +399,14 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"
+          path={relPath}
           theme="vs-dark"
           language={lang}
           value={content}
           beforeMount={(m) => {
+            monacoRef.current = m;
             registerMinecraftLanguages(m);
+            ensureLspProvidersRegistered(m);
             m.languages.json.jsonDefaults.setDiagnosticsOptions({
               validate: true,
               allowComments: true,
@@ -231,6 +415,10 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
           }}
           onMount={(ed, m) => {
             editorRef.current = ed;
+            monacoRef.current = m;
+            activeRelPathForProviders = relPath;
+            activeLanguageForProviders = lang;
+            activeSnippetsForProviders = extensions?.active_snippets ?? [];
             ed.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => {
               void handleSave();
             });
