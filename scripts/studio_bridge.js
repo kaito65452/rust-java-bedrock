@@ -400,4 +400,68 @@
     injectStudioUiAndHooks();
     connectBridge();
   });
+
+  // postMessage zoom/density listener — accepts messages from same-origin loopback or Tauri WebView
+  window.addEventListener("message", function (event) {
+    const origin = event.origin;
+    if (
+      origin !== window.location.origin &&
+      origin !== "null" &&
+      origin !== ""
+    ) {
+      return;
+    }
+
+    let data;
+    try {
+      data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+    } catch (_) {
+      return;
+    }
+    if (!data || !data.type) return;
+
+    if (data.type === "ps_set_zoom") {
+      const raw = Number(data.zoom);
+      if (!isFinite(raw)) return;
+      const zoom = Math.min(1.5, Math.max(0.5, raw));
+      document.documentElement.style.zoom = String(zoom);
+      document.documentElement.style.fontSize = (zoom * 16) + "px";
+
+    } else if (data.type === "ps_set_compact") {
+      const compact = Boolean(data.compact);
+      if (compact) {
+        document.documentElement.classList.add("ps-compact");
+        document.documentElement.style.setProperty("--toolbar-height", "32px");
+        document.documentElement.style.setProperty("--status-bar-height", "20px");
+      } else {
+        document.documentElement.classList.remove("ps-compact");
+        document.documentElement.style.removeProperty("--toolbar-height");
+        document.documentElement.style.removeProperty("--status-bar-height");
+      }
+
+    } else if (data.type === "ps_reset_zoom") {
+      document.documentElement.style.zoom = "";
+      document.documentElement.style.fontSize = "";
+      document.documentElement.classList.remove("ps-compact");
+      document.documentElement.style.removeProperty("--toolbar-height");
+      document.documentElement.style.removeProperty("--status-bar-height");
+    }
+  });
+
+  // Convenience helpers on window.__ps
+  window.__ps = window.__ps || {};
+  window.__ps.setZoom = (z) =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "ps_set_zoom", zoom: z },
+        origin: window.location.origin,
+      })
+    );
+  window.__ps.resetZoom = () =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "ps_reset_zoom" },
+        origin: window.location.origin,
+      })
+    );
 })();
