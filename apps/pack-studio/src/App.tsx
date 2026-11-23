@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Allotment } from "allotment";
 import { api } from "./api";
 import { ConverterTab } from "./components/ConverterTab";
 import { ExplorerSidebar } from "./components/ExplorerSidebar";
 import { ExtensionsSidebar } from "./components/ExtensionsSidebar";
 import { ExtensionsTab } from "./components/ExtensionsTab";
+import { ImportAssetsModal } from "./components/ImportAssetsModal";
 import { MetadataPackagingTab } from "./components/MetadataPackagingTab";
 import { MonacoCodeTab } from "./components/MonacoCodeTab";
 import { NewProjectWizardModal } from "./components/NewProjectWizardModal";
@@ -42,7 +44,6 @@ import {
 
 const DEFAULT_SETTINGS: StudioSettings = {
   preferredFileManager: "auto",
-  useYaziPicker: true,
   autoSanitizeImports: true,
   convertImportedImagesToPng: true,
   defaultTargetResolution: null,
@@ -50,6 +51,7 @@ const DEFAULT_SETTINGS: StudioSettings = {
   defaultCompositeGrassTga: true,
   defaultConvertPbr: false,
   externalImageEditor: "",
+  blockbenchUiScale: 0.86,
 };
 
 function loadInitialSettings(): StudioSettings {
@@ -108,13 +110,9 @@ export default function App() {
     name: string;
     size: number;
   }>(null);
+  const [importModal, setImportModal] = useState<null | { dir: string }>(null);
 
-  const [ptyLaunchReq, setPtyLaunchReq] = useState<{
-    nonce: number;
-    cmdOpt: string | null;
-    cwd?: string | null;
-  }>({ nonce: 0, cmdOpt: null, cwd: null });
-
+  const blockbenchFrameRef = useRef<HTMLIFrameElement | null>(null);
   const projectRef = useRef<ProjectSnapshot | null>(null);
   projectRef.current = project;
 
@@ -400,33 +398,18 @@ export default function App() {
     }
   }, [openProjectByPath]);
 
-  const handlePickWithYazi = useCallback(
-    async (openAsProjectIfSingle = false, targetImportDir = "") => {
-      try {
-        const startDir = projectRef.current?.source_path ?? null;
-        const picked = await api.pickWithYazi(startDir);
-        if (picked.length === 0) {
-          appendLog("info", "Yazi selection cancelled.");
-          return;
-        }
-        if (openAsProjectIfSingle || !projectRef.current) {
-          await openProjectByPath(picked[0]);
-        } else {
-          await handleImportPaths(targetImportDir, picked);
-        }
-      } catch (e) {
-        appendLog("warn", String(e));
-        setBottomOpen(true);
-        setBottomTab("terminal");
-        setPtyLaunchReq((r) => ({
-          nonce: r.nonce + 1,
-          cmdOpt: "yazi",
-          cwd: projectRef.current?.source_path ?? null,
-        }));
-      }
-    },
-    [appendLog, handleImportPaths, openProjectByPath],
-  );
+  const applyBlockbenchScale = useCallback(() => {
+    const frame = blockbenchFrameRef.current;
+    if (!frame?.contentWindow) return;
+    frame.contentWindow.postMessage(
+      { type: "packstudio:set-zoom", zoom: settings.blockbenchUiScale },
+      "*",
+    );
+  }, [settings.blockbenchUiScale]);
+
+  useEffect(() => {
+    applyBlockbenchScale();
+  }, [applyBlockbenchScale, activeTabId]);
 
   const handleOpenBlockbench = useCallback(
     async (relPath?: string) => {
@@ -481,22 +464,6 @@ export default function App() {
       }
     },
     [appendLog, settings.preferredFileManager],
-  );
-
-  const handleLaunchYaziInTerminal = useCallback(
-    (relPath?: string) => {
-      const base = projectRef.current?.source_path ?? null;
-      const resolvedCwd =
-        base && relPath ? `${base}/${relPath}`.replace(/\/+/g, "/") : base;
-      setBottomOpen(true);
-      setBottomTab("terminal");
-      setPtyLaunchReq((r) => ({
-        nonce: r.nonce + 1,
-        cmdOpt: "yazi",
-        cwd: resolvedCwd,
-      }));
-    },
-    [],
   );
 
   useEffect(() => {
@@ -565,8 +532,8 @@ export default function App() {
         action: () => setWizardOpen(true),
       },
       {
-        label: "Yazi: Pick Resource Pack or Import Assets",
-        action: () => void handlePickWithYazi(false),
+        label: "File: Import Assets into Open Pack...",
+        action: () => setImportModal({ dir: "" }),
       },
       {
         label: "Converter: Open Converter & Preflight Studio",
@@ -617,7 +584,6 @@ export default function App() {
     ],
     [
       handleOpenBlockbench,
-      handlePickWithYazi,
       handleRunAudit,
       openOrFocusTab,
       promptOpenArchive,
@@ -932,27 +898,11 @@ export default function App() {
                         })
                         .catch((e) => appendLog("error", String(e)));
                     }}
-                    onImportFiles={(dir) => {
-                      if (settings.useYaziPicker && fileManagers?.yazi_available) {
-                        void handlePickWithYazi(false, dir);
-                        return;
-                      }
-                      void dialogOpen({ multiple: true }).then((picked) => {
-                        const list = Array.isArray(picked)
-                          ? picked
-                          : typeof picked === "string"
-                            ? [picked]
-                            : [];
-                        if (list.length > 0) {
-                          void handleImportPaths(dir, list);
-                        }
-                      });
-                    }}
+                    onRequestImport={(dir) => setImportModal({ dir })}
                     onOpenProjectPrompt={() => void promptOpenProject()}
                     onOpenNewWizard={() => setWizardOpen(true)}
                     onRefreshProject={() => void refreshActiveProject()}
                     onRevealPath={(rel) => void handleReveal(rel)}
-                    onLaunchYazi={handleLaunchYaziInTerminal}
                     onToast={showToast}
                   />
                 )}
@@ -1159,7 +1109,7 @@ export default function App() {
                 {activity === "settings" && (
                   <div className="sidebar-pane">
                     <div className="sidebar-header">
-                      <span>SETTINGS &amp; YAZI</span>
+                      <span>SETTINGS</span>
                       <button
                         className="icon-btn"
                         title="Re-detect File Managers"
@@ -1192,50 +1142,7 @@ export default function App() {
                         </select>
                       </label>
 
-                      <div
-                        style={{
-                          fontSize: 11,
-                          padding: "8px 10px",
-                          background: "#1b1b1c",
-                          borderRadius: 4,
-                          border: "1px solid var(--vsc-border-strong)",
-                          marginBottom: 12,
-                        }}
-                      >
-                        <div>
-                          <strong>Yazi Status:</strong>{" "}
-                          {fileManagers?.yazi_available ? (
-                            <span style={{ color: "var(--vsc-ok)" }}>
-                              Detected ({fileManagers.yazi_path})
-                            </span>
-                          ) : (
-                            <span style={{ color: "var(--vsc-warn)" }}>
-                              Not found in PATH
-                            </span>
-                          )}
-                        </div>
-                        {!fileManagers?.yazi_available && fileManagers && (
-                          <div style={{ marginTop: 4, color: "var(--vsc-text-dim)" }}>
-                            {fileManagers.yazi_install_hint}
-                          </div>
-                        )}
-                      </div>
-
                       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <input
-                            type="checkbox"
-                            checked={settings.useYaziPicker}
-                            onChange={(e) =>
-                              setSettings((s) => ({
-                                ...s,
-                                useYaziPicker: e.target.checked,
-                              }))
-                            }
-                          />
-                          Prefer Yazi Chooser for Imports (when available)
-                        </label>
-
                         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <input
                             type="checkbox"
@@ -1591,31 +1498,81 @@ export default function App() {
 
                       {activeTab?.kind === "blockbench" &&
                         activeTab.blockbenchUrl && (
-                          <div
-                            style={{
-                              display: "flex",
-                              flexDirection: "column",
-                              height: "100%",
-                            }}
-                          >
+                          <div className="blockbench-shell">
                             <div className="code-toolbar">
                               <div className="toolbar-group">
                                 <span
                                   className="codicon codicon-cube"
                                   style={{ color: "#3794ff" }}
                                 />
-                                <strong>Blockbench Web Studio (2-Way Bridge)</strong>
+                                <strong>Blockbench</strong>
                                 <span
-                                  style={{
-                                    fontFamily: "var(--font-mono)",
-                                    fontSize: 11,
-                                    color: "var(--vsc-text-dim)",
-                                  }}
+                                  className="path-hint"
+                                  style={{ maxWidth: 260 }}
+                                  title={activeTab.blockbenchUrl}
                                 >
                                   {activeTab.blockbenchUrl}
                                 </span>
                               </div>
                               <div className="toolbar-group">
+                                <div
+                                  className="zoom-control"
+                                  title="Blockbench interface scale"
+                                >
+                                  <button
+                                    className="icon-btn"
+                                    title="Zoom out"
+                                    onClick={() =>
+                                      setSettings((s) => ({
+                                        ...s,
+                                        blockbenchUiScale: Math.max(
+                                          0.6,
+                                          Math.round((s.blockbenchUiScale - 0.04) * 100) / 100,
+                                        ),
+                                      }))
+                                    }
+                                  >
+                                    <span className="codicon codicon-zoom-out" />
+                                  </button>
+                                  <span className="zoom-readout">
+                                    {Math.round(settings.blockbenchUiScale * 100)}%
+                                  </span>
+                                  <button
+                                    className="icon-btn"
+                                    title="Zoom in"
+                                    onClick={() =>
+                                      setSettings((s) => ({
+                                        ...s,
+                                        blockbenchUiScale: Math.min(
+                                          1.2,
+                                          Math.round((s.blockbenchUiScale + 0.04) * 100) / 100,
+                                        ),
+                                      }))
+                                    }
+                                  >
+                                    <span className="codicon codicon-zoom-in" />
+                                  </button>
+                                  <button
+                                    className="icon-btn"
+                                    title="Reset zoom to 100%"
+                                    onClick={() =>
+                                      setSettings((s) => ({
+                                        ...s,
+                                        blockbenchUiScale: 1,
+                                      }))
+                                    }
+                                  >
+                                    <span className="codicon codicon-refresh" />
+                                  </button>
+                                </div>
+                                <button
+                                  className="vsc-btn secondary small"
+                                  title="Open Blockbench in your browser"
+                                  onClick={() => void openUrl(activeTab.blockbenchUrl!)}
+                                >
+                                  <span className="codicon codicon-open-preview" />
+                                  Pop out
+                                </button>
                                 <button
                                   className="vsc-btn secondary small"
                                   disabled={!project}
@@ -1638,19 +1595,17 @@ export default function App() {
                                       )
                                   }
                                 >
-                                  New Bedrock .geo.json
+                                  <span className="codicon codicon-add" />
+                                  New .geo.json
                                 </button>
                               </div>
                             </div>
                             <iframe
+                              ref={blockbenchFrameRef}
                               title="Blockbench 3D Studio"
                               src={activeTab.blockbenchUrl}
-                              style={{
-                                flex: 1,
-                                border: "none",
-                                width: "100%",
-                                background: "#1e1e1e",
-                              }}
+                              className="blockbench-frame"
+                              onLoad={() => applyBlockbenchScale()}
                             />
                           </div>
                         )}
@@ -1679,7 +1634,7 @@ export default function App() {
                             className={`bottom-tab-btn ${bottomTab === "terminal" ? "active" : ""}`}
                             onClick={() => setBottomTab("terminal")}
                           >
-                            TERMINAL (PTY / YAZI)
+                            TERMINAL
                           </button>
                         </div>
 
@@ -1815,8 +1770,6 @@ export default function App() {
                         {bottomTab === "terminal" && (
                           <TerminalPanel
                             cwd={project?.source_path ?? null}
-                            launchCommandRequest={ptyLaunchReq}
-                            yaziAvailable={!!fileManagers?.yazi_available}
                             onLog={appendLog}
                           />
                         )}
@@ -1886,7 +1839,7 @@ export default function App() {
               }}
             >
               <span className="codicon codicon-folder" />
-              FM: {fileManagers.yazi_available ? "yazi +" : ""} {fileManagers.primary}
+              {fileManagers.primary}
             </span>
           )}
           <span
@@ -1897,7 +1850,7 @@ export default function App() {
             }}
           >
             <span className="codicon codicon-terminal" />
-            Terminal / Yazi
+            Terminal
           </span>
         </div>
       </div>
@@ -1916,6 +1869,23 @@ export default function App() {
               `Created ${snap.edition_label} project '${snap.pack_name}'`,
             );
           }}
+        />
+      )}
+
+      {importModal && project && (
+        <ImportAssetsModal
+          project={project}
+          initialTargetDir={importModal.dir}
+          autoSanitize={settings.autoSanitizeImports}
+          convertImagesToPng={settings.convertImportedImagesToPng}
+          onToggleAutoSanitize={(value) =>
+            setSettings((s) => ({ ...s, autoSanitizeImports: value }))
+          }
+          onToggleConvertImagesToPng={(value) =>
+            setSettings((s) => ({ ...s, convertImportedImagesToPng: value }))
+          }
+          onClose={() => setImportModal(null)}
+          onImport={handleImportPaths}
         />
       )}
 
