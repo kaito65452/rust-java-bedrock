@@ -319,7 +319,7 @@ fn parse_snippets_file(
     let Ok(raw) = fs::read_to_string(path) else {
         return Vec::new();
     };
-    let Ok(val) = rp_core::parse_minecraft_json(&raw) else {
+    let Ok(val) = rp_core::parse_minecraft_json::<serde_json::Value>(raw.as_bytes()) else {
         return Vec::new();
     };
     let Some(obj) = val.as_object() else {
@@ -436,7 +436,7 @@ fn load_installed_extension_from_dir(
                 if !rel_clean.is_empty()
                     && !rel_clean.contains("..")
                     && let Ok(schema_txt) = fs::read_to_string(ext_root.join(rel_clean))
-                    && let Ok(schema_val) = rp_core::parse_minecraft_json(&schema_txt)
+                    && let Ok(schema_val) = rp_core::parse_minecraft_json::<serde_json::Value>(schema_txt.as_bytes())
                 {
                     schemas.push(ExtensionJsonSchemaDto {
                         uri: format!("packstudio://ext/{id}/schema-{idx}.json"),

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -226,7 +226,7 @@ pub fn builtin_minecraft_diagnostics(
     let lower = rel_path.to_ascii_lowercase();
 
     if lower.ends_with(".json") || lower.ends_with(".mcmeta") {
-        match parse_minecraft_json(content) {
+        match parse_minecraft_json::<Value>(content.as_bytes()) {
             Err(err) => {
                 out.push(LspDiagnosticDto {
                     server_id: String::from("builtin.minecraft-rp"),
