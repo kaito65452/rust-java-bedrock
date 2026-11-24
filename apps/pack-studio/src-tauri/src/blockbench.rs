@@ -22,6 +22,41 @@ use crate::state::{ActivePackState, StudioState};
 const EMBEDDED_BLOCKBENCH_ARCHIVE: &[u8] =
     include_bytes!("../../../../assets/vendor/blockbench-web.tar.zst");
 
+/// Always-current PackStudio <-> Blockbench bridge served directly from `BlockbenchServer`
+/// so stale cached `blockbench-web.tar.zst` extractions never run outdated bridge code.
+const EMBEDDED_STUDIO_BRIDGE_JS: &str = include_str!("../../../../scripts/studio_bridge.js");
+
+/// Injected into Blockbench's `index.html` just before `</head>` to apply compact UI overrides
+/// and wire up the `ps_set_zoom` / `ps_set_compact` postMessage API.
+const BLOCKBENCH_COMPACT_INJECTION: &str = r#"<style>
+/* PackStudio Compact Blockbench Overrides */
+html, body { zoom: 0.84 !important; }
+#work_screen { --toolbar-height: 32px !important; grid-template-columns: 280px auto 260px !important; }
+#tab_bar { height: 28px !important; min-height: 28px !important; }
+.toolbar { height: 28px !important; min-height: 28px !important; }
+:root { --status-bar-height: 20px !important; }
+/* Thinner scrollbars */
+* { scrollbar-width: thin !important; }
+::-webkit-scrollbar { width: 6px !important; height: 6px !important; }
+</style>
+<script>
+(function () {
+    window.addEventListener('message', function (event) {
+        var data = event.data;
+        if (!data || typeof data !== 'object') return;
+        if (data.type === 'ps_set_zoom') {
+            document.documentElement.style.zoom = data.zoom;
+        } else if (data.type === 'ps_set_compact') {
+            if (data.compact) {
+                document.body.classList.add('ps-compact');
+            } else {
+                document.body.classList.remove('ps-compact');
+            }
+        }
+    });
+})();
+</script>"#;
+
 /// Result returned by Blockbench archive extraction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractOutcome {
@@ -341,6 +376,7 @@ struct ServerShared {
     token: String,
     project_root: Mutex<Option<PathBuf>>,
     pending_commands: Mutex<VecDeque<StudioToBlockbenchCommand>>,
+    last_open_model: Mutex<Option<StudioToBlockbenchCommand>>,
     on_save: SaveCallback,
     shutdown: AtomicBool,
 }
@@ -369,6 +405,7 @@ impl BlockbenchServer {
             token: token.clone(),
             project_root: Mutex::new(initial_project_root),
             pending_commands: Mutex::new(VecDeque::new()),
+            last_open_model: Mutex::new(None),
             on_save,
             shutdown: AtomicBool::new(false),
         });
@@ -420,6 +457,11 @@ impl BlockbenchServer {
     }
 
     pub fn push_command(&self, cmd: StudioToBlockbenchCommand) {
+        if matches!(cmd, StudioToBlockbenchCommand::OpenModel { .. })
+            && let Ok(mut last) = self.shared.last_open_model.lock()
+        {
+            *last = Some(cmd.clone());
+        }
         if let Ok(mut guard) = self.shared.pending_commands.lock() {
             guard.push_back(cmd);
         }
@@ -833,18 +875,47 @@ fn handle_websocket_session(
     stream.flush()?;
 
     let _ = stream.set_nonblocking(true);
+
+    // If a fresh WebSocket connects while no commands are queued, replay the last
+    // OpenModel command so an iframe reload never lands empty on the Home screen.
+    let replay_cmd = {
+        let queue_empty = shared
+            .pending_commands
+            .lock()
+            .map(|q| q.is_empty())
+            .unwrap_or(true);
+        if queue_empty {
+            shared.last_open_model.lock().ok().and_then(|g| g.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(cmd) = replay_cmd
+        && let Ok(json) = serde_json::to_string(&cmd)
+        && write_ws_text_frame(&mut stream, json.as_bytes()).is_err()
+    {
+        return Ok(());
+    }
+
     let mut ping_buf = [0u8; 64];
     while !shared.shutdown.load(Ordering::Relaxed) {
-        let cmds: Vec<StudioToBlockbenchCommand> = shared
+        let mut cmds: VecDeque<StudioToBlockbenchCommand> = shared
             .pending_commands
             .lock()
             .map(|mut q| q.drain(..).collect())
             .unwrap_or_default();
 
-        for cmd in cmds {
+        while let Some(cmd) = cmds.pop_front() {
             if let Ok(json) = serde_json::to_string(&cmd)
                 && write_ws_text_frame(&mut stream, json.as_bytes()).is_err()
             {
+                // Re-queue unsent commands in FIFO order so a dying/stale socket never drops them.
+                if let Ok(mut q) = shared.pending_commands.lock() {
+                    for remaining in cmds.into_iter().rev() {
+                        q.push_front(remaining);
+                    }
+                    q.push_front(cmd);
+                }
                 return Ok(());
             }
         }
@@ -902,19 +973,34 @@ fn serve_static_file(
         }
     }
 
-    let full = web_root.join(&clean);
-    if !full.is_file() {
-        write_http_response(stream, 404, "text/plain", b"Not Found")?;
-        return Ok(());
-    }
+    let is_bridge_js = clean.to_string_lossy() == "studio_bridge.js";
+    let (bytes, mime, cache_control) = if is_bridge_js {
+        (
+            EMBEDDED_STUDIO_BRIDGE_JS.as_bytes().to_vec(),
+            "application/javascript; charset=utf-8",
+            "no-store",
+        )
+    } else {
+        let full = web_root.join(&clean);
+        if !full.is_file() {
+            write_http_response(stream, 404, "text/plain", b"Not Found")?;
+            return Ok(());
+        }
 
-    let bytes = fs::read(&full)?;
-    let mime = mime_for_path(&full);
+        if clean.to_string_lossy() == "index.html" {
+            let raw = fs::read(&full)?;
+            let html = String::from_utf8_lossy(&raw);
+            let injected = inject_compact_overrides(&html);
+            (injected.into_bytes(), "text/html; charset=utf-8", "no-store")
+        } else {
+            (fs::read(&full)?, mime_for_path(&full), "public, max-age=3600")
+        }
+    };
     let header = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: {mime}\r\n\
          Content-Length: {}\r\n\
-         Cache-Control: public, max-age=3600\r\n\
+         Cache-Control: {cache_control}\r\n\
          Access-Control-Allow-Origin: *\r\n\
          Connection: close\r\n\r\n",
         bytes.len()
@@ -1024,6 +1110,16 @@ pub fn mime_for_path(path: &Path) -> &'static str {
     }
 }
 
+/// Injects `BLOCKBENCH_COMPACT_INJECTION` just before the first `</head>` in `html`.
+/// Returns the modified string; if `</head>` is absent the original is returned unchanged.
+fn inject_compact_overrides(html: &str) -> String {
+    html.replacen(
+        "</head>",
+        &format!("{}\n</head>", BLOCKBENCH_COMPACT_INJECTION),
+        1,
+    )
+}
+
 fn compute_ws_accept_key(client_key: &str) -> String {
     const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     let mut msg = Vec::with_capacity(client_key.len() + GUID.len());
@@ -1097,4 +1193,42 @@ fn sha1_digest(input: &[u8]) -> [u8; 20] {
     out[12..16].copy_from_slice(&h3.to_be_bytes());
     out[16..20].copy_from_slice(&h4.to_be_bytes());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inject_compact_css() {
+        let fake_html = "<html><head><title>Blockbench</title></head><body></body></html>";
+        let result = inject_compact_overrides(fake_html);
+        // Should have injected before </head>
+        assert!(
+            result.contains("ps_set_zoom"),
+            "injection should contain ps_set_zoom listener"
+        );
+        assert!(
+            result.contains("zoom: 0.84 !important"),
+            "injection should contain zoom: 0.84 !important CSS"
+        );
+        assert!(
+            result.contains("0.84"),
+            "injection should reference 0.84 zoom value in JS"
+        );
+        // Should still have </head> after injection
+        assert!(result.contains("</head>"), "output should still contain </head>");
+        // The injection should appear BEFORE </head>
+        let inj_pos = result.find("ps_set_zoom").unwrap();
+        let head_pos = result.find("</head>").unwrap();
+        assert!(inj_pos < head_pos, "injection should come before </head>");
+    }
+
+    #[test]
+    fn test_inject_compact_css_no_head() {
+        // If there's no </head>, the string is returned unchanged.
+        let no_head = "<html><body>no head here</body></html>";
+        let result = inject_compact_overrides(no_head);
+        assert_eq!(result, no_head, "without </head> the HTML should be unchanged");
+    }
 }

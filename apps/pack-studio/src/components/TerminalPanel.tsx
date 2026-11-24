@@ -7,28 +7,17 @@ import type { PtyDataEvent, PtyExitEvent } from "../types";
 
 interface TerminalPanelProps {
   cwd: string | null;
-  launchCommandRequest?: { nonce: number; cmdOpt: string | null; cwd?: string | null };
-  yaziAvailable: boolean;
   onLog: (level: "info" | "warn" | "error" | "success", msg: string) => void;
 }
 
-export const TerminalPanel: React.FC<TerminalPanelProps> = ({
-  cwd,
-  launchCommandRequest,
-  yaziAvailable,
-  onLog,
-}) => {
+export const TerminalPanel: React.FC<TerminalPanelProps> = ({ cwd, onLog }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<number | null>(null);
-  const [activeCmd, setActiveCmd] = useState<string>("$SHELL");
   const [alive, setAlive] = useState(false);
 
-  const spawnSession = async (
-    cmdOpt: string | null,
-    overrideCwd?: string | null,
-  ) => {
+  const spawnSession = async (overrideCwd?: string | null) => {
     if (sessionIdRef.current !== null) {
       const oldId = sessionIdRef.current;
       sessionIdRef.current = null;
@@ -42,15 +31,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     const rows = Math.max(6, term.rows);
     term.reset();
     try {
-      const sid = await api.ptySpawn(
-        overrideCwd ?? cwd,
-        cols,
-        rows,
-        cmdOpt,
-      );
+      const sid = await api.ptySpawn(overrideCwd ?? cwd, cols, rows, null);
       sessionIdRef.current = sid;
       setAlive(true);
-      setActiveCmd(cmdOpt ?? "$SHELL");
       term.focus();
     } catch (e) {
       setAlive(false);
@@ -66,9 +49,11 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     const term = new Terminal({
       cursorBlink: true,
       fontFamily: "var(--font-mono)",
-      fontSize: 13,
+      fontSize: 12,
+      lineHeight: 1.2,
+      scrollback: 5000,
       theme: {
-        background: "#1e1e1e",
+        background: "#1b1b1d",
         foreground: "#cccccc",
         cursor: "#ffffff",
         selectionBackground: "#264f78",
@@ -108,7 +93,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     });
     ro.observe(el);
 
-    void spawnSession(null, cwd);
+    void spawnSession(cwd);
 
     return () => {
       ro.disconnect();
@@ -125,69 +110,74 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     };
   }, []);
 
-  useEffect(() => {
-    if (!launchCommandRequest || launchCommandRequest.nonce === 0) return;
-    void spawnSession(
-      launchCommandRequest.cmdOpt,
-      launchCommandRequest.cwd ?? cwd,
-    );
-  }, [launchCommandRequest?.nonce]);
-
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <div
         style={{
-          height: 28,
-          padding: "0 10px",
-          background: "#1e1e1e",
+          height: 26,
+          padding: "0 9px",
+          background: "#18181a",
           borderBottom: "1px solid var(--vsc-border)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          fontSize: 11,
+          fontSize: 10.5,
+          flexShrink: 0,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            minWidth: 0,
+          }}
+        >
           <span
             style={{
-              width: 7,
-              height: 7,
+              width: 6,
+              height: 6,
               borderRadius: "50%",
               background: alive ? "var(--vsc-ok)" : "var(--vsc-warn)",
+              flexShrink: 0,
             }}
           />
-          <span>PTY Session: {activeCmd}</span>
+          <span style={{ color: "var(--vsc-text-dim)" }}>Shell</span>
           {cwd && (
-            <span style={{ color: "var(--vsc-text-dim)", fontFamily: "var(--font-mono)" }}>
-              ({cwd})
+            <span
+              className="path-hint"
+              style={{ maxWidth: 420 }}
+              title={cwd}
+            >
+              {cwd}
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 5 }}>
           <button
-            className="vsc-btn secondary small"
-            onClick={() => void spawnSession("yazi", cwd)}
-            title={
-              yaziAvailable
-                ? "Launch Yazi TUI File Manager inside PTY"
-                : "Attempt launching yazi in PTY"
-            }
+            className="icon-btn"
+            title="Clear terminal"
+            onClick={() => termRef.current?.clear()}
           >
-            <span className="codicon codicon-folder" />
-            Launch Yazi
+            <span className="codicon codicon-clear-all" />
           </button>
           <button
-            className="vsc-btn secondary small"
-            onClick={() => void spawnSession(null, cwd)}
+            className="icon-btn"
+            title="Restart shell"
+            onClick={() => void spawnSession(cwd)}
           >
             <span className="codicon codicon-refresh" />
-            New Shell
           </button>
         </div>
       </div>
       <div
         ref={hostRef}
-        style={{ flex: 1, minHeight: 0, padding: "4px 6px", background: "#1e1e1e" }}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          padding: "4px 6px",
+          background: "#1b1b1d",
+        }}
       />
     </div>
   );

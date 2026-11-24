@@ -72,10 +72,7 @@ export interface ImportResult {
 export interface DetectedFileManagers {
   primary: string;
   available: string[];
-  yazi_available: boolean;
-  yazi_path: string | null;
   terminal_emulator: string | null;
-  yazi_install_hint: string;
 }
 
 export interface PackMetadataDto {
@@ -344,7 +341,6 @@ export interface OutputLogLine {
 
 export interface StudioSettings {
   preferredFileManager: string; // "auto" | binary name
-  useYaziPicker: boolean;
   autoSanitizeImports: boolean;
   convertImportedImagesToPng: boolean;
   defaultTargetResolution: number | null;
@@ -352,4 +348,5 @@ export interface StudioSettings {
   defaultCompositeGrassTga: boolean;
   defaultConvertPbr: boolean;
   externalImageEditor: string;
+  blockbenchUiScale: number;
 }

@@ -306,6 +306,29 @@ export default function App() {
     [],
   );
 
+  const handleOpenBlockbench = useCallback(
+    async (relPath?: string) => {
+      try {
+        const info = relPath
+          ? await api.blockbenchOpenAsset(relPath)
+          : await api.blockbenchStart();
+        openOrFocusTab({
+          id: "tool:blockbench",
+          kind: "blockbench",
+          title: "Blockbench 3D",
+          blockbenchUrl: info.url,
+        });
+        appendLog(
+          "info",
+          `Blockbench web bridge listening on loopback port ${info.port}${relPath ? ` (asset: ${relPath})` : ""}`,
+        );
+      } catch (e) {
+        appendLog("error", `Blockbench launch error: ${String(e)}`);
+      }
+    },
+    [appendLog, openOrFocusTab],
+  );
+
   const openAssetTab = useCallback(
     async (
       relPath: string,
@@ -313,6 +336,10 @@ export default function App() {
       revealLine?: number,
     ) => {
       if (!projectRef.current) return;
+      if (!forceMode && isModelAsset(relPath)) {
+        await handleOpenBlockbench(relPath);
+        return;
+      }
       const mode: "code" | "texture" =
         forceMode ??
         (isImageAsset(relPath)
@@ -346,7 +373,7 @@ export default function App() {
         appendLog("error", `Failed opening '${relPath}': ${String(e)}`);
       }
     },
-    [appendLog, openOrFocusTab],
+    [appendLog, handleOpenBlockbench, openOrFocusTab],
   );
 
   const openProjectByPath = useCallback(
@@ -410,29 +437,6 @@ export default function App() {
   useEffect(() => {
     applyBlockbenchScale();
   }, [applyBlockbenchScale, activeTabId]);
-
-  const handleOpenBlockbench = useCallback(
-    async (relPath?: string) => {
-      try {
-        const info = relPath
-          ? await api.blockbenchOpenAsset(relPath)
-          : await api.blockbenchStart();
-        openOrFocusTab({
-          id: "tool:blockbench",
-          kind: "blockbench",
-          title: "Blockbench 3D",
-          blockbenchUrl: info.url,
-        });
-        appendLog(
-          "info",
-          `Blockbench web bridge listening on loopback port ${info.port}${relPath ? ` (asset: ${relPath})` : ""}`,
-        );
-      } catch (e) {
-        appendLog("error", `Blockbench launch error: ${String(e)}`);
-      }
-    },
-    [appendLog, openOrFocusTab],
-  );
 
   const handleRunAudit = useCallback(async () => {
     if (!projectRef.current) return;
@@ -516,6 +520,8 @@ export default function App() {
   }, [project, searchQuery]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const blockbenchTab =
+    tabs.find((t) => t.kind === "blockbench" && t.blockbenchUrl) ?? null;
 
   const commandActions = useMemo(
     () => [
@@ -1496,9 +1502,16 @@ export default function App() {
                         />
                       )}
 
-                      {activeTab?.kind === "blockbench" &&
-                        activeTab.blockbenchUrl && (
-                          <div className="blockbench-shell">
+                      {blockbenchTab && blockbenchTab.blockbenchUrl && (
+                          <div
+                            className="blockbench-shell"
+                            style={{
+                              display:
+                                activeTab?.kind === "blockbench"
+                                  ? "flex"
+                                  : "none",
+                            }}
+                          >
                             <div className="code-toolbar">
                               <div className="toolbar-group">
                                 <span
@@ -1509,9 +1522,9 @@ export default function App() {
                                 <span
                                   className="path-hint"
                                   style={{ maxWidth: 260 }}
-                                  title={activeTab.blockbenchUrl}
+                                  title={blockbenchTab.blockbenchUrl}
                                 >
-                                  {activeTab.blockbenchUrl}
+                                  {blockbenchTab.blockbenchUrl}
                                 </span>
                               </div>
                               <div className="toolbar-group">
@@ -1568,7 +1581,7 @@ export default function App() {
                                 <button
                                   className="vsc-btn secondary small"
                                   title="Open Blockbench in your browser"
-                                  onClick={() => void openUrl(activeTab.blockbenchUrl!)}
+                                  onClick={() => void openUrl(blockbenchTab.blockbenchUrl!)}
                                 >
                                   <span className="codicon codicon-open-preview" />
                                   Pop out
@@ -1603,7 +1616,7 @@ export default function App() {
                             <iframe
                               ref={blockbenchFrameRef}
                               title="Blockbench 3D Studio"
-                              src={activeTab.blockbenchUrl}
+                              src={blockbenchTab.blockbenchUrl}
                               className="blockbench-frame"
                               onLoad={() => applyBlockbenchScale()}
                             />

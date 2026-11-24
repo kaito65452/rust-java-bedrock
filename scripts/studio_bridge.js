@@ -96,6 +96,35 @@
     }, 100);
   }
 
+  function dismissStartScreenAndEnterEdit() {
+    try {
+      if (window.StartScreen) {
+        if (window.StartScreen.dialog && typeof window.StartScreen.dialog.close === "function") {
+          window.StartScreen.dialog.close();
+        }
+        if (typeof window.StartScreen.close === "function") {
+          window.StartScreen.close();
+        }
+        window.StartScreen.open = false;
+      }
+      if (window.Modes && window.Modes.options && window.Modes.options.edit && typeof window.Modes.options.edit.select === "function") {
+        window.Modes.options.edit.select();
+      }
+    } catch (_) {}
+  }
+
+  function createProgrammaticProject(format) {
+    if (!format) return false;
+    if (typeof window.newProject === "function") {
+      return Boolean(window.newProject(format));
+    }
+    if (typeof format.new === "function") {
+      format.new();
+      return true;
+    }
+    return false;
+  }
+
   function openModelFromStudio(payload) {
     if (!payload) return;
     activeModelPath = payload.path || null;
@@ -103,34 +132,62 @@
 
     try {
       const lower = (payload.path || "").toLowerCase();
-      if (payload.content && (lower.endsWith(".bbmodel") || activeFormatHint === "bbmodel")) {
-        const parsed = JSON.parse(payload.content);
-        if (window.Codecs && window.Codecs.project) {
-          window.Codecs.project.parse(parsed, payload.path);
+      const fileName = (payload.path || "model").split("/").pop() || "model";
+      let loadedViaModelFile = false;
+
+      if (
+        payload.content &&
+        (lower.endsWith(".bbmodel") ||
+          activeFormatHint === "bbmodel" ||
+          lower.endsWith(".geo.json") ||
+          activeFormatHint === "bedrock" ||
+          lower.endsWith(".json") ||
+          activeFormatHint === "java_block")
+      ) {
+        if (typeof window.loadModelFile === "function") {
+          try {
+            window.loadModelFile({
+              content: payload.content,
+              path: payload.path || fileName,
+              name: fileName,
+            });
+            loadedViaModelFile = true;
+          } catch (loadErr) {
+            console.warn("[PackStudio Bridge] loadModelFile fallback:", loadErr);
+          }
         }
-      } else if (payload.content && (lower.endsWith(".geo.json") || activeFormatHint === "bedrock")) {
-        const parsed = JSON.parse(payload.content);
-        if (window.Formats && window.Formats.bedrock) {
-          window.Formats.bedrock.new();
-        }
-        if (window.Codecs && window.Codecs.bedrock) {
-          window.Codecs.bedrock.parse(parsed, payload.path);
-        }
-      } else if (payload.content && (lower.endsWith(".json") || activeFormatHint === "java_block")) {
-        const parsed = JSON.parse(payload.content);
-        if (window.Formats && window.Formats.java_block) {
-          window.Formats.java_block.new();
-        }
-        if (window.Codecs && window.Codecs.java_block) {
-          window.Codecs.java_block.parse(parsed, payload.path);
+
+        if (!loadedViaModelFile) {
+          const parsed = JSON.parse(payload.content);
+          if (lower.endsWith(".bbmodel") || activeFormatHint === "bbmodel") {
+            if (window.Codecs && window.Codecs.project) {
+              if (typeof window.Codecs.project.load === "function") {
+                window.Codecs.project.load(parsed, {
+                  path: payload.path || fileName,
+                  name: fileName,
+                });
+              } else {
+                window.Codecs.project.parse(parsed, payload.path);
+              }
+            }
+          } else if (lower.endsWith(".geo.json") || activeFormatHint === "bedrock") {
+            createProgrammaticProject(window.Formats && window.Formats.bedrock);
+            if (window.Codecs && window.Codecs.bedrock) {
+              window.Codecs.bedrock.parse(parsed, payload.path);
+            }
+          } else if (lower.endsWith(".json") || activeFormatHint === "java_block") {
+            createProgrammaticProject(window.Formats && window.Formats.java_block);
+            if (window.Codecs && window.Codecs.java_block) {
+              window.Codecs.java_block.parse(parsed, payload.path);
+            }
+          }
         }
       } else if (payload.textures && payload.textures.length > 0 && lower.endsWith(".png")) {
         // Open texture directly in Blockbench 2D/Paint mode
-        if (window.Formats && window.Formats.image) {
-          window.Formats.image.new();
-        } else if (window.Formats && window.Formats.free) {
-          window.Formats.free.new();
-        }
+        createProgrammaticProject(
+          (window.Formats && window.Formats.image) ||
+            (window.Formats && window.Formats.free)
+        );
       }
 
       if (Array.isArray(payload.textures) && window.Texture) {
@@ -144,6 +201,8 @@
           t.add(false);
         }
       }
+
+      dismissStartScreenAndEnterEdit();
 
       if (window.Project && activeModelPath) {
         window.Project.__packStudioPath = activeModelPath;
@@ -162,9 +221,8 @@
     activeModelPath = targetPath;
     activeFormatHint = "bedrock";
     try {
-      if (window.Formats && window.Formats.bedrock) {
-        window.Formats.bedrock.new();
-      }
+      createProgrammaticProject(window.Formats && window.Formats.bedrock);
+      dismissStartScreenAndEnterEdit();
       if (window.Project) {
         window.Project.geometry_name = geoId;
         window.Project.name = geoId.replace(/^geometry\./, "");

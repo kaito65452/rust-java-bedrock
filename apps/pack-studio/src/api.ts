@@ -74,9 +74,6 @@ export const api = {
   detectFileManagers: () =>
     invoke<DetectedFileManagers>("detect_file_managers"),
 
-  pickWithYazi: (startDir?: string | null) =>
-    invoke<string[]>("pick_with_yazi", { startDir: startDir ?? null }),
-
   revealInFileManager: (path: string, managerOverride?: string | null) =>
     invoke<void>("reveal_in_file_manager", {
       path,

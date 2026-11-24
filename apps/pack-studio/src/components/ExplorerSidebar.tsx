@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ConversionWarning,
   FileTreeNodeDto,
@@ -25,12 +25,11 @@ interface ExplorerSidebarProps {
   onCreateBlankTexture: (targetDir: string) => void;
   onRenameNode: (oldRelPath: string, newName: string, isDir: boolean) => void;
   onDeleteNode: (relPath: string) => void;
-  onImportFiles: (targetDir: string) => void;
+  onRequestImport: (targetDir: string) => void;
   onOpenProjectPrompt: () => void;
   onOpenNewWizard: () => void;
   onRefreshProject: () => void;
   onRevealPath: (relPath: string) => void;
-  onLaunchYazi: (relPath?: string) => void;
   onToast: (msg: string) => void;
 }
 
@@ -80,17 +79,15 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
   onCreateBlankTexture,
   onRenameNode,
   onDeleteNode,
-  onImportFiles,
+  onRequestImport,
   onOpenProjectPrompt,
   onOpenNewWizard,
   onRefreshProject,
   onRevealPath,
-  onLaunchYazi,
   onToast,
 }) => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     assets: true,
-    "assets/minecraft": true,
     textures: true,
     models: true,
   });
@@ -102,9 +99,14 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
   >(null);
   const [inlineValue, setInlineValue] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [newMenu, setNewMenu] = useState<{ x: number; y: number } | null>(null);
+  const newButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    const close = () => setContextMenu(null);
+    const close = () => {
+      setContextMenu(null);
+      setNewMenu(null);
+    };
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
   }, []);
@@ -143,6 +145,15 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
     setExpanded((prev) => ({ ...prev, [relPath]: !prev[relPath] }));
   };
 
+  const startInline = (kind: "new_file" | "new_dir", parentDir: string) => {
+    setInlineValue("");
+    setInlineMode({ kind, parentDir });
+    if (parentDir) {
+      setExpanded((prev) => ({ ...prev, [parentDir]: true }));
+      onSelectPath(parentDir);
+    }
+  };
+
   const commitInline = () => {
     const val = inlineValue.trim();
     if (!inlineMode || !val) {
@@ -167,6 +178,37 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
     setInlineValue("");
   };
 
+  const openNewMenu = () => {
+    const rect = newButtonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setNewMenu({ x: rect.left - 140, y: rect.bottom + 4 });
+  };
+
+  const renderInlineInput = (_parentDir: string, depth: number) => (
+    <div className="tree-row" style={{ paddingLeft: `${10 + depth * 13}px` }}>
+      <span
+        className={`codicon ${
+          inlineMode?.kind === "new_dir" ? "codicon-folder" : "codicon-new-file"
+        }`}
+      />
+      <input
+        className="vsc-input"
+        style={{ flex: 1, padding: "1px 5px", height: 20 }}
+        autoFocus
+        placeholder={
+          inlineMode?.kind === "new_dir" ? "folder_name" : "asset_name.json"
+        }
+        value={inlineValue}
+        onChange={(e) => setInlineValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commitInline();
+          if (e.key === "Escape") setInlineMode(null);
+        }}
+        onBlur={commitInline}
+      />
+    </div>
+  );
+
   const renderNodes = (nodes: FileTreeNodeDto[], depth: number) =>
     nodes.map((node) => {
       const isExpanded =
@@ -181,7 +223,7 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
         <React.Fragment key={node.rel_path}>
           <div
             className={`tree-row ${isSelected ? "selected" : ""}`}
-            style={{ paddingLeft: `${8 + depth * 14}px` }}
+            style={{ paddingLeft: `${7 + depth * 13}px` }}
             onClick={() => {
               onSelectPath(node.rel_path);
               if (node.is_dir) {
@@ -203,10 +245,10 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                 className={`codicon ${
                   isExpanded ? "codicon-chevron-down" : "codicon-chevron-right"
                 }`}
-                style={{ fontSize: 12, color: "#9da5b4" }}
+                style={{ fontSize: 11, color: "#8f96a3" }}
               />
             ) : (
-              <span style={{ width: 12 }} />
+              <span style={{ width: 11, flexShrink: 0 }} />
             )}
             <span
               className={`codicon ${fileIconClass(
@@ -255,37 +297,8 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
               {inlineMode &&
                 (inlineMode.kind === "new_file" ||
                   inlineMode.kind === "new_dir") &&
-                inlineMode.parentDir === node.rel_path && (
-                  <div
-                    className="tree-row"
-                    style={{ paddingLeft: `${22 + depth * 14}px` }}
-                  >
-                    <span
-                      className={`codicon ${
-                        inlineMode.kind === "new_dir"
-                          ? "codicon-folder"
-                          : "codicon-new-file"
-                      }`}
-                    />
-                    <input
-                      className="vsc-input"
-                      style={{ flex: 1, padding: "1px 5px", height: 20 }}
-                      autoFocus
-                      placeholder={
-                        inlineMode.kind === "new_dir"
-                          ? "folder_name"
-                          : "asset_name.json"
-                      }
-                      value={inlineValue}
-                      onChange={(e) => setInlineValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commitInline();
-                        if (e.key === "Escape") setInlineMode(null);
-                      }}
-                      onBlur={commitInline}
-                    />
-                  </div>
-                )}
+                inlineMode.parentDir === node.rel_path &&
+                renderInlineInput(node.rel_path, depth + 1)}
               {renderNodes(node.children, depth + 1)}
             </>
           )}
@@ -296,150 +309,180 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
   return (
     <div className="sidebar-pane">
       <div className="sidebar-header">
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {project ? project.pack_name : "EXPLORER"}
+        <span className="sidebar-title">
+          Explorer
+          {project ? (
+            <span className="sidebar-subtitle">{project.pack_name}</span>
+          ) : null}
         </span>
         <div className="sidebar-actions">
           <button
-            className="icon-btn"
-            title="New File in Selection"
+            ref={newButtonRef}
+            className={`icon-btn ${newMenu ? "active" : ""}`}
+            title="New file, folder or texture"
             disabled={!project}
-            onClick={() => {
-              setInlineValue("");
-              setInlineMode({ kind: "new_file", parentDir: activeTargetDir });
-              if (activeTargetDir) {
-                setExpanded((prev) => ({ ...prev, [activeTargetDir]: true }));
-              }
+            onClick={(e) => {
+              e.stopPropagation();
+              if (newMenu) setNewMenu(null);
+              else openNewMenu();
             }}
           >
-            <span className="codicon codicon-new-file" />
+            <span className="codicon codicon-add" />
           </button>
           <button
             className="icon-btn"
-            title="New Folder in Selection"
+            title="Import assets into the selected folder"
             disabled={!project}
-            onClick={() => {
-              setInlineValue("");
-              setInlineMode({ kind: "new_dir", parentDir: activeTargetDir });
-              if (activeTargetDir) {
-                setExpanded((prev) => ({ ...prev, [activeTargetDir]: true }));
-              }
-            }}
-          >
-            <span className="codicon codicon-new-folder" />
-          </button>
-          <button
-            className="icon-btn"
-            title="Import Assets (Sanitized / PNG Convert)"
-            disabled={!project}
-            onClick={() => onImportFiles(activeTargetDir)}
+            onClick={() => onRequestImport(activeTargetDir)}
           >
             <span className="codicon codicon-cloud-upload" />
           </button>
           <button
             className="icon-btn"
-            title="New Blank Texture (PNG)"
-            disabled={!project}
-            onClick={() => onCreateBlankTexture(activeTargetDir)}
-          >
-            <span className="codicon codicon-file-media" />
-          </button>
-          <button
-            className="icon-btn"
-            title="Refresh Explorer"
+            title="Refresh explorer"
             disabled={!project}
             onClick={onRefreshProject}
           >
             <span className="codicon codicon-refresh" />
           </button>
-          <button
-            className="icon-btn"
-            title="Open Folder / Archive..."
-            onClick={onOpenProjectPrompt}
-          >
-            <span className="codicon codicon-folder-opened" />
-          </button>
         </div>
       </div>
 
       {!project ? (
-        <div className="panel-scroll" style={{ padding: 14 }}>
-          <p style={{ color: "var(--vsc-text-dim)", marginTop: 0 }}>
-            No resource pack open yet. Open an existing folder / <code>.zip</code> / <code>.mcpack</code> or scaffold a fresh workspace.
-          </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <button className="vsc-btn" onClick={onOpenProjectPrompt}>
-              <span className="codicon codicon-folder-opened" />
-              Open Pack Folder / Archive
-            </button>
-            <button className="vsc-btn secondary" onClick={onOpenNewWizard}>
-              <span className="codicon codicon-add" />
-              New Resource Pack Wizard...
-            </button>
-            <button
-              className="vsc-btn secondary"
-              onClick={() => onLaunchYazi()}
+        <div className="panel-scroll" style={{ padding: 16 }}>
+          <div className="empty-state" style={{ padding: "18px 6px" }}>
+            <span className="codicon codicon-files" />
+            <h3>No pack open</h3>
+            <p>
+              Open a resource pack folder, a .zip / .mcpack, or create a new
+              project.
+            </p>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 7,
+                width: "100%",
+                marginTop: 4,
+              }}
             >
-              <span className="codicon codicon-terminal" />
-              Browse with Yazi (TUI)
-            </button>
+              <button className="vsc-btn" onClick={onOpenProjectPrompt}>
+                <span className="codicon codicon-folder-opened" />
+                Open folder or archive
+              </button>
+              <button className="vsc-btn secondary" onClick={onOpenNewWizard}>
+                <span className="codicon codicon-add" />
+                New resource pack
+              </button>
+            </div>
+            <p style={{ marginTop: 8 }}>
+              Tip: you can also drag a folder or .zip onto the window.
+            </p>
           </div>
         </div>
       ) : (
         <>
           <div className="tree-filter-bar">
-            <input
-              className="vsc-input"
-              style={{ flex: 1, fontSize: 12 }}
-              placeholder="Filter assets by path..."
-              value={filterText}
-              onChange={(e) => onFilterTextChange(e.target.value)}
-            />
-            {filterText && (
-              <button
-                className="icon-btn"
-                title="Clear Filter"
-                onClick={() => onFilterTextChange("")}
-              >
-                <span className="codicon codicon-close" />
-              </button>
-            )}
+            <div className="filter-field">
+              <span className="codicon codicon-search" />
+              <input
+                className="vsc-input"
+                placeholder="Filter assets..."
+                value={filterText}
+                spellCheck={false}
+                onChange={(e) => onFilterTextChange(e.target.value)}
+              />
+              {filterText && (
+                <button
+                  className="icon-btn filter-clear"
+                  title="Clear filter"
+                  onClick={() => onFilterTextChange("")}
+                >
+                  <span className="codicon codicon-close" />
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="tree-scroll">
             {inlineMode &&
               (inlineMode.kind === "new_file" || inlineMode.kind === "new_dir") &&
-              inlineMode.parentDir === "" && (
-                <div className="tree-row" style={{ paddingLeft: "20px" }}>
-                  <span
-                    className={`codicon ${
-                      inlineMode.kind === "new_dir"
-                        ? "codicon-folder"
-                        : "codicon-new-file"
-                    }`}
-                  />
-                  <input
-                    className="vsc-input"
-                    style={{ flex: 1, padding: "1px 5px", height: 20 }}
-                    autoFocus
-                    placeholder={
-                      inlineMode.kind === "new_dir"
-                        ? "folder_name"
-                        : "new_file.json"
-                    }
-                    value={inlineValue}
-                    onChange={(e) => setInlineValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitInline();
-                      if (e.key === "Escape") setInlineMode(null);
-                    }}
-                    onBlur={commitInline}
-                  />
-                </div>
-              )}
+              inlineMode.parentDir === "" &&
+              renderInlineInput("", 0)}
             {renderNodes(filteredNodes, 0)}
+            {filteredNodes.length === 0 && (
+              <div className="tree-empty">
+                No files match “{filterText}”.
+              </div>
+            )}
+          </div>
+
+          <div className="explorer-footer" title="Drag files onto the workbench to import them">
+            <span className="codicon codicon-cloud-upload" />
+            Drop files anywhere to import
           </div>
         </>
+      )}
+
+      {newMenu && project && (
+        <div
+          className="menu-popover"
+          style={{ left: Math.max(8, newMenu.x), top: newMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="menu-heading">Create</div>
+          <div
+            className="menu-item"
+            onClick={() => {
+              startInline("new_file", activeTargetDir);
+              setNewMenu(null);
+            }}
+          >
+            <span className="codicon codicon-new-file" />
+            New file
+          </div>
+          <div
+            className="menu-item"
+            onClick={() => {
+              startInline("new_dir", activeTargetDir);
+              setNewMenu(null);
+            }}
+          >
+            <span className="codicon codicon-new-folder" />
+            New folder
+          </div>
+          <div
+            className="menu-item"
+            onClick={() => {
+              onCreateBlankTexture(activeTargetDir);
+              setNewMenu(null);
+            }}
+          >
+            <span className="codicon codicon-file-media" />
+            Blank PNG texture
+          </div>
+          <div className="menu-sep" />
+          <div
+            className="menu-item"
+            onClick={() => {
+              onRequestImport(activeTargetDir);
+              setNewMenu(null);
+            }}
+          >
+            <span className="codicon codicon-cloud-upload" />
+            Import assets here
+          </div>
+          <div
+            className="menu-item"
+            onClick={() => {
+              setExpanded({});
+              setNewMenu(null);
+            }}
+          >
+            <span className="codicon codicon-collapse-all" />
+            Collapse all folders
+          </div>
+        </div>
       )}
 
       {contextMenu && project && (
@@ -458,7 +501,7 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                 }}
               >
                 <span className="codicon codicon-go-to-file" />
-                Open in Editor
+                Open in editor
               </div>
               {isImageAsset(contextMenu.node.rel_path) && (
                 <div
@@ -469,7 +512,7 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                   }}
                 >
                   <span className="codicon codicon-paintcan" />
-                  Edit in 2D Texture Paint
+                  Edit in 2D texture paint
                 </div>
               )}
               {(isModelAsset(contextMenu.node.rel_path) ||
@@ -482,7 +525,7 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                   }}
                 >
                   <span className="codicon codicon-preview" />
-                  Edit in Blockbench (3D & Paint)
+                  Edit in Blockbench
                 </div>
               )}
               {contextMenu.node.rel_path.endsWith(".json") ||
@@ -495,7 +538,7 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                   }}
                 >
                   <span className="codicon codicon-code" />
-                  Open as JSON Source
+                  Open as JSON source
                 </div>
               ) : null}
               <div className="context-sep" />
@@ -509,24 +552,33 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                 onClick={() => {
                   const target = contextMenu.node.rel_path;
                   setContextMenu(null);
-                  setInlineValue("");
-                  setInlineMode({ kind: "new_file", parentDir: target });
-                  setExpanded((prev) => ({ ...prev, [target]: true }));
+                  startInline("new_file", target);
                 }}
               >
                 <span className="codicon codicon-new-file" />
-                New File Here...
+                New file here
               </div>
               <div
                 className="context-item"
                 onClick={() => {
                   const target = contextMenu.node.rel_path;
                   setContextMenu(null);
-                  onImportFiles(target);
+                  startInline("new_dir", target);
+                }}
+              >
+                <span className="codicon codicon-new-folder" />
+                New folder here
+              </div>
+              <div
+                className="context-item"
+                onClick={() => {
+                  const target = contextMenu.node.rel_path;
+                  setContextMenu(null);
+                  onRequestImport(target);
                 }}
               >
                 <span className="codicon codicon-cloud-upload" />
-                Import Assets Here...
+                Import assets here
               </div>
               <div className="context-sep" />
             </>
@@ -540,12 +592,12 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                 project.edition,
               );
               void navigator.clipboard.writeText(id);
-              onToast(`Copied Resource ID: ${id}`);
+              onToast(`Copied resource ID: ${id}`);
               setContextMenu(null);
             }}
           >
             <span className="codicon codicon-copy" />
-            Copy Minecraft Resource ID
+            Copy Minecraft resource ID
           </div>
 
           <div
@@ -556,18 +608,7 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
             }}
           >
             <span className="codicon codicon-folder-opened" />
-            Reveal in File Manager
-          </div>
-
-          <div
-            className="context-item"
-            onClick={() => {
-              onLaunchYazi(contextMenu.node.rel_path);
-              setContextMenu(null);
-            }}
-          >
-            <span className="codicon codicon-terminal" />
-            Open Folder in Yazi (PTY)
+            Reveal in file manager
           </div>
 
           <div className="context-sep" />

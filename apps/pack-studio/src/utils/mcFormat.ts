@@ -175,11 +175,14 @@ export function isTextCodeAsset(relPath: string): boolean {
 }
 
 export function isModelAsset(relPath: string): boolean {
-  const lower = relPath.toLowerCase();
+  const normalized = relPath.toLowerCase().replace(/^\/+/, "");
   return (
-    lower.endsWith(".geo.json") ||
-    lower.endsWith(".bbmodel") ||
-    (lower.endsWith(".json") && lower.includes("/models/"))
+    normalized.endsWith(".geo.json") ||
+    normalized.endsWith(".bbmodel") ||
+    normalized.endsWith(".jem") ||
+    normalized.endsWith(".jpm") ||
+    (normalized.endsWith(".json") &&
+      (normalized.startsWith("models/") || normalized.includes("/models/")))
   );
 }
 
