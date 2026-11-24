@@ -708,7 +708,7 @@ fn lookup_texture_in_container<'a>(
     ];
     for cand in &candidates {
         if let Some(bytes) = container.get(cand) {
-            return Some((cand.clone(), bytes.as_slice()));
+            return Some((cand.clone(), bytes));
         }
     }
     let lower_cands: Vec<String> = candidates.iter().map(|c| c.to_ascii_lowercase()).collect();
@@ -734,7 +734,7 @@ fn collect_associated_textures(
         && !lower_model.ends_with(".geo.json")
         && let Some(raw) = model_content
     {
-        let stripped = rp_core::strip_jsonc(raw);
+        let stripped = rp_core::sanitize_minecraft_json(raw);
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stripped)
             && let Some(tex_map) = val.get("textures").and_then(serde_json::Value::as_object)
         {
