@@ -468,6 +468,72 @@ export default function App() {
     }
   }, [appendLog]);
 
+  const [buildingPstdr, setBuildingPstdr] = useState(false);
+
+  const hasPstdrWorkspace = useMemo(
+    () =>
+      project?.pack_type === "bedrock_addon" &&
+      project.all_files.some((f) => f.toLowerCase().endsWith(".pstdr")),
+    [project],
+  );
+
+  const handleCheckPstdr = useCallback(async () => {
+    if (!projectRef.current) return;
+    appendLog("info", "Checking .pstdr workspace sources...");
+    try {
+      const res = await api.pstdrCheckWorkspace();
+      setProblems(res.problems);
+      setBottomOpen(true);
+      setBottomTab(res.error_count > 0 ? "problems" : "output");
+      appendLog(
+        res.success ? "success" : "error",
+        `${res.summary} (${res.elapsed_ms}ms)`,
+      );
+      for (const p of res.problems) {
+        appendLog(
+          p.severity === "error" ? "error" : "warn",
+          `  ${p.source_path}: ${p.reason}`,
+        );
+      }
+    } catch (e) {
+      appendLog("error", `PSTDR check error: ${String(e)}`);
+    }
+  }, [appendLog]);
+
+  const handleBuildPstdr = useCallback(async () => {
+    if (!projectRef.current || buildingPstdr) return;
+    setBuildingPstdr(true);
+    appendLog("info", "Building .pstdr workspace into BP/scripts/generated/...");
+    try {
+      const res = await api.pstdrConvertWorkspace();
+      if (res.snapshot) {
+        setProject(res.snapshot);
+      }
+      setProblems(res.problems);
+      setBottomOpen(true);
+      setBottomTab(res.error_count > 0 ? "problems" : "output");
+      appendLog(
+        res.success ? "success" : "error",
+        `${res.summary} (${res.elapsed_ms}ms)`,
+      );
+      for (const p of res.problems) {
+        appendLog(
+          p.severity === "error" ? "error" : "warn",
+          `  ${p.source_path}: ${p.reason}`,
+        );
+      }
+      showToast(
+        res.success
+          ? `Built ${res.file_count} .pstdr file(s)`
+          : `PSTDR build failed (${res.error_count} error(s))`,
+      );
+    } catch (e) {
+      appendLog("error", `PSTDR build error: ${String(e)}`);
+    } finally {
+      setBuildingPstdr(false);
+    }
+  }, [appendLog, buildingPstdr, showToast]);
+
   const handleReveal = useCallback(
     async (relOrAbsPath: string) => {
       const override =
@@ -592,6 +658,18 @@ export default function App() {
         label: "Audit: Run Semantic Auditor",
         action: () => void handleRunAudit(),
       },
+      ...(hasPstdrWorkspace
+        ? [
+            {
+              label: "PSTDR: Build .pstdr",
+              action: () => void handleBuildPstdr(),
+            },
+            {
+              label: "PSTDR: Check .pstdr Workspace",
+              action: () => void handleCheckPstdr(),
+            },
+          ]
+        : []),
       {
         label: "View: Toggle Primary Sidebar (Ctrl+B)",
         action: () => setSidebarOpen((s) => !s),
@@ -602,8 +680,11 @@ export default function App() {
       },
     ],
     [
+      handleBuildPstdr,
+      handleCheckPstdr,
       handleOpenBlockbench,
       handleRunAudit,
+      hasPstdrWorkspace,
       openOrFocusTab,
       promptOpenArchive,
       promptOpenProject,
@@ -725,6 +806,17 @@ export default function App() {
             <span className="codicon codicon-add" />
             New
           </button>
+          {hasPstdrWorkspace && (
+            <button
+              className="vsc-btn small"
+              disabled={buildingPstdr}
+              onClick={() => void handleBuildPstdr()}
+              title="Compile .pstdr sources into BP/scripts/generated/ and wire custom components"
+            >
+              <span className="codicon codicon-play" />
+              {buildingPstdr ? "Building .pstdr..." : "Build .pstdr"}
+            </button>
+          )}
           <button
             className="vsc-btn secondary small"
             disabled={!project}

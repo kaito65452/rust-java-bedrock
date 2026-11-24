@@ -11,6 +11,7 @@ use zip::ZipArchive;
 use crate::state::StudioState;
 
 pub const BUILTIN_MINECRAFT_EXT_ID: &str = "packstudio.minecraft-pack-intelligence";
+pub const BUILTIN_PSTDR_EXT_ID: &str = "packstudio.pstdr-language";
 
 /// Declarative stdio LSP contribution from an extension or user configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,6 +164,54 @@ pub fn builtin_extension_dto(enabled: bool) -> InstalledExtensionDto {
                 String::from("mc-lang"),
                 String::from("molang"),
             ],
+            builtin: true,
+        }],
+        raw_manifest_json: serde_json::to_string_pretty(&manifest_json).unwrap_or_default(),
+    }
+}
+
+/// Built-in first-party `pstdr` DSL extension descriptor.
+#[must_use]
+pub fn builtin_pstdr_extension_dto(enabled: bool) -> InstalledExtensionDto {
+    let manifest_json = serde_json::json!({
+        "name": "pstdr-language",
+        "publisher": "packstudio",
+        "displayName": "PSTDR Bedrock Add-on DSL (Built-in LSP)",
+        "version": "0.1.0",
+        "description": "In-process pstdr-lang diagnostics (PSTDR-E001..E018), contextual Bedrock completions, hover docs, and quick-fixes for .pstdr scripts.",
+        "contributes": {
+            "languages": ["pstdr"],
+            "packstudioLsp": [{
+                "server_id": "builtin.pstdr",
+                "display_name": "PSTDR Language Server (Built-in)",
+                "command": "builtin",
+                "language_ids": ["pstdr"]
+            }]
+        }
+    });
+
+    InstalledExtensionDto {
+        id: String::from(BUILTIN_PSTDR_EXT_ID),
+        display_name: String::from("PSTDR Add-on DSL (LSP)"),
+        publisher: String::from("packstudio"),
+        version: String::from("0.1.0"),
+        description: String::from(
+            "In-process pstdr-lang diagnostics (PSTDR-E001..E018), contextual Bedrock completions, duration/API hover docs, and quick-fixes for .pstdr scripts.",
+        ),
+        enabled,
+        builtin: true,
+        install_path: None,
+        has_js_entrypoint: false,
+        runtime_note: None,
+        schema_count: 0,
+        snippet_count: 2,
+        grammar_languages: vec![String::from("pstdr")],
+        lsp_contributions: vec![LspContributionDto {
+            server_id: String::from("builtin.pstdr"),
+            display_name: String::from("PSTDR Language Server (Built-in)"),
+            command: String::from("builtin"),
+            args: Vec::new(),
+            language_ids: vec![String::from("pstdr")],
             builtin: true,
         }],
         raw_manifest_json: serde_json::to_string_pretty(&manifest_json).unwrap_or_default(),
@@ -558,7 +607,11 @@ fn load_installed_extension_from_dir(
 pub fn scan_extensions_snapshot(extensions_root: &Path) -> ExtensionsSnapshotDto {
     let persisted = load_persisted_state(extensions_root);
     let builtin_enabled = !persisted.disabled_ids.contains(BUILTIN_MINECRAFT_EXT_ID);
-    let mut extensions = vec![builtin_extension_dto(builtin_enabled)];
+    let builtin_pstdr_enabled = !persisted.disabled_ids.contains(BUILTIN_PSTDR_EXT_ID);
+    let mut extensions = vec![
+        builtin_extension_dto(builtin_enabled),
+        builtin_pstdr_extension_dto(builtin_pstdr_enabled),
+    ];
     let mut active_schemas = if builtin_enabled {
         builtin_schemas()
     } else {
@@ -669,7 +722,7 @@ pub fn install_extension_core(source: &Path, extensions_root: &Path) -> Result<I
         );
     };
 
-    if dto.id == BUILTIN_MINECRAFT_EXT_ID {
+    if dto.id == BUILTIN_MINECRAFT_EXT_ID || dto.id == BUILTIN_PSTDR_EXT_ID {
         let _ = fs::remove_dir_all(&temp_dir);
         bail!("Cannot overwrite reserved built-in extension id");
     }
@@ -725,6 +778,10 @@ pub fn ext_set_enabled(
         state
             .builtin_lsp_enabled
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    } else if ext_id == BUILTIN_PSTDR_EXT_ID {
+        state
+            .builtin_pstdr_lsp_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     Ok(scan_extensions_snapshot(&root))
@@ -733,7 +790,7 @@ pub fn ext_set_enabled(
 /// Tauri Command: Uninstall a user-installed extension directory.
 #[tauri::command]
 pub fn ext_uninstall(ext_id: String) -> Result<ExtensionsSnapshotDto, String> {
-    if ext_id == BUILTIN_MINECRAFT_EXT_ID {
+    if ext_id == BUILTIN_MINECRAFT_EXT_ID || ext_id == BUILTIN_PSTDR_EXT_ID {
         return Err(String::from(
             "Built-in extension cannot be uninstalled; toggle Disable instead.",
         ));

@@ -21,7 +21,9 @@ pub enum PackType {
 }
 
 use crate::blockbench::BlockbenchHost;
-use crate::extensions::{BUILTIN_MINECRAFT_EXT_ID, default_extensions_dir, load_persisted_state};
+use crate::extensions::{
+    BUILTIN_MINECRAFT_EXT_ID, BUILTIN_PSTDR_EXT_ID, default_extensions_dir, load_persisted_state,
+};
 use crate::lsp::LspClientHandle;
 use crate::pty::PtySession;
 
@@ -130,12 +132,15 @@ pub struct StudioState {
     pub next_pty_id: AtomicU32,
     pub lsp_clients: Arc<Mutex<HashMap<String, LspClientHandle>>>,
     pub builtin_lsp_enabled: Arc<AtomicBool>,
+    pub builtin_pstdr_lsp_enabled: Arc<AtomicBool>,
+    pub open_documents: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Default for StudioState {
     fn default() -> Self {
         let persisted = load_persisted_state(&default_extensions_dir());
         let builtin_on = !persisted.disabled_ids.contains(BUILTIN_MINECRAFT_EXT_ID);
+        let builtin_pstdr_on = !persisted.disabled_ids.contains(BUILTIN_PSTDR_EXT_ID);
         Self {
             active_pack: Arc::new(Mutex::new(None)),
             watcher: Mutex::new(None),
@@ -144,6 +149,8 @@ impl Default for StudioState {
             next_pty_id: AtomicU32::new(1),
             lsp_clients: Arc::new(Mutex::new(HashMap::new())),
             builtin_lsp_enabled: Arc::new(AtomicBool::new(builtin_on)),
+            builtin_pstdr_lsp_enabled: Arc::new(AtomicBool::new(builtin_pstdr_on)),
+            open_documents: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

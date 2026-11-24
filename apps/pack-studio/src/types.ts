@@ -282,6 +282,7 @@ export interface LspDiagnosticDto {
   end_line: number;
   end_column: number;
   severity: WarningSeverity;
+  code?: string | null;
   message: string;
   source: string;
 }
@@ -303,6 +304,35 @@ export interface LspCompletionItemDto {
 export interface LspHoverDto {
   contents: string;
   source: string;
+}
+
+export interface LspTextEditDto {
+  line: number;
+  column: number;
+  end_line: number;
+  end_column: number;
+  new_text: string;
+}
+
+export interface LspCodeActionDto {
+  title: string;
+  kind: string;
+  diagnostic_code?: string | null;
+  is_preferred: boolean;
+  edits: LspTextEditDto[];
+}
+
+export interface PstdrBuildResultDto {
+  success: boolean;
+  status: AuditStatus;
+  summary: string;
+  file_count: number;
+  error_count: number;
+  warning_count: number;
+  diagnostics: LspDiagnosticDto[];
+  problems: ConversionWarning[];
+  snapshot: ProjectSnapshot | null;
+  elapsed_ms: number;
 }
 
 export interface LspServerStatusDto {

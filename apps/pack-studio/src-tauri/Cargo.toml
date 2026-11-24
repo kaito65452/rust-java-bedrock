@@ -30,6 +30,7 @@ glam = "0.30"
 image = { workspace = true, features = ["tga", "jpeg", "webp"] }
 notify = "8.2"
 portable-pty = "0.9"
+pstdr-lang = { git = "https://github.com/kaito65452/pstdr-dsl.git", branch = "main" }
 rp-bedrock.workspace = true
 rp-core.workspace = true
 rp-io.workspace = true

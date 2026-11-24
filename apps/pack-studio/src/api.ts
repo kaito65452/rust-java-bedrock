@@ -8,6 +8,7 @@ import type {
   DetectedFileManagers,
   ExtensionsSnapshotDto,
   ImportResult,
+  LspCodeActionDto,
   LspCompletionItemDto,
   LspDiagnosticDto,
   LspHoverDto,
@@ -18,6 +19,7 @@ import type {
   PackMetadataDto,
   PreflightReportDto,
   ProjectSnapshot,
+  PstdrBuildResultDto,
   RenameResult,
   TextureTransformResult,
 } from "./types";
@@ -256,4 +258,27 @@ export const api = {
       character,
       word,
     }),
+
+  lspCodeActions: (
+    relPath: string,
+    languageId: string,
+    startLine: number,
+    startColumn: number,
+    endLine: number,
+    endColumn: number,
+  ) =>
+    invoke<LspCodeActionDto[]>("lsp_code_actions", {
+      relPath,
+      languageId,
+      startLine,
+      startColumn,
+      endLine,
+      endColumn,
+    }),
+
+  pstdrCheckWorkspace: () =>
+    invoke<PstdrBuildResultDto>("pstdr_check_workspace"),
+
+  pstdrConvertWorkspace: () =>
+    invoke<PstdrBuildResultDto>("pstdr_convert_workspace"),
 };

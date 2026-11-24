@@ -771,15 +771,14 @@ fn scaffold_pstdr_workspace(
 ) -> Result<()> {
     let src_dir = project_root.join("src");
     fs::create_dir_all(&src_dir)?;
-    let ver = format!("{}.{}.{}", cfg.version[0], cfg.version[1], cfg.version[2]);
     let desc_escaped = cfg.description.replace('"', "\\\"");
     let toml = format!(
-        "[package]\nname = \"{slug}\"\nversion = \"{ver}\"\ndescription = \"{desc_escaped}\"\n\n[target]\nedition = \"bedrock\"\nminecraft_version = \"26.60\"\nscript_api = \"@minecraft/server\"\nscript_api_version = \"2.11.0\"\n\n[paths]\nsrc = \"src\"\nbehavior_pack = \"BP\"\nresource_pack = \"RP\"\n"
+        "[package]\nname = \"{slug}\"\ndescription = \"{desc_escaped}\"\n\n[target]\nbedrock_target = \"26.60\"\nscript_api = \"2.11.0\"\n\n[paths]\nsrc_dir = \"src\"\njs_out_dir = \"BP/scripts/generated\"\n"
     );
     fs::write(project_root.join("pstdr.toml"), toml)?;
 
     let main_pstdr = format!(
-        "// PackStudio Add-on DSL starter (Bedrock 26.60 / @minecraft/server 2.11.0)\naddon \"{slug}\" {{\n    version = \"{ver}\";\n    target = \"bedrock:26.60\";\n}}\n"
+        "// PackStudio Add-on DSL starter (Bedrock 26.60 / @minecraft/server 2.11.0)\n@addon(target = \"26.60\", api = \"2.11.0\")\n\non join of player {{\n    send \"Welcome to {slug}!\" to player\n}}\n"
     );
     fs::write(src_dir.join("main.pstdr"), main_pstdr)?;
     Ok(())

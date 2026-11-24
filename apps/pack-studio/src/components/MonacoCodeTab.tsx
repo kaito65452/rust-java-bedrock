@@ -67,15 +67,110 @@ function registerMinecraftLanguages(m: typeof monaco) {
       ],
     },
   });
+
+  m.languages.register({ id: "pstdr", extensions: [".pstdr"] });
+  m.languages.setMonarchTokensProvider("pstdr", {
+    keywords: [
+      "on",
+      "join",
+      "leave",
+      "chat",
+      "right",
+      "click",
+      "hit",
+      "break",
+      "hurt",
+      "die",
+      "consume",
+      "interact",
+      "tick",
+      "projectile",
+      "spawn",
+      "every",
+      "after",
+      "cancel",
+      "event",
+      "send",
+      "apply",
+      "damage",
+      "ignite",
+      "play_sound",
+      "particle",
+      "state",
+      "const",
+      "mut",
+      "func",
+      "unsafe",
+      "if",
+      "else",
+      "for",
+      "in",
+      "while",
+      "return",
+      "and",
+      "or",
+      "not",
+      "is",
+      "true",
+      "false",
+      "null",
+      "of",
+      "by",
+      "with",
+      "to",
+      "at",
+      "type",
+      "bind_target",
+    ],
+    tokenizer: {
+      root: [
+        [/\/\/.*$/, "comment"],
+        [/\/\*/, "comment", "@comment"],
+        [/@[a-zA-Z_]\w*/, "annotation"],
+        [/\b\d+(\.\d+)?(ms|s|m|t)\b/, "number.float"],
+        [/\b\d+(\.\d+)?\b/, "number"],
+        [/"/, "string", "@string"],
+        [
+          /[a-zA-Z_]\w*/,
+          {
+            cases: {
+              "@keywords": "keyword",
+              "@default": "identifier",
+            },
+          },
+        ],
+        [/[{}()\[\]]/, "@brackets"],
+        [/[?:.,;]/, "delimiter"],
+        [/[+\-*/%=!<>&|]+/, "operator"],
+      ],
+      comment: [
+        [/[^/*]+/, "comment"],
+        [/\*\//, "comment", "@pop"],
+        [/[/*]/, "comment"],
+      ],
+      string: [
+        [/\\./, "string.escape"],
+        [/\{/, { token: "delimiter.bracket", next: "@interpolation" }],
+        [/"/, "string", "@pop"],
+        [/[^\\"{]+/, "string"],
+      ],
+      interpolation: [
+        [/\}/, { token: "delimiter.bracket", next: "@pop" }],
+        [/[a-zA-Z_]\w*/, "variable"],
+        [/\./, "delimiter"],
+        [/[^{}]+/, "variable"],
+      ],
+    },
+  });
 }
 
 function ensureLspProvidersRegistered(m: typeof monaco) {
   if (lspProvidersRegistered) return;
   lspProvidersRegistered = true;
 
-  for (const langId of ["json", "mc-lang", "molang"]) {
+  for (const langId of ["json", "mc-lang", "molang", "pstdr"]) {
     m.languages.registerCompletionItemProvider(langId, {
-      triggerCharacters: [".", '"', "/", "§"],
+      triggerCharacters: [".", '"', "/", "§", " ", "@"],
       async provideCompletionItems(model, position) {
         const word = model.getWordUntilPosition(position);
         const range = {
@@ -121,9 +216,10 @@ function ensureLspProvidersRegistered(m: typeof monaco) {
               detail: item.detail,
               documentation: item.documentation,
               insertText: item.insert_text,
-              insertTextRules: item.insert_text.includes("${")
-                ? m.languages.CompletionItemInsertTextRule.InsertAsSnippet
-                : undefined,
+              insertTextRules:
+                item.insert_text.includes("${") || item.insert_text.includes("$0")
+                  ? m.languages.CompletionItemInsertTextRule.InsertAsSnippet
+                  : undefined,
               range,
             });
           }
@@ -160,10 +256,58 @@ function ensureLspProvidersRegistered(m: typeof monaco) {
       },
     });
   }
+
+  m.languages.registerCodeActionProvider("pstdr", {
+    async provideCodeActions(model, range) {
+      try {
+        const items = await api.lspCodeActions(
+          activeRelPathForProviders,
+          "pstdr",
+          range.startLineNumber,
+          range.startColumn,
+          range.endLineNumber,
+          range.endColumn,
+        );
+        const actions: monaco.languages.CodeAction[] = items.map((item) => ({
+          title: item.title,
+          kind: item.kind || "quickfix",
+          isPreferred: item.is_preferred,
+          edit: {
+            edits: item.edits.map((te) => ({
+              resource: model.uri,
+              versionId: model.getVersionId(),
+              textEdit: {
+                range: {
+                  startLineNumber: Math.max(1, te.line),
+                  startColumn: Math.max(1, te.column),
+                  endLineNumber: Math.max(1, te.end_line),
+                  endColumn: Math.max(1, te.end_column),
+                },
+                text: te.new_text,
+              },
+            })),
+          },
+        }));
+        return {
+          actions,
+          dispose: () => {},
+        };
+      } catch {
+        return {
+          actions: [],
+          dispose: () => {},
+        };
+      }
+    },
+  });
 }
 
 function detectMonacoLanguage(relPath: string): string {
   const lower = relPath.toLowerCase();
+  if (lower.endsWith(".pstdr")) return "pstdr";
+  if (lower.endsWith(".js")) return "javascript";
+  if (lower.endsWith(".ts")) return "typescript";
+  if (lower.endsWith(".toml")) return "ini";
   if (lower.endsWith(".json") || lower.endsWith(".mcmeta") || lower.endsWith(".material")) {
     return "json";
   }
@@ -268,6 +412,7 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
         startColumn: Math.max(1, d.column),
         endLineNumber: Math.max(1, d.end_line),
         endColumn: Math.max(2, d.end_column),
+        code: d.code ?? undefined,
         message: `[${d.source}] ${d.message}`,
         severity:
           d.severity === "error"

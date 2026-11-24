@@ -38,6 +38,8 @@ pub fn run() {
             converter::execute_convert,
             converter::run_audit,
             converter::package_pack,
+            converter::pstdr_check_workspace,
+            converter::pstdr_convert_workspace,
             texture::create_blank_texture,
             texture::downscale_texture,
             texture::composite_grass_side,
@@ -60,6 +62,7 @@ pub fn run() {
             lsp::lsp_sync_document,
             lsp::lsp_completion,
             lsp::lsp_hover,
+            lsp::lsp_code_actions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pack-Studio Tauri application");
@@ -444,5 +447,122 @@ mod tests {
         let snap = crate::extensions::scan_extensions_snapshot(&ext_root);
         assert!(snap.extensions.iter().any(|e| e.id == "community.mc-helper"));
         assert!(snap.active_snippets.iter().any(|s| s.prefix == "mc-item"));
+    }
+
+    #[test]
+    fn builtin_pstdr_lsp_diagnostics_completion_hover_and_quick_fixes_work() {
+        let src_e001 = "on join of player {\n    let x = 1\n}\n";
+        let diags1 = crate::lsp::builtin_pstdr_diagnostics("src/main.pstdr", src_e001, None);
+        assert!(
+            diags1.iter().any(|d| d.code.as_deref() == Some("PSTDR-E001")),
+            "expected PSTDR-E001, got: {diags1:?}"
+        );
+        let fixes1 =
+            crate::lsp::builtin_pstdr_code_actions("src/main.pstdr", src_e001, 2, 2, None);
+        assert!(
+            fixes1.iter().any(|a| a.title == "Replace 'let' with 'mut'"),
+            "expected E001 quick-fix, got: {fixes1:?}"
+        );
+
+        let src_e002 = "on join of player {\n    const x = 1\n    x = 2\n}\n";
+        let fixes2 =
+            crate::lsp::builtin_pstdr_code_actions("src/main.pstdr", src_e002, 3, 3, None);
+        assert!(
+            fixes2
+                .iter()
+                .any(|a| a.title == "Change 'const' to 'mut' on line 2"),
+            "expected E002 quick-fix, got: {fixes2:?}"
+        );
+
+        let effects = crate::lsp::builtin_pstdr_completion("apply ", 1, 7, "");
+        assert!(effects.iter().any(|i| i.label == "speed"));
+
+        let top = crate::lsp::builtin_pstdr_completion("", 1, 1, "");
+        let on_chat = top.iter().find(|i| i.label == "on chat").expect("on chat");
+        assert!(on_chat.detail.contains("Beta API only"));
+
+        let hover_dur =
+            crate::lsp::builtin_pstdr_hover("after 3s {}", 1, 8, "3s").expect("duration hover");
+        assert!(hover_dur.contents.contains("60 ticks"));
+
+        let hover_meth =
+            crate::lsp::builtin_pstdr_hover("player.actionbar(\"hi\")", 1, 10, "actionbar")
+                .expect("method hover");
+        assert!(hover_meth.contents.contains("onScreenDisplay.setActionBar"));
+    }
+
+    #[test]
+    fn pstdr_audit_catches_beta_api_guard_and_mcaddon_auto_compiles_pstdr() {
+        let tmp = TempDir::new().unwrap();
+        let addon_root = scaffold_project_on_disk(&NewProjectConfig {
+            kind: ProjectTemplateKind::BedrockAddonWorkspace,
+            pack_name: String::from("Frost Addon"),
+            description: String::from("PSTDR Test"),
+            authors: vec![],
+            license: String::new(),
+            url: String::new(),
+            version: [1, 0, 0],
+            java_pack_format: 34,
+            java_supported_formats: None,
+            java_namespace: String::from("minecraft"),
+            bedrock_min_engine_version: [1, 21, 50],
+            icon_path: None,
+            target_parent_dir: tmp.path().display().to_string(),
+            include_pstdr_workspace: true,
+        })
+        .unwrap();
+
+        let container =
+            PackContainer::read_from_directory(&addon_root, rp_io::IoLimits::default()).unwrap();
+        let summary = package_pack_core(
+            &container,
+            None,
+            &PackageExportConfig {
+                format: String::from("mcaddon"),
+                filename_template: String::from("{pack_name}_{version}"),
+                output_dir: tmp.path().display().to_string(),
+                strip_junk_files: true,
+                compression: String::from("balanced"),
+                run_semantic_audit: true,
+                allow_export_with_errors: false,
+                include_dev_sources: false,
+            },
+            Edition::Bedrock,
+            PackType::BedrockAddon,
+            "Frost Addon",
+            [1, 0, 0],
+        )
+        .unwrap();
+
+        let zip_file = fs::File::open(&summary.output_path).unwrap();
+        let mut archive = ZipArchive::new(zip_file).unwrap();
+        let mut names = Vec::new();
+        for idx in 0..archive.len() {
+            names.push(archive.by_index(idx).unwrap().name().to_string());
+        }
+        assert!(
+            names.iter().any(|n| n == "BP/scripts/generated/main.js"),
+            "expected compiled BP/scripts/generated/main.js in .mcaddon: {names:?}"
+        );
+
+        // Beta API guard (PSTDR-E018): `on chat` under stable api = "2.11.0" must fail audit
+        let mut beta_container = container;
+        beta_container
+            .insert(
+                "src/main.pstdr",
+                b"@addon(target = \"26.60\", api = \"2.11.0\")\non chat msg by player {\n    send msg to player\n}\n"
+                    .to_vec(),
+            )
+            .unwrap();
+        let audit_res = run_audit_core(&beta_container).unwrap();
+        assert_eq!(audit_res.status, AuditStatus::Failed);
+        assert!(
+            audit_res
+                .problems
+                .iter()
+                .any(|p| p.message.contains("PSTDR-E018")),
+            "expected PSTDR-E018 in audit problems: {:?}",
+            audit_res.problems
+        );
     }
 }

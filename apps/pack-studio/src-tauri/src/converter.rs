@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use pstdr_lang::diagnostics::{Diagnostic as PstdrDiagnostic, Severity as PstdrSeverity, has_errors as pstdr_has_errors};
+use pstdr_lang::spec::BedrockSpec;
 use rp_bedrock::schema::BedrockManifest;
 use rp_bedrock::{
     audit_bedrock_container, emit_bedrock_pack, parse_bedrock_pack,
@@ -17,14 +20,18 @@ use rp_core::{
 use rp_io::{IoLimits, PackContainer, is_os_junk, sanitize_archive_path};
 use rp_java::{emit_java_pack, parse_java_pack};
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Window};
+use tauri::{AppHandle, Emitter, Window};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use crate::state::{PackType, StudioState};
+use crate::lsp::{
+    BUILTIN_PSTDR_SERVER_ID, LspDiagnosticDto, LspDiagnosticsEvent,
+    pstdr_diag_to_conversion_warning, pstdr_diag_to_lsp_dto,
+};
+use crate::state::{PackType, ProjectSnapshot, StudioState};
 use crate::texture::{
-    TextureFormatKind, check_uv_atlas_guard, composite_grass_side_tga, decode_texture_bytes,
-    encode_texture_bytes, make_texture_opaque, resize_nearest_neighbor,
+    TextureFormatKind, check_uv_atlas_guard, composite_grass_side_tga, compute_dominant_resolution,
+    decode_texture_bytes, encode_texture_bytes, make_texture_opaque, resize_nearest_neighbor,
 };
 use crate::workspace::{
     detect_pack_edition, detect_pack_type, find_addon_subpack_prefixes, sanitize_minecraft_slug,
@@ -176,6 +183,21 @@ pub struct PackageExportSummary {
     pub stripped_junk_count: usize,
     pub audit_status: Option<AuditStatus>,
     pub audit_summary: String,
+}
+
+/// Structured result returned by `pstdr_check_workspace` and `pstdr_convert_workspace`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PstdrBuildResultDto {
+    pub success: bool,
+    pub status: AuditStatus,
+    pub summary: String,
+    pub file_count: usize,
+    pub error_count: usize,
+    pub warning_count: usize,
+    pub diagnostics: Vec<LspDiagnosticDto>,
+    pub problems: Vec<ConversionWarning>,
+    pub snapshot: Option<ProjectSnapshot>,
+    pub elapsed_ms: u128,
 }
 
 /// Resolves the conversion direction string (`"java_to_bedrock"` / `"bedrock_to_java"`).
@@ -671,9 +693,103 @@ fn extract_sub_container(container: &PackContainer, prefix: &str) -> Result<Pack
     Ok(sub)
 }
 
-/// Phase 3 hook: validates `pstdr.toml` and `src/*.pstdr` workspace sources.
-/// Ready for `pstdr-lang` compiler & semantic validator integration.
+struct TempWorkspaceDir {
+    path: PathBuf,
+}
+
+impl TempWorkspaceDir {
+    fn new(prefix: &str) -> Result<Self> {
+        let dir = std::env::temp_dir().join(format!("packstudio-{prefix}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir)?;
+        Ok(Self { path: dir })
+    }
+
+    fn materialize_for_pstdr(&self, container: &PackContainer) -> Result<()> {
+        for (rel, bytes) in container.files() {
+            let Ok(clean) = sanitize_archive_path(rel) else {
+                continue;
+            };
+            let lower = clean.to_ascii_lowercase();
+            let dst = self.path.join(&clean);
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            // Write full content for scripts, configs, and JSON manifests; write lightweight
+            // placeholder files for binary textures so pstdr-lang asset existence checks pass
+            // without copying megabytes of PNG/TGA data.
+            if lower.ends_with(".pstdr")
+                || lower.ends_with(".toml")
+                || lower.ends_with(".json")
+                || lower.ends_with(".js")
+                || lower.ends_with(".ts")
+            {
+                fs::write(&dst, bytes)?;
+            } else if lower.ends_with(".png")
+                || lower.ends_with(".tga")
+                || lower.ends_with(".jpg")
+                || lower.ends_with(".jpeg")
+            {
+                fs::write(&dst, [])?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TempWorkspaceDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn container_has_pstdr_sources(container: &PackContainer) -> bool {
+    container
+        .files()
+        .keys()
+        .any(|k| k.to_ascii_lowercase().ends_with(".pstdr"))
+}
+
+fn container_has_pstdr_workspace(container: &PackContainer) -> bool {
+    container_has_pstdr_sources(container)
+        || container
+            .files()
+            .keys()
+            .any(|k| !k.contains('/') && k.eq_ignore_ascii_case("pstdr.toml"))
+}
+
+fn collect_disk_dir_into_container(
+    base_root: &Path,
+    dir: &Path,
+    container: &mut PackContainer,
+) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        if p.is_dir() {
+            collect_disk_dir_into_container(base_root, &p, container)?;
+        } else if p.is_file() {
+            let rel = p
+                .strip_prefix(base_root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let bytes = fs::read(&p)?;
+            container.insert(&rel, bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validates `pstdr.toml`, `src/*.pstdr`, asset references (`PSTDR-E017`), and stable-vs-beta
+/// Script API usage (`PSTDR-E018`) via `pstdr-lang::audit_workspace`.
 pub fn audit_pstdr_workspace(container: &PackContainer, problems: &mut Vec<ConversionWarning>) {
+    if !container_has_pstdr_workspace(container) {
+        return;
+    }
+
     let pstdr_toml_key = container
         .files()
         .keys()
@@ -695,6 +811,35 @@ pub fn audit_pstdr_workspace(container: &PackContainer, problems: &mut Vec<Conve
             asset: toml_path,
             message: String::from("Invalid pstdr.toml configuration"),
         });
+    }
+
+    let Ok(tmp) = TempWorkspaceDir::new("pstdr-audit") else {
+        return;
+    };
+    if tmp.materialize_for_pstdr(container).is_err() {
+        return;
+    }
+
+    let spec = BedrockSpec::bundled();
+    match pstdr_lang::audit_workspace(&tmp.path, &spec) {
+        Ok(diags) => {
+            for d in &diags {
+                problems.push(pstdr_diag_to_conversion_warning(d));
+            }
+        }
+        Err(err) => {
+            problems.push(ConversionWarning {
+                source_path: String::from("pstdr.toml"),
+                stage: PipelineStage::Audit,
+                severity: WarningSeverity::Error,
+                reason: format!("pstdr workspace audit failed: {err}"),
+                actionable_fix: String::from(
+                    "Verify pstdr.toml and src/*.pstdr files are readable UTF-8.",
+                ),
+                asset: String::from("pstdr.toml"),
+                message: format!("pstdr workspace audit error: {err}"),
+            });
+        }
     }
 }
 
@@ -1052,6 +1197,45 @@ pub fn package_pack_core(
         cleaned.insert(path, bytes.clone())?;
     }
 
+    // Auto-compile & audit `.pstdr` sources before bundling a Bedrock Add-on `.mcaddon`.
+    if pack_type == PackType::BedrockAddon && container_has_pstdr_sources(&cleaned) {
+        let tmp = TempWorkspaceDir::new("pstdr-package")?;
+        tmp.materialize_for_pstdr(&cleaned)?;
+        let spec = BedrockSpec::bundled();
+
+        let mut pstdr_diags = pstdr_lang::convert_workspace(&tmp.path, &spec)
+            .map_err(|e| anyhow::anyhow!("pstdr compilation failed: {e}"))?;
+        if !pstdr_has_errors(&pstdr_diags) {
+            let audit_diags = pstdr_lang::audit_workspace(&tmp.path, &spec)
+                .map_err(|e| anyhow::anyhow!("pstdr audit failed: {e}"))?;
+            pstdr_diags.extend(audit_diags);
+        }
+
+        if pstdr_has_errors(&pstdr_diags) && !cfg.allow_export_with_errors {
+            let first_err = pstdr_diags
+                .iter()
+                .find(|d| d.severity == PstdrSeverity::Error)
+                .map(|d| format!("[{}] {} ({}:{})", d.code, d.message, d.file, d.line))
+                .unwrap_or_else(|| String::from("Fatal PSTDR error"));
+            let err_cnt = pstdr_diags
+                .iter()
+                .filter(|d| d.severity == PstdrSeverity::Error)
+                .count();
+            bail!(
+                "Packaging blocked by PSTDR compiler/audit ({err_cnt} fatal error(s)): {first_err}"
+            );
+        }
+
+        // Merge compiled scripts & wired component JSONs back into `cleaned` for bundling.
+        for sub in ["BP/scripts", "BP/items", "BP/blocks"] {
+            collect_disk_dir_into_container(&tmp.path, &tmp.path.join(sub), &mut cleaned)?;
+        }
+        let bp_manifest_disk = tmp.path.join("BP/manifest.json");
+        if bp_manifest_disk.is_file() {
+            cleaned.insert("BP/manifest.json", fs::read(&bp_manifest_disk)?)?;
+        }
+    }
+
     let mut audit_status = None;
     let mut audit_summary = String::from("Skipped");
     if cfg.run_semantic_audit {
@@ -1280,6 +1464,7 @@ pub async fn run_audit(
 /// Tauri Command: Package active or specified pack into `.zip`, `.mcpack`, or `.mcaddon`.
 #[tauri::command]
 pub async fn package_pack(
+    app: AppHandle,
     state: tauri::State<'_, StudioState>,
     project_path: Option<String>,
     export_config: PackageExportConfig,
@@ -1313,7 +1498,8 @@ pub async fn package_pack(
     };
 
     let version = extract_pack_version(&container, pack_type);
-    tauri::async_runtime::spawn_blocking(move || {
+    let container_for_diags = container.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
         package_pack_core(
             &container,
             companion_bp_dir.as_deref(),
@@ -1325,8 +1511,263 @@ pub async fn package_pack(
         )
     })
     .await
-    .map_err(|e| format!("package worker panicked: {e}"))?
-    .map_err(|e| format!("{e:#}"))
+    .map_err(|e| format!("package worker panicked: {e}"))?;
+
+    match res {
+        Ok(summary) => Ok(summary),
+        Err(err) => {
+            if pack_type == PackType::BedrockAddon && container_has_pstdr_sources(&container_for_diags)
+            {
+                if let Ok(tmp) = TempWorkspaceDir::new("pstdr-pkg-diags")
+                    && tmp.materialize_for_pstdr(&container_for_diags).is_ok()
+                    && let Ok(diags) = pstdr_lang::audit_workspace(&tmp.path, &BedrockSpec::bundled())
+                {
+                    emit_pstdr_diagnostics_to_app(&app, &diags);
+                }
+            }
+            Err(format!("{err:#}"))
+        }
+    }
+}
+
+fn emit_pstdr_diagnostics_to_app(app: &AppHandle, diags: &[PstdrDiagnostic]) {
+    let mut by_file: BTreeMap<String, Vec<LspDiagnosticDto>> = BTreeMap::new();
+    for d in diags {
+        let dto = pstdr_diag_to_lsp_dto(d, "src/main.pstdr");
+        by_file.entry(dto.rel_path.clone()).or_default().push(dto);
+    }
+    for (rel_path, list) in by_file {
+        let _ = app.emit(
+            "lsp://diagnostics",
+            LspDiagnosticsEvent {
+                server_id: String::from(BUILTIN_PSTDR_SERVER_ID),
+                rel_path,
+                diagnostics: list,
+            },
+        );
+    }
+}
+
+fn build_pstdr_result_dto(
+    diags: &[PstdrDiagnostic],
+    file_count: usize,
+    snapshot: Option<ProjectSnapshot>,
+    action_label: &str,
+    elapsed_ms: u128,
+) -> PstdrBuildResultDto {
+    let diagnostics: Vec<LspDiagnosticDto> = diags
+        .iter()
+        .map(|d| pstdr_diag_to_lsp_dto(d, "src/main.pstdr"))
+        .collect();
+    let problems: Vec<ConversionWarning> = diags
+        .iter()
+        .map(pstdr_diag_to_conversion_warning)
+        .collect();
+    let error_count = diags
+        .iter()
+        .filter(|d| d.severity == PstdrSeverity::Error)
+        .count();
+    let warning_count = diags
+        .iter()
+        .filter(|d| d.severity == PstdrSeverity::Warning)
+        .count();
+    let success = error_count == 0;
+    let status = if error_count > 0 {
+        AuditStatus::Failed
+    } else if warning_count > 0 {
+        AuditStatus::Partial
+    } else {
+        AuditStatus::Passed
+    };
+    let summary = if error_count > 0 {
+        format!(
+            "{action_label} failed: {error_count} error(s), {warning_count} warning(s) across {file_count} .pstdr file(s)"
+        )
+    } else if warning_count > 0 {
+        format!(
+            "{action_label} completed with {warning_count} warning(s) across {file_count} .pstdr file(s)"
+        )
+    } else {
+        format!("{action_label} succeeded across {file_count} .pstdr file(s) with 0 errors")
+    };
+
+    PstdrBuildResultDto {
+        success,
+        status,
+        summary,
+        file_count,
+        error_count,
+        warning_count,
+        diagnostics,
+        problems,
+        snapshot,
+        elapsed_ms,
+    }
+}
+
+/// Tauri Command: Validate all `.pstdr` sources in the active `BedrockAddon` workspace.
+#[tauri::command]
+pub async fn pstdr_check_workspace(
+    app: AppHandle,
+    state: tauri::State<'_, StudioState>,
+) -> Result<PstdrBuildResultDto, String> {
+    let start = Instant::now();
+    let (source_path, is_directory, container, pack_type) = {
+        let guard = state
+            .active_pack
+            .lock()
+            .map_err(|_| String::from("active pack mutex poisoned"))?;
+        let pack = guard
+            .as_ref()
+            .ok_or_else(|| String::from("No workspace currently open"))?;
+        (
+            pack.source_path.clone(),
+            pack.is_directory,
+            pack.container.clone(),
+            pack.pack_type,
+        )
+    };
+
+    if pack_type != PackType::BedrockAddon {
+        return Err(String::from(
+            "pstdr_check_workspace requires an open Bedrock Add-on workspace.",
+        ));
+    }
+
+    let pstdr_files: Vec<String> = container
+        .files()
+        .keys()
+        .filter(|k| k.to_ascii_lowercase().ends_with(".pstdr"))
+        .cloned()
+        .collect();
+    let file_count = pstdr_files.len();
+
+    let diags = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<PstdrDiagnostic>> {
+        let spec = BedrockSpec::bundled();
+        if is_directory
+            && let Some(ref root) = source_path
+            && root.is_dir()
+        {
+            pstdr_lang::audit_workspace(root, &spec).map_err(|e| anyhow::anyhow!(e))
+        } else {
+            let tmp = TempWorkspaceDir::new("pstdr-check")?;
+            tmp.materialize_for_pstdr(&container)?;
+            pstdr_lang::audit_workspace(&tmp.path, &spec).map_err(|e| anyhow::anyhow!(e))
+        }
+    })
+    .await
+    .map_err(|e| format!("pstdr check worker panicked: {e}"))?
+    .map_err(|e| format!("{e:#}"))?;
+
+    // Clear stale diagnostics on checked .pstdr files, then emit fresh diagnostics.
+    for rel_path in &pstdr_files {
+        let _ = app.emit(
+            "lsp://diagnostics",
+            LspDiagnosticsEvent {
+                server_id: String::from(BUILTIN_PSTDR_SERVER_ID),
+                rel_path: rel_path.clone(),
+                diagnostics: Vec::new(),
+            },
+        );
+    }
+    emit_pstdr_diagnostics_to_app(&app, &diags);
+
+    Ok(build_pstdr_result_dto(
+        &diags,
+        file_count,
+        None,
+        "PSTDR check",
+        start.elapsed().as_millis(),
+    ))
+}
+
+/// Tauri Command: Compile `.pstdr` sources into `BP/scripts/generated/`, `_registry.js`, `main.js`,
+/// and custom component JSON wiring, then refresh `PackContainer` + Explorer file tree.
+#[tauri::command]
+pub async fn pstdr_convert_workspace(
+    app: AppHandle,
+    state: tauri::State<'_, StudioState>,
+) -> Result<PstdrBuildResultDto, String> {
+    let start = Instant::now();
+    let (root, pstdr_files) = {
+        let guard = state
+            .active_pack
+            .lock()
+            .map_err(|_| String::from("active pack mutex poisoned"))?;
+        let pack = guard
+            .as_ref()
+            .ok_or_else(|| String::from("No workspace currently open"))?;
+        if pack.pack_type != PackType::BedrockAddon {
+            return Err(String::from(
+                "pstdr_convert_workspace requires an open Bedrock Add-on workspace.",
+            ));
+        }
+        let Some(ref dir) = pack.source_path else {
+            return Err(String::from(
+                "Active Bedrock Add-on must be a folder on disk to compile .pstdr sources.",
+            ));
+        };
+        if !pack.is_directory || !dir.is_dir() {
+            return Err(String::from(
+                "Cannot compile .pstdr inside a read-only archive. Extract to a folder first.",
+            ));
+        }
+        let files: Vec<String> = pack
+            .container
+            .files()
+            .keys()
+            .filter(|k| k.to_ascii_lowercase().ends_with(".pstdr"))
+            .cloned()
+            .collect();
+        (dir.clone(), files)
+    };
+
+    let file_count = pstdr_files.len();
+    let root_for_build = root.clone();
+    let diags = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<PstdrDiagnostic>> {
+        let spec = BedrockSpec::bundled();
+        pstdr_lang::convert_workspace(&root_for_build, &spec).map_err(|e| anyhow::anyhow!(e))
+    })
+    .await
+    .map_err(|e| format!("pstdr build worker panicked: {e}"))?
+    .map_err(|e| format!("{e:#}"))?;
+
+    for rel_path in &pstdr_files {
+        let _ = app.emit(
+            "lsp://diagnostics",
+            LspDiagnosticsEvent {
+                server_id: String::from(BUILTIN_PSTDR_SERVER_ID),
+                rel_path: rel_path.clone(),
+                diagnostics: Vec::new(),
+            },
+        );
+    }
+    emit_pstdr_diagnostics_to_app(&app, &diags);
+
+    // Refresh in-memory PackContainer from disk so Explorer shows generated JS & updated JSONs.
+    let snapshot = {
+        let reloaded = PackContainer::read_from_directory(&root, IoLimits::default())
+            .map_err(|e| format!("failed reloading workspace after pstdr build: {e:#}"))?;
+        let mut guard = state
+            .active_pack
+            .lock()
+            .map_err(|_| String::from("active pack mutex poisoned"))?;
+        if let Some(pack) = guard.as_mut() {
+            pack.container = reloaded;
+            let (dom_res, tex_count) = compute_dominant_resolution(&pack.container);
+            Some(pack.to_snapshot(dom_res, tex_count))
+        } else {
+            None
+        }
+    };
+
+    Ok(build_pstdr_result_dto(
+        &diags,
+        file_count,
+        snapshot,
+        "PSTDR build",
+        start.elapsed().as_millis(),
+    ))
 }
 
 fn extract_pack_version(container: &PackContainer, pack_type: PackType) -> [u32; 3] {
