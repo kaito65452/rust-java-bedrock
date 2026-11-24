@@ -1516,14 +1516,13 @@ pub async fn package_pack(
     match res {
         Ok(summary) => Ok(summary),
         Err(err) => {
-            if pack_type == PackType::BedrockAddon && container_has_pstdr_sources(&container_for_diags)
+            if pack_type == PackType::BedrockAddon
+                && container_has_pstdr_sources(&container_for_diags)
+                && let Ok(tmp) = TempWorkspaceDir::new("pstdr-pkg-diags")
+                && tmp.materialize_for_pstdr(&container_for_diags).is_ok()
+                && let Ok(diags) = pstdr_lang::audit_workspace(&tmp.path, &BedrockSpec::bundled())
             {
-                if let Ok(tmp) = TempWorkspaceDir::new("pstdr-pkg-diags")
-                    && tmp.materialize_for_pstdr(&container_for_diags).is_ok()
-                    && let Ok(diags) = pstdr_lang::audit_workspace(&tmp.path, &BedrockSpec::bundled())
-                {
-                    emit_pstdr_diagnostics_to_app(&app, &diags);
-                }
+                emit_pstdr_diagnostics_to_app(&app, &diags);
             }
             Err(format!("{err:#}"))
         }
@@ -1754,7 +1753,7 @@ pub async fn pstdr_convert_workspace(
             .map_err(|_| String::from("active pack mutex poisoned"))?;
         if let Some(pack) = guard.as_mut() {
             pack.container = reloaded;
-            let (dom_res, tex_count) = compute_dominant_resolution(&pack.container);
+            let (tex_count, dom_res) = compute_dominant_resolution(&pack.container);
             Some(pack.to_snapshot(dom_res, tex_count))
         } else {
             None
