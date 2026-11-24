@@ -96,6 +96,48 @@
     }, 100);
   }
 
+  let layoutTimer = null;
+
+  function recalculateBlockbenchLayout() {
+    const apply = () => {
+      try {
+        const w = window.innerWidth || document.documentElement.clientWidth || 0;
+        if (w <= 0) return;
+
+        // Clamp left/right sidebar widths so #preview always retains at least ~55% of width
+        if (window.Interface && window.Interface.data) {
+          const maxBar = Math.max(160, Math.min(260, Math.floor(w * 0.22)));
+          if (typeof window.Interface.data.left_bar_width === "number") {
+            if (w < 720) {
+              window.Interface.data.left_bar_width = 0;
+            } else if (window.Interface.data.left_bar_width > maxBar) {
+              window.Interface.data.left_bar_width = maxBar;
+            }
+          }
+          if (typeof window.Interface.data.right_bar_width === "number") {
+            if (window.Interface.data.right_bar_width > maxBar) {
+              window.Interface.data.right_bar_width = maxBar;
+            }
+          }
+        }
+
+        if (typeof window.resizeWindow === "function") {
+          window.resizeWindow();
+        }
+        if (window.Interface && typeof window.Interface.updateInterface === "function") {
+          window.Interface.updateInterface();
+        }
+        if (window.Canvas && typeof window.Canvas.updateView === "function") {
+          window.Canvas.updateView();
+        }
+      } catch (_) {}
+    };
+
+    window.requestAnimationFrame(apply);
+    if (layoutTimer) clearTimeout(layoutTimer);
+    layoutTimer = setTimeout(apply, 150);
+  }
+
   function dismissStartScreenAndEnterEdit() {
     try {
       if (window.StartScreen) {
@@ -111,6 +153,95 @@
         window.Modes.options.edit.select();
       }
     } catch (_) {}
+    recalculateBlockbenchLayout();
+  }
+
+  function applyAssociatedTextures(textures) {
+    if (!Array.isArray(textures) || textures.length === 0 || !window.Texture) {
+      return;
+    }
+
+    const existingList = Array.isArray(window.Texture.all) ? window.Texture.all : [];
+    const byId = new Map();
+
+    const refreshFacesAndUVs = () => {
+      try {
+        if (window.Cube && Array.isArray(window.Cube.all)) {
+          for (const cube of window.Cube.all) {
+            if (!cube || !cube.faces) continue;
+            for (const faceKey of Object.keys(cube.faces)) {
+              const face = cube.faces[faceKey];
+              if (!face) continue;
+              const rawTex = face.texture;
+              if (typeof rawTex === "string") {
+                const key = rawTex.replace(/^#/, "");
+                const matched = byId.get(key);
+                if (matched && matched.uuid) {
+                  face.texture = matched.uuid;
+                }
+              } else if (rawTex === null || rawTex === undefined) {
+                const firstTex = byId.values().next().value;
+                if (firstTex && firstTex.uuid) {
+                  face.texture = firstTex.uuid;
+                }
+              }
+            }
+          }
+        }
+        if (window.Canvas) {
+          if (typeof window.Canvas.updateAllFaces === "function") {
+            window.Canvas.updateAllFaces();
+          }
+          if (typeof window.Canvas.updateAllUVs === "function") {
+            window.Canvas.updateAllUVs();
+          }
+        }
+      } catch (_) {}
+    };
+
+    for (const tex of textures) {
+      if (!tex || !tex.data_url) continue;
+      const texKey = tex.id != null ? String(tex.id) : null;
+      const texName = tex.name || (tex.path ? tex.path.split("/").pop() : "texture.png");
+      const texStem = texName.replace(/\.png$/i, "").toLowerCase();
+
+      // Match existing placeholder Texture created by Codecs.java_block.parse / loadModelFile
+      let target = existingList.find((t) => {
+        if (!t) return false;
+        if (texKey && String(t.id) === texKey) return true;
+        if (texKey && typeof t.name === "string" && t.name === texKey) return true;
+        if (typeof t.name === "string" && t.name.replace(/\.png$/i, "").toLowerCase() === texStem) {
+          return true;
+        }
+        return false;
+      });
+
+      if (target) {
+        target.error = false;
+        target.__packStudioPath = tex.path || "";
+        if (typeof target.fromDataURL === "function") {
+          target.fromDataURL(tex.data_url);
+        }
+      } else {
+        const opts = {
+          name: texName,
+          path: tex.path || "",
+        };
+        if (texKey) opts.id = texKey;
+        target = new window.Texture(opts).fromDataURL(tex.data_url);
+        target.__packStudioPath = tex.path || "";
+        target.add(false);
+      }
+
+      if (texKey && target) {
+        byId.set(texKey, target);
+      } else if (target) {
+        byId.set(texStem, target);
+      }
+    }
+
+    refreshFacesAndUVs();
+    setTimeout(refreshFacesAndUVs, 150);
   }
 
   function createProgrammaticProject(format) {
@@ -190,17 +321,7 @@
         );
       }
 
-      if (Array.isArray(payload.textures) && window.Texture) {
-        for (const tex of payload.textures) {
-          if (!tex.data_url) continue;
-          const t = new window.Texture({
-            name: tex.name || (tex.path ? tex.path.split("/").pop() : "texture.png"),
-            path: tex.path || "",
-          }).fromDataURL(tex.data_url);
-          t.__packStudioPath = tex.path || "";
-          t.add(false);
-        }
-      }
+      applyAssociatedTextures(payload.textures);
 
       dismissStartScreenAndEnterEdit();
 
@@ -451,7 +572,18 @@
       syncToStudio,
       openModelFromStudio,
       newBedrockGeometryFromStudio,
+      recalculateLayout: recalculateBlockbenchLayout,
     };
+
+    window.addEventListener("resize", recalculateBlockbenchLayout);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) recalculateBlockbenchLayout();
+    });
+    if (typeof window.ResizeObserver === "function" && document.body) {
+      const ro = new window.ResizeObserver(() => recalculateBlockbenchLayout());
+      ro.observe(document.body);
+    }
+    recalculateBlockbenchLayout();
   }
 
   waitForBlockbenchReady(() => {
@@ -478,12 +610,11 @@
     }
     if (!data || !data.type) return;
 
-    if (data.type === "ps_set_zoom") {
-      const raw = Number(data.zoom);
-      if (!isFinite(raw)) return;
-      const zoom = Math.min(1.5, Math.max(0.5, raw));
-      document.documentElement.style.zoom = String(zoom);
-      document.documentElement.style.fontSize = (zoom * 16) + "px";
+    if (data.type === "ps_set_zoom" || data.type === "ps_resize") {
+      // Host iframe handles visual scale via CSS transform + compensating width/height;
+      // avoid documentElement.style.zoom which breaks WebKitGTK layout & WebGL pointer coords.
+      document.documentElement.style.zoom = "";
+      recalculateBlockbenchLayout();
 
     } else if (data.type === "ps_set_compact") {
       const compact = Boolean(data.compact);
@@ -496,6 +627,7 @@
         document.documentElement.style.removeProperty("--toolbar-height");
         document.documentElement.style.removeProperty("--status-bar-height");
       }
+      recalculateBlockbenchLayout();
 
     } else if (data.type === "ps_reset_zoom") {
       document.documentElement.style.zoom = "";
@@ -503,6 +635,7 @@
       document.documentElement.classList.remove("ps-compact");
       document.documentElement.style.removeProperty("--toolbar-height");
       document.documentElement.style.removeProperty("--status-bar-height");
+      recalculateBlockbenchLayout();
     }
   });
 

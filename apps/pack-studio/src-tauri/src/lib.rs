@@ -340,6 +340,7 @@ mod tests {
                 model_path: Some(String::from("models/entity/chair.geo.json")),
                 model_content: Some(String::from("{\"format_version\":\"1.12.0\"}")),
                 textures: vec![BridgeTexturePayload {
+                    id: None,
                     path: String::from("textures/entity/chair.png"),
                     name: Some(String::from("chair")),
                     data_url: None,

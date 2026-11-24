@@ -1393,14 +1393,36 @@ textarea {
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
   min-height: 0;
+  min-width: 0;
+}
+
+.blockbench-shell.is-hidden {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.blockbench-frame-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
+  background: #1b1b1d;
 }
 
 .blockbench-frame {
-  flex: 1;
+  position: absolute;
+  top: 0;
+  left: 0;
   border: none;
   width: 100%;
-  min-height: 0;
+  height: 100%;
+  transform-origin: top left;
   background: #1b1b1d;
 }
 

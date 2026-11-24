@@ -429,13 +429,16 @@ export default function App() {
     const frame = blockbenchFrameRef.current;
     if (!frame?.contentWindow) return;
     frame.contentWindow.postMessage(
-      { type: "packstudio:set-zoom", zoom: settings.blockbenchUiScale },
+      { type: "ps_set_zoom", zoom: settings.blockbenchUiScale },
       "*",
     );
+    frame.contentWindow.postMessage({ type: "ps_resize" }, "*");
   }, [settings.blockbenchUiScale]);
 
   useEffect(() => {
-    applyBlockbenchScale();
+    if (activeTabId === "tool:blockbench") {
+      applyBlockbenchScale();
+    }
   }, [applyBlockbenchScale, activeTabId]);
 
   const handleRunAudit = useCallback(async () => {
@@ -1504,13 +1507,10 @@ export default function App() {
 
                       {blockbenchTab && blockbenchTab.blockbenchUrl && (
                           <div
-                            className="blockbench-shell"
-                            style={{
-                              display:
-                                activeTab?.kind === "blockbench"
-                                  ? "flex"
-                                  : "none",
-                            }}
+                            className={`blockbench-shell ${
+                              activeTab?.kind === "blockbench" ? "" : "is-hidden"
+                            }`}
+                            aria-hidden={activeTab?.kind !== "blockbench"}
                           >
                             <div className="code-toolbar">
                               <div className="toolbar-group">
@@ -1613,13 +1613,20 @@ export default function App() {
                                 </button>
                               </div>
                             </div>
-                            <iframe
-                              ref={blockbenchFrameRef}
-                              title="Blockbench 3D Studio"
-                              src={blockbenchTab.blockbenchUrl}
-                              className="blockbench-frame"
-                              onLoad={() => applyBlockbenchScale()}
-                            />
+                            <div className="blockbench-frame-wrap">
+                              <iframe
+                                ref={blockbenchFrameRef}
+                                title="Blockbench 3D Studio"
+                                src={blockbenchTab.blockbenchUrl}
+                                className="blockbench-frame"
+                                style={{
+                                  width: `${100 / settings.blockbenchUiScale}%`,
+                                  height: `${100 / settings.blockbenchUiScale}%`,
+                                  transform: `scale(${settings.blockbenchUiScale})`,
+                                }}
+                                onLoad={() => applyBlockbenchScale()}
+                              />
+                            </div>
                           </div>
                         )}
                     </div>

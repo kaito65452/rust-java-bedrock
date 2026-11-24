@@ -27,11 +27,10 @@ const EMBEDDED_BLOCKBENCH_ARCHIVE: &[u8] =
 const EMBEDDED_STUDIO_BRIDGE_JS: &str = include_str!("../../../../scripts/studio_bridge.js");
 
 /// Injected into Blockbench's `index.html` just before `</head>` to apply compact UI overrides
-/// and wire up the `ps_set_zoom` / `ps_set_compact` postMessage API.
+/// without breaking Blockbench's dynamic `#work_screen` grid or WebKitGTK canvas coordinates.
 const BLOCKBENCH_COMPACT_INJECTION: &str = r#"<style>
 /* PackStudio Compact Blockbench Overrides */
-html, body { zoom: 0.84 !important; }
-#work_screen { --toolbar-height: 32px !important; grid-template-columns: 280px auto 260px !important; }
+#work_screen { --toolbar-height: 32px !important; }
 #tab_bar { height: 28px !important; min-height: 28px !important; }
 .toolbar { height: 28px !important; min-height: 28px !important; }
 :root { --status-bar-height: 20px !important; }
@@ -44,13 +43,15 @@ html, body { zoom: 0.84 !important; }
     window.addEventListener('message', function (event) {
         var data = event.data;
         if (!data || typeof data !== 'object') return;
-        if (data.type === 'ps_set_zoom') {
-            document.documentElement.style.zoom = data.zoom;
-        } else if (data.type === 'ps_set_compact') {
+        if (data.type === 'ps_set_compact') {
             if (data.compact) {
                 document.body.classList.add('ps-compact');
             } else {
                 document.body.classList.remove('ps-compact');
+            }
+        } else if (data.type === 'ps_set_zoom' || data.type === 'ps_resize') {
+            if (window.PackStudioBridge && typeof window.PackStudioBridge.recalculateLayout === 'function') {
+                window.PackStudioBridge.recalculateLayout();
             }
         }
     });
@@ -83,6 +84,9 @@ pub struct BlockbenchSavedEvent {
 /// Texture attachment pushed Studio <-> Blockbench.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeTexturePayload {
+    /// Optional model texture key/id (e.g. `"0"`, `"layer0"`, `"all"` for Java models).
+    #[serde(default)]
+    pub id: Option<String>,
     pub path: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -594,6 +598,7 @@ pub fn blockbench_open_asset(
             let mut tex_list = Vec::new();
             if let Some(bytes) = pack.container.get(&rel_path) {
                 tex_list.push(BridgeTexturePayload {
+                    id: None,
                     path: rel_path.clone(),
                     name: rel_path.rsplit('/').next().map(ToString::to_string),
                     data_url: Some(format!(
@@ -621,7 +626,8 @@ pub fn blockbench_open_asset(
                 .container
                 .get(&rel_path)
                 .map(|b| rp_core::decode_minecraft_text(b).into_owned());
-            let textures = collect_associated_textures(&pack.container, &rel_path);
+            let textures =
+                collect_associated_textures(&pack.container, &rel_path, content.as_deref());
             StudioToBlockbenchCommand::OpenModel {
                 path: rel_path,
                 format_hint: String::from(hint),
@@ -671,11 +677,97 @@ pub fn blockbench_new_bedrock_geo(
     Ok(info)
 }
 
+fn resolve_java_texture_ref<'a>(
+    textures_map: &'a serde_json::Map<String, serde_json::Value>,
+    raw_ref: &'a str,
+) -> Option<&'a str> {
+    let mut current = raw_ref.trim();
+    for _ in 0..8 {
+        if let Some(target_key) = current.strip_prefix('#') {
+            current = textures_map.get(target_key)?.as_str()?.trim();
+        } else {
+            return if current.is_empty() { None } else { Some(current) };
+        }
+    }
+    None
+}
+
+fn lookup_texture_in_container<'a>(
+    container: &'a PackContainer,
+    tex_ref: &str,
+) -> Option<(String, &'a [u8])> {
+    let clean = tex_ref.trim().trim_start_matches('/');
+    let (ns, subpath) = match clean.split_once(':') {
+        Some((n, p)) => (n.trim(), p.trim().trim_start_matches('/')),
+        None => ("minecraft", clean),
+    };
+    let subpath_no_ext = subpath.strip_suffix(".png").unwrap_or(subpath);
+    let candidates = [
+        format!("assets/{ns}/textures/{subpath_no_ext}.png"),
+        format!("textures/{subpath_no_ext}.png"),
+    ];
+    for cand in &candidates {
+        if let Some(bytes) = container.get(cand) {
+            return Some((cand.clone(), bytes.as_slice()));
+        }
+    }
+    let lower_cands: Vec<String> = candidates.iter().map(|c| c.to_ascii_lowercase()).collect();
+    for (path, bytes) in container.files() {
+        let lp = path.to_ascii_lowercase();
+        if lower_cands.iter().any(|c| c == &lp) {
+            return Some((path.clone(), bytes.as_slice()));
+        }
+    }
+    None
+}
+
 fn collect_associated_textures(
     container: &PackContainer,
     model_path: &str,
+    model_content: Option<&str>,
 ) -> Vec<BridgeTexturePayload> {
     let mut out = Vec::new();
+    let lower_model = model_path.to_ascii_lowercase();
+
+    // 1. Parse Java model `"textures"` map (resolving `#reference` chains and `<ns>:<path>`).
+    if lower_model.ends_with(".json")
+        && !lower_model.ends_with(".geo.json")
+        && let Some(raw) = model_content
+    {
+        let stripped = rp_core::strip_jsonc(raw);
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stripped)
+            && let Some(tex_map) = val.get("textures").and_then(serde_json::Value::as_object)
+        {
+            for (tex_key, tex_val) in tex_map {
+                let Some(raw_ref) = tex_val.as_str() else {
+                    continue;
+                };
+                let Some(resolved_ref) = resolve_java_texture_ref(tex_map, raw_ref) else {
+                    continue;
+                };
+                if let Some((found_path, bytes)) =
+                    lookup_texture_in_container(container, resolved_ref)
+                {
+                    out.push(BridgeTexturePayload {
+                        id: Some(tex_key.clone()),
+                        path: found_path.clone(),
+                        name: found_path.rsplit('/').next().map(ToString::to_string),
+                        data_url: Some(format!(
+                            "data:image/png;base64,{}",
+                            BASE64_STANDARD.encode(bytes)
+                        )),
+                        png_base64: None,
+                    });
+                }
+            }
+        }
+    }
+
+    if !out.is_empty() {
+        return out;
+    }
+
+    // 2. Fallback: filename stem matching for Bedrock `.geo.json`, `.bbmodel`, or parent-only models.
     let stem = model_path
         .rsplit('/')
         .next()
@@ -692,6 +784,7 @@ fn collect_associated_textures(
         let fname = lower.rsplit('/').next().unwrap_or(&lower);
         if fname.starts_with(&stem) {
             out.push(BridgeTexturePayload {
+                id: None,
                 path: path.clone(),
                 name: path.rsplit('/').next().map(ToString::to_string),
                 data_url: Some(format!(
@@ -700,7 +793,7 @@ fn collect_associated_textures(
                 )),
                 png_base64: None,
             });
-            if out.len() >= 4 {
+            if out.len() >= 8 {
                 break;
             }
         }
@@ -1209,12 +1302,12 @@ mod tests {
             "injection should contain ps_set_zoom listener"
         );
         assert!(
-            result.contains("zoom: 0.84 !important"),
-            "injection should contain zoom: 0.84 !important CSS"
+            !result.contains("grid-template-columns"),
+            "injection must not hard-override #work_screen grid-template-columns"
         );
         assert!(
-            result.contains("0.84"),
-            "injection should reference 0.84 zoom value in JS"
+            !result.contains("zoom: 0.84"),
+            "injection must not apply CSS zoom to html/body"
         );
         // Should still have </head> after injection
         assert!(result.contains("</head>"), "output should still contain </head>");
@@ -1222,6 +1315,36 @@ mod tests {
         let inj_pos = result.find("ps_set_zoom").unwrap();
         let head_pos = result.find("</head>").unwrap();
         assert!(inj_pos < head_pos, "injection should come before </head>");
+    }
+
+    #[test]
+    fn test_collect_associated_textures_java_model() {
+        let mut container = PackContainer::new();
+        container
+            .insert("assets/minecraft/textures/item/custom_hat.png", vec![1, 2, 3, 4])
+            .unwrap();
+        container
+            .insert("assets/custom/textures/block/trim.png", vec![5, 6, 7, 8])
+            .unwrap();
+        let model_json = r##"{
+            "textures": {
+                "0": "item/custom_hat",
+                "1": "custom:block/trim",
+                "particle": "#0"
+            }
+        }"##;
+        let texs = collect_associated_textures(
+            &container,
+            "assets/minecraft/models/item/carved_pumpkin.json",
+            Some(model_json),
+        );
+        assert_eq!(texs.len(), 3);
+        assert!(texs.iter().any(|t| t.id.as_deref() == Some("0")
+            && t.path == "assets/minecraft/textures/item/custom_hat.png"));
+        assert!(texs.iter().any(|t| t.id.as_deref() == Some("1")
+            && t.path == "assets/custom/textures/block/trim.png"));
+        assert!(texs.iter().any(|t| t.id.as_deref() == Some("particle")
+            && t.path == "assets/minecraft/textures/item/custom_hat.png"));
     }
 
     #[test]
