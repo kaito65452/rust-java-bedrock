@@ -465,7 +465,7 @@ pub fn scaffold_project_on_disk(cfg: &NewProjectConfig) -> Result<PathBuf> {
     } else {
         slug
     };
-    let project_root = parent.join(folder);
+    let project_root = parent.join(&folder);
     fs::create_dir_all(&project_root)?;
 
     let icon_png = load_or_generate_icon(cfg.icon_path.as_deref(), cfg.kind)?;
