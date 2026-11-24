@@ -1,4 +1,8 @@
 export type Edition = "java" | "bedrock";
+export type PackType =
+  | "java_resource_pack"
+  | "bedrock_resource_pack"
+  | "bedrock_addon";
 export type AuditStatus = "passed" | "partial" | "failed";
 export type WarningSeverity = "info" | "warning" | "error";
 export type PipelineStage = "scan" | "resolve" | "transform" | "emit" | "audit";
@@ -24,6 +28,7 @@ export interface ProjectSnapshot {
   is_directory: boolean;
   companion_bp_dir: string | null;
   edition: Edition;
+  pack_type: PackType;
   edition_label: string;
   file_count: number;
   texture_count: number;
@@ -46,6 +51,7 @@ export interface NewProjectConfig {
   bedrock_min_engine_version: [number, number, number];
   icon_path: string | null;
   target_parent_dir: string;
+  include_pstdr_workspace?: boolean;
 }
 
 export interface BinaryAssetData {
@@ -77,6 +83,7 @@ export interface DetectedFileManagers {
 
 export interface PackMetadataDto {
   edition: Edition;
+  pack_type: PackType;
   name: string;
   description: string;
   authors: string[];
@@ -90,6 +97,10 @@ export interface PackMetadataDto {
   bedrock_header_uuid: string;
   bedrock_module_uuid: string;
   bedrock_capabilities: string[];
+  bp_header_uuid?: string | null;
+  bp_module_uuid?: string | null;
+  bp_script_module_uuid?: string | null;
+  bp_script_entry?: string | null;
   icon_base64_png: string | null;
 }
 
@@ -159,6 +170,7 @@ export interface ConversionResultDto {
 
 export interface AuditResultDto {
   edition: Edition;
+  pack_type: PackType;
   status: AuditStatus;
   summary: string;
   problems: ConversionWarning[];
@@ -173,6 +185,7 @@ export interface PackageExportConfig {
   compression: "fast" | "balanced" | "maximum";
   run_semantic_audit: boolean;
   allow_export_with_errors: boolean;
+  include_dev_sources?: boolean;
 }
 
 export interface PackageExportSummary {

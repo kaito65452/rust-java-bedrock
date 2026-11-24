@@ -6,7 +6,19 @@ use std::sync::{Arc, Mutex};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rp_core::{Edition, ResolutionTier};
 use rp_io::PackContainer;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Explicit 3-mode pack classification for PackStudio workspaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackType {
+    /// Java Edition Resource Pack (`pack.mcmeta` + `assets/`).
+    JavaResourcePack,
+    /// Single Bedrock Edition Resource Pack (`manifest.json` with `"resources"` module at root).
+    BedrockResourcePack,
+    /// Bedrock Edition Add-on workspace (`BP/` + `RP/`, optional `pstdr.toml` + `src/*.pstdr`).
+    BedrockAddon,
+}
 
 use crate::blockbench::BlockbenchHost;
 use crate::extensions::{BUILTIN_MINECRAFT_EXT_ID, default_extensions_dir, load_persisted_state};
@@ -30,6 +42,7 @@ pub struct ProjectSnapshot {
     pub is_directory: bool,
     pub companion_bp_dir: Option<String>,
     pub edition: Edition,
+    pub pack_type: PackType,
     pub edition_label: String,
     pub file_count: usize,
     pub texture_count: usize,
@@ -45,6 +58,7 @@ pub struct ActivePackState {
     pub companion_bp_dir: Option<PathBuf>,
     pub container: PackContainer,
     pub edition: Edition,
+    pub pack_type: PackType,
     pub pack_name: String,
     pub edition_label: String,
     pub extra_folders: BTreeSet<String>,
@@ -171,6 +185,7 @@ impl ActivePackState {
                 .as_ref()
                 .map(|p| p.display().to_string()),
             edition: self.edition,
+            pack_type: self.pack_type,
             edition_label: self.edition_label.clone(),
             file_count: self.container.len(),
             texture_count,

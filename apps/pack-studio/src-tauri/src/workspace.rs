@@ -18,7 +18,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-use crate::state::{ActivePackState, PackWatcherHandle, ProjectSnapshot, StudioState};
+use crate::state::{ActivePackState, PackType, PackWatcherHandle, ProjectSnapshot, StudioState};
 use crate::texture::{
     TextureFormatKind, compute_dominant_resolution, decode_texture_bytes, encode_texture_bytes,
     resize_nearest_neighbor,
@@ -34,6 +34,10 @@ pub enum ProjectTemplateKind {
     JavaResourcePack,
     BedrockResourcePack,
     BedrockAddonWorkspace,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// Wizard payload sent from frontend `create_project`.
@@ -52,6 +56,8 @@ pub struct NewProjectConfig {
     pub bedrock_min_engine_version: [u32; 3],
     pub icon_path: Option<String>,
     pub target_parent_dir: String,
+    #[serde(default = "default_true")]
+    pub include_pstdr_workspace: bool,
 }
 
 /// Binary file response returned to the Texture Viewer / 2D Paint Editor.
@@ -92,10 +98,12 @@ pub struct DetectedFileManagers {
     pub yazi_install_hint: String,
 }
 
-/// Unified metadata DTO synced 2-way with `pack.mcmeta` / `manifest.json`.
+/// Unified metadata DTO synced 2-way with `pack.mcmeta`, `manifest.json`, or linked `BP/manifest.json` + `RP/manifest.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackMetadataDto {
     pub edition: Edition,
+    #[serde(default = "default_pack_type")]
+    pub pack_type: PackType,
     pub name: String,
     pub description: String,
     pub authors: Vec<String>,
@@ -109,7 +117,19 @@ pub struct PackMetadataDto {
     pub bedrock_header_uuid: String,
     pub bedrock_module_uuid: String,
     pub bedrock_capabilities: Vec<String>,
+    #[serde(default)]
+    pub bp_header_uuid: Option<String>,
+    #[serde(default)]
+    pub bp_module_uuid: Option<String>,
+    #[serde(default)]
+    pub bp_script_module_uuid: Option<String>,
+    #[serde(default)]
+    pub bp_script_entry: Option<String>,
     pub icon_base64_png: Option<String>,
+}
+
+const fn default_pack_type() -> PackType {
+    PackType::BedrockResourcePack
 }
 
 /// Sanitizes an arbitrary string into a lowercase Minecraft slug (`[a-z0-9_-]`).
@@ -234,25 +254,105 @@ fn strip_known_ext(path: &str) -> &str {
     path
 }
 
-/// Detects edition from container root metadata (`pack.mcmeta` vs `manifest.json`).
-pub fn detect_pack_edition(container: &PackContainer) -> Result<Edition> {
+/// Locates the `BP/` and `RP/` sub-pack folder prefixes (ending with `/`) inside a Bedrock Add-on container.
+#[must_use]
+pub fn find_addon_subpack_prefixes(container: &PackContainer) -> (Option<String>, Option<String>) {
+    let mut bp_prefix: Option<String> = None;
+    let mut rp_prefix: Option<String> = None;
+
+    for (path, bytes) in container.files() {
+        let Some((dir, file)) = path.split_once('/') else {
+            continue;
+        };
+        if file.contains('/') || !file.eq_ignore_ascii_case("manifest.json") {
+            continue;
+        }
+        let dir_lower = dir.to_ascii_lowercase();
+        let prefix = format!("{dir}/");
+        if matches!(
+            dir_lower.as_str(),
+            "bp" | "behavior_pack" | "behaviour_pack" | "behavior" | "behaviour"
+        ) {
+            bp_prefix = Some(prefix);
+            continue;
+        }
+        if matches!(dir_lower.as_str(), "rp" | "resource_pack" | "resources") {
+            rp_prefix = Some(prefix);
+            continue;
+        }
+        // Inspect manifest module types for non-standard folder names (e.g. `my_addon_bp/`).
+        if let Ok(val) = parse_minecraft_json::<serde_json::Value>(bytes)
+            && let Some(mods) = val.get("modules").and_then(serde_json::Value::as_array)
+        {
+            let has_resources = mods.iter().any(|m| {
+                m.get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|t| t.eq_ignore_ascii_case("resources"))
+            });
+            let has_bp_mod = mods.iter().any(|m| {
+                m.get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|t| {
+                        t.eq_ignore_ascii_case("data") || t.eq_ignore_ascii_case("script")
+                    })
+            });
+            if has_bp_mod && bp_prefix.is_none() {
+                bp_prefix = Some(prefix);
+            } else if has_resources && rp_prefix.is_none() {
+                rp_prefix = Some(prefix);
+            }
+        }
+    }
+
+    (bp_prefix, rp_prefix)
+}
+
+/// Detects the first-class `PackType` from container structure.
+pub fn detect_pack_type(container: &PackContainer) -> Result<PackType> {
     if container.contains("pack.mcmeta") {
-        Ok(Edition::Java)
-    } else if container.contains("manifest.json") {
-        Ok(Edition::Bedrock)
-    } else {
-        bail!("Unable to detect pack edition: missing both 'pack.mcmeta' and 'manifest.json'")
+        return Ok(PackType::JavaResourcePack);
+    }
+    if container.contains("manifest.json") {
+        return Ok(PackType::BedrockResourcePack);
+    }
+    let (bp_prefix, rp_prefix) = find_addon_subpack_prefixes(container);
+    let has_pstdr = container
+        .files()
+        .keys()
+        .any(|k| !k.contains('/') && k.eq_ignore_ascii_case("pstdr.toml"));
+    if (bp_prefix.is_some() && rp_prefix.is_some())
+        || (has_pstdr && (bp_prefix.is_some() || rp_prefix.is_some()))
+    {
+        return Ok(PackType::BedrockAddon);
+    }
+    bail!(
+        "Unable to detect pack type: missing 'pack.mcmeta', 'manifest.json', or Bedrock Add-on BP/RP manifests"
+    )
+}
+
+/// Detects edition from container structure (`Java` vs `Bedrock`).
+pub fn detect_pack_edition(container: &PackContainer) -> Result<Edition> {
+    match detect_pack_type(container)? {
+        PackType::JavaResourcePack => Ok(Edition::Java),
+        PackType::BedrockResourcePack | PackType::BedrockAddon => Ok(Edition::Bedrock),
     }
 }
 
-/// Loads a resource pack from disk (folder, `.zip`, or `.mcpack`) into an `ActivePackState`.
+/// Loads a resource pack or Bedrock Add-on workspace from disk (folder, `.zip`, `.mcpack`, or `.mcaddon`)
+/// into an `ActivePackState`.
 pub fn load_active_pack_from_path(path: &Path) -> Result<ActivePackState> {
     let container = PackContainer::read_from_path(path, IoLimits::default())
         .with_context(|| format!("failed reading pack '{}'", path.display()))?;
-    let edition = detect_pack_edition(&container)?;
+    let pack_type = detect_pack_type(&container)?;
+    let edition = match pack_type {
+        PackType::JavaResourcePack => Edition::Java,
+        PackType::BedrockResourcePack | PackType::BedrockAddon => Edition::Bedrock,
+    };
     let is_directory = path.is_dir();
 
-    let companion_bp_dir = if is_directory
+    // Backward compatibility: if user opens an isolated `RP/` folder next to a sibling `../BP/`.
+    let companion_bp_dir = if pack_type == PackType::BedrockResourcePack
+        && is_directory
         && path.file_name().and_then(|n| n.to_str()) == Some("RP")
     {
         let sibling_bp = path.parent().map(|p| p.join("BP"));
@@ -266,7 +366,7 @@ pub fn load_active_pack_from_path(path: &Path) -> Result<ActivePackState> {
         .and_then(|s| s.to_str())
         .map_or_else(|| path.display().to_string(), ToString::to_string);
 
-    let (pack_name, edition_label) = extract_pack_identity(&display_name, &container, edition);
+    let (pack_name, edition_label) = extract_pack_identity(&display_name, &container, pack_type);
 
     Ok(ActivePackState {
         source_path: Some(path.to_path_buf()),
@@ -274,6 +374,7 @@ pub fn load_active_pack_from_path(path: &Path) -> Result<ActivePackState> {
         companion_bp_dir,
         container,
         edition,
+        pack_type,
         pack_name,
         edition_label,
         extra_folders: Default::default(),
@@ -283,10 +384,10 @@ pub fn load_active_pack_from_path(path: &Path) -> Result<ActivePackState> {
 fn extract_pack_identity(
     fallback_name: &str,
     container: &PackContainer,
-    edition: Edition,
+    pack_type: PackType,
 ) -> (String, String) {
-    match edition {
-        Edition::Java => {
+    match pack_type {
+        PackType::JavaResourcePack => {
             let mut name = fallback_name.to_string();
             let mut label = String::from("Java Edition");
             if let Some(bytes) = container.get("pack.mcmeta") {
@@ -304,7 +405,7 @@ fn extract_pack_identity(
             }
             (name, label)
         }
-        Edition::Bedrock => {
+        PackType::BedrockResourcePack => {
             if let Some(bytes) = container.get("manifest.json")
                 && let Ok(manifest) = parse_minecraft_json::<BedrockManifest>(bytes)
             {
@@ -317,6 +418,32 @@ fn extract_pack_identity(
                 return (name, format!("Bedrock {}.{}.{}", v[0], v[1], v[2]));
             }
             (fallback_name.to_string(), String::from("Bedrock 1.x.x"))
+        }
+        PackType::BedrockAddon => {
+            let (bp_prefix, rp_prefix) = find_addon_subpack_prefixes(container);
+            let rp_bytes = rp_prefix
+                .as_deref()
+                .and_then(|p| container.get(&format!("{p}manifest.json")));
+            let bp_bytes = bp_prefix
+                .as_deref()
+                .and_then(|p| container.get(&format!("{p}manifest.json")));
+            if let Some(bytes) = rp_bytes.or(bp_bytes)
+                && let Ok(manifest) = parse_minecraft_json::<BedrockManifest>(bytes)
+            {
+                let v = manifest.header.min_engine_version;
+                let raw_name = manifest.header.name.trim();
+                let cleaned = raw_name
+                    .strip_suffix("(Behavior Pack)")
+                    .map(str::trim)
+                    .unwrap_or(raw_name);
+                let name = if cleaned.is_empty() {
+                    fallback_name.to_string()
+                } else {
+                    cleaned.to_string()
+                };
+                return (name, format!("Bedrock Add-on {}.{}.{}", v[0], v[1], v[2]));
+            }
+            (fallback_name.to_string(), String::from("Bedrock Add-on"))
         }
     }
 }
@@ -445,7 +572,10 @@ pub fn scaffold_project_on_disk(cfg: &NewProjectConfig) -> Result<PathBuf> {
                 Some((rp_uuid, bp_uuid)),
             )?;
             scaffold_bedrock_bp_dir(&bp_dir, cfg, &authors, &icon_png, bp_uuid, rp_uuid)?;
-            Ok(rp_dir)
+            if cfg.include_pstdr_workspace {
+                scaffold_pstdr_workspace(&project_root, &folder, cfg)?;
+            }
+            Ok(project_root)
         }
     }
 }
@@ -561,7 +691,7 @@ fn scaffold_bedrock_bp_dir(
     bp_uuid: Uuid,
     rp_uuid: Uuid,
 ) -> Result<()> {
-    for d in ["blocks", "items", "entities", "texts"] {
+    for d in ["blocks", "items", "entities", "scripts", "texts"] {
         fs::create_dir_all(root.join(d))?;
     }
     let mut min_ver = normalize_bedrock_engine_triplet(cfg.bedrock_min_engine_version);
@@ -570,6 +700,10 @@ fn scaffold_bedrock_bp_dir(
     let mut bp_mod = Uuid::new_v4();
     while bp_mod == bp_uuid || bp_mod == rp_uuid {
         bp_mod = Uuid::new_v4();
+    }
+    let mut script_mod = Uuid::new_v4();
+    while script_mod == bp_uuid || script_mod == rp_uuid || script_mod == bp_mod {
+        script_mod = Uuid::new_v4();
     }
     let final_authors = if authors.is_empty() {
         vec![String::from("PackStudio Artist")]
@@ -586,16 +720,32 @@ fn scaffold_bedrock_bp_dir(
             "version": cfg.version,
             "min_engine_version": min_ver
         },
-        "modules": [{
-            "description": cfg.description,
-            "type": "data",
-            "uuid": bp_mod.to_string(),
-            "version": cfg.version
-        }],
-        "dependencies": [{
-            "uuid": rp_uuid.to_string(),
-            "version": cfg.version
-        }],
+        "modules": [
+            {
+                "description": cfg.description,
+                "type": "data",
+                "uuid": bp_mod.to_string(),
+                "version": cfg.version
+            },
+            {
+                "description": "Scripting API Module (@minecraft/server 2.11.0)",
+                "type": "script",
+                "language": "javascript",
+                "uuid": script_mod.to_string(),
+                "version": cfg.version,
+                "entry": "scripts/main.js"
+            }
+        ],
+        "dependencies": [
+            {
+                "uuid": rp_uuid.to_string(),
+                "version": cfg.version
+            },
+            {
+                "module_name": "@minecraft/server",
+                "version": "2.11.0"
+            }
+        ],
         "metadata": {
             "authors": final_authors,
             "license": cfg.license.trim(),
@@ -604,6 +754,34 @@ fn scaffold_bedrock_bp_dir(
     });
     fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&bp_manifest)?)?;
     fs::write(root.join("pack_icon.png"), icon_png)?;
+    fs::write(
+        root.join("scripts/main.js"),
+        format!(
+            "import {{ world }} from \"@minecraft/server\";\n\nworld.afterEvents.worldLoad.subscribe(() => {{\n  console.warn(\"[{}] Behavior Pack script initialized.\");\n}});\n",
+            cfg.pack_name.trim().replace('"', "\\\"")
+        ),
+    )?;
+    Ok(())
+}
+
+fn scaffold_pstdr_workspace(
+    project_root: &Path,
+    slug: &str,
+    cfg: &NewProjectConfig,
+) -> Result<()> {
+    let src_dir = project_root.join("src");
+    fs::create_dir_all(&src_dir)?;
+    let ver = format!("{}.{}.{}", cfg.version[0], cfg.version[1], cfg.version[2]);
+    let desc_escaped = cfg.description.replace('"', "\\\"");
+    let toml = format!(
+        "[package]\nname = \"{slug}\"\nversion = \"{ver}\"\ndescription = \"{desc_escaped}\"\n\n[target]\nedition = \"bedrock\"\nminecraft_version = \"26.60\"\nscript_api = \"@minecraft/server\"\nscript_api_version = \"2.11.0\"\n\n[paths]\nsrc = \"src\"\nbehavior_pack = \"BP\"\nresource_pack = \"RP\"\n"
+    );
+    fs::write(project_root.join("pstdr.toml"), toml)?;
+
+    let main_pstdr = format!(
+        "// PackStudio Add-on DSL starter (Bedrock 26.60 / @minecraft/server 2.11.0)\naddon \"{slug}\" {{\n    version = \"{ver}\";\n    target = \"bedrock:26.60\";\n}}\n"
+    );
+    fs::write(src_dir.join("main.pstdr"), main_pstdr)?;
     Ok(())
 }
 
@@ -1307,7 +1485,7 @@ pub fn reveal_in_file_manager(
     Ok(())
 }
 
-/// Tauri Command: Read structured `pack.mcmeta` / `manifest.json` metadata + icon from active pack.
+/// Tauri Command: Read structured `pack.mcmeta`, `manifest.json`, or linked `BP/manifest.json` + `RP/manifest.json` metadata + icon from active pack.
 #[tauri::command]
 pub fn get_pack_metadata(state: tauri::State<'_, StudioState>) -> Result<PackMetadataDto, String> {
     let guard = state
@@ -1318,8 +1496,35 @@ pub fn get_pack_metadata(state: tauri::State<'_, StudioState>) -> Result<PackMet
         .as_ref()
         .ok_or_else(|| String::from("No resource pack currently open"))?;
 
+    let (bp_prefix, rp_prefix) = if pack.pack_type == PackType::BedrockAddon {
+        find_addon_subpack_prefixes(&pack.container)
+    } else {
+        (None, None)
+    };
+
+    let icon_bytes = match pack.pack_type {
+        PackType::JavaResourcePack => pack
+            .container
+            .get("pack.png")
+            .or_else(|| pack.container.get("pack_icon.png")),
+        PackType::BedrockResourcePack => pack
+            .container
+            .get("pack_icon.png")
+            .or_else(|| pack.container.get("pack.png")),
+        PackType::BedrockAddon => rp_prefix
+            .as_deref()
+            .and_then(|p| pack.container.get(&format!("{p}pack_icon.png")))
+            .or_else(|| {
+                bp_prefix
+                    .as_deref()
+                    .and_then(|p| pack.container.get(&format!("{p}pack_icon.png")))
+            })
+            .or_else(|| pack.container.get("pack_icon.png")),
+    };
+
     let mut dto = PackMetadataDto {
         edition: pack.edition,
+        pack_type: pack.pack_type,
         name: pack.pack_name.clone(),
         description: String::new(),
         authors: vec![String::from("PackStudio Artist")],
@@ -1329,79 +1534,68 @@ pub fn get_pack_metadata(state: tauri::State<'_, StudioState>) -> Result<PackMet
         java_pack_format: 34,
         java_supported_formats: Some([15, 64]),
         bedrock_format_version: 2,
-        bedrock_min_engine_version: [1, 21, 0],
+        bedrock_min_engine_version: [1, 21, 50],
         bedrock_header_uuid: Uuid::new_v4().to_string(),
         bedrock_module_uuid: Uuid::new_v4().to_string(),
         bedrock_capabilities: Vec::new(),
-        icon_base64_png: pack
-            .container
-            .get("pack_icon.png")
-            .or_else(|| pack.container.get("pack.png"))
-            .map(|b| BASE64_STANDARD.encode(b)),
+        bp_header_uuid: None,
+        bp_module_uuid: None,
+        bp_script_module_uuid: None,
+        bp_script_entry: None,
+        icon_base64_png: icon_bytes.map(|b| BASE64_STANDARD.encode(b)),
     };
 
-    if let Some(bytes) = pack.container.get("pack.mcmeta") {
-        if let Ok(mcmeta) = parse_minecraft_json::<JavaPackMcmeta>(bytes)
-            && let Ok((fmt, range, desc)) = mcmeta.validate_and_extract()
-        {
-            dto.java_pack_format = fmt;
-            dto.java_supported_formats = range;
-            dto.description = desc;
-        }
-        if let Ok(raw) = parse_minecraft_json::<serde_json::Value>(bytes)
-            && let Some(meta) = raw.get("meta").and_then(|v| v.as_object())
-        {
-            if let Some(n) = meta.get("name").and_then(|v| v.as_str()) {
-                dto.name = n.to_string();
-            }
-            if let Some(arr) = meta.get("authors").and_then(|v| v.as_array()) {
-                let parsed: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
-                    .collect();
-                if !parsed.is_empty() {
-                    dto.authors = parsed;
+    match pack.pack_type {
+        PackType::JavaResourcePack => {
+            if let Some(bytes) = pack.container.get("pack.mcmeta") {
+                if let Ok(mcmeta) = parse_minecraft_json::<JavaPackMcmeta>(bytes)
+                    && let Ok((fmt, range, desc)) = mcmeta.validate_and_extract()
+                {
+                    dto.java_pack_format = fmt;
+                    dto.java_supported_formats = range;
+                    dto.description = desc;
+                }
+                if let Ok(raw) = parse_minecraft_json::<serde_json::Value>(bytes)
+                    && let Some(meta) = raw.get("meta").and_then(|v| v.as_object())
+                {
+                    if let Some(n) = meta.get("name").and_then(|v| v.as_str()) {
+                        dto.name = n.to_string();
+                    }
+                    if let Some(arr) = meta.get("authors").and_then(|v| v.as_array()) {
+                        let parsed: Vec<String> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str().map(ToString::to_string))
+                            .collect();
+                        if !parsed.is_empty() {
+                            dto.authors = parsed;
+                        }
+                    }
+                    if let Some(l) = meta.get("license").and_then(|v| v.as_str()) {
+                        dto.license = l.to_string();
+                    }
+                    if let Some(u) = meta.get("url").and_then(|v| v.as_str()) {
+                        dto.url = u.to_string();
+                    }
                 }
             }
-            if let Some(l) = meta.get("license").and_then(|v| v.as_str()) {
-                dto.license = l.to_string();
-            }
-            if let Some(u) = meta.get("url").and_then(|v| v.as_str()) {
-                dto.url = u.to_string();
+        }
+        PackType::BedrockResourcePack => {
+            if let Some(bytes) = pack.container.get("manifest.json") {
+                populate_bedrock_manifest_into_dto(bytes, &mut dto, false);
             }
         }
-    }
-
-    if let Some(bytes) = pack.container.get("manifest.json") {
-        if let Ok(manifest) = parse_minecraft_json::<BedrockManifest>(bytes) {
-            dto.bedrock_format_version = manifest.format_version.clamp(1, 3);
-            dto.name = manifest.header.name;
-            dto.description = manifest.header.description;
-            dto.version = manifest.header.version;
-            dto.bedrock_min_engine_version =
-                normalize_bedrock_engine_triplet(manifest.header.min_engine_version);
-            if dto.bedrock_min_engine_version[0] != 1 {
-                dto.bedrock_min_engine_version[0] = 1;
-            }
-            dto.bedrock_header_uuid = manifest.header.uuid.to_string();
-            if let Some(first_mod) = manifest.modules.first() {
-                dto.bedrock_module_uuid = first_mod.uuid.to_string();
-            }
-            dto.bedrock_capabilities = manifest.capabilities;
-            if let Some(m) = manifest.metadata
-                && !m.authors.is_empty()
+        PackType::BedrockAddon => {
+            if let Some(bp_bytes) = bp_prefix
+                .as_deref()
+                .and_then(|p| pack.container.get(&format!("{p}manifest.json")))
             {
-                dto.authors = m.authors;
+                populate_bedrock_manifest_into_dto(bp_bytes, &mut dto, true);
             }
-        }
-        if let Ok(raw) = parse_minecraft_json::<serde_json::Value>(bytes)
-            && let Some(meta) = raw.get("metadata").and_then(|v| v.as_object())
-        {
-            if let Some(l) = meta.get("license").and_then(|v| v.as_str()) {
-                dto.license = l.to_string();
-            }
-            if let Some(u) = meta.get("url").and_then(|v| v.as_str()) {
-                dto.url = u.to_string();
+            if let Some(rp_bytes) = rp_prefix
+                .as_deref()
+                .and_then(|p| pack.container.get(&format!("{p}manifest.json")))
+            {
+                populate_bedrock_manifest_into_dto(rp_bytes, &mut dto, false);
             }
         }
     }
@@ -1409,7 +1603,80 @@ pub fn get_pack_metadata(state: tauri::State<'_, StudioState>) -> Result<PackMet
     Ok(dto)
 }
 
-/// Tauri Command: Persist metadata edits back to `pack.mcmeta` or `manifest.json` cleanly.
+fn populate_bedrock_manifest_into_dto(bytes: &[u8], dto: &mut PackMetadataDto, is_bp: bool) {
+    if let Ok(manifest) = parse_minecraft_json::<BedrockManifest>(bytes) {
+        dto.bedrock_format_version = manifest.format_version.clamp(1, 3);
+        let cleaned_name = if is_bp {
+            manifest
+                .header
+                .name
+                .trim()
+                .strip_suffix("(Behavior Pack)")
+                .map(str::trim)
+                .unwrap_or(manifest.header.name.trim())
+                .to_string()
+        } else {
+            manifest.header.name
+        };
+        if !cleaned_name.is_empty() {
+            dto.name = cleaned_name;
+        }
+        dto.description = manifest.header.description;
+        dto.version = manifest.header.version;
+        dto.bedrock_min_engine_version =
+            normalize_bedrock_engine_triplet(manifest.header.min_engine_version);
+        if dto.bedrock_min_engine_version[0] != 1 {
+            dto.bedrock_min_engine_version[0] = 1;
+        }
+        if is_bp {
+            dto.bp_header_uuid = Some(manifest.header.uuid.to_string());
+        } else {
+            dto.bedrock_header_uuid = manifest.header.uuid.to_string();
+            if let Some(first_mod) = manifest.modules.first() {
+                dto.bedrock_module_uuid = first_mod.uuid.to_string();
+            }
+            dto.bedrock_capabilities = manifest.capabilities;
+        }
+        if let Some(m) = manifest.metadata
+            && !m.authors.is_empty()
+        {
+            dto.authors = m.authors;
+        }
+    }
+    if let Ok(raw) = parse_minecraft_json::<serde_json::Value>(bytes) {
+        if is_bp && let Some(mods) = raw.get("modules").and_then(serde_json::Value::as_array) {
+            for m in mods {
+                let mtype = m
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let muuid = m
+                    .get("uuid")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string);
+                if mtype.eq_ignore_ascii_case("data") && dto.bp_module_uuid.is_none() {
+                    dto.bp_module_uuid = muuid;
+                } else if mtype.eq_ignore_ascii_case("script") {
+                    dto.bp_script_module_uuid = muuid;
+                    dto.bp_script_entry = m
+                        .get("entry")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToString::to_string);
+                }
+            }
+        }
+        if let Some(meta) = raw.get("metadata").and_then(|v| v.as_object()) {
+            if let Some(l) = meta.get("license").and_then(|v| v.as_str()) {
+                dto.license = l.to_string();
+            }
+            if let Some(u) = meta.get("url").and_then(|v| v.as_str()) {
+                dto.url = u.to_string();
+            }
+        }
+    }
+}
+
+/// Tauri Command: Persist metadata edits back to `pack.mcmeta`, `manifest.json`, or linked `BP/manifest.json` + `RP/manifest.json`.
 #[tauri::command]
 pub fn save_pack_metadata(
     state: tauri::State<'_, StudioState>,
@@ -1423,8 +1690,8 @@ pub fn save_pack_metadata(
         .as_mut()
         .ok_or_else(|| String::from("No resource pack currently open"))?;
 
-    match pack.edition {
-        Edition::Java => {
+    match pack.pack_type {
+        PackType::JavaResourcePack => {
             let fmt = metadata.java_pack_format.clamp(1, 200);
             let mut pack_obj = serde_json::Map::new();
             pack_obj.insert(String::from("pack_format"), json!(fmt));
@@ -1460,7 +1727,7 @@ pub fn save_pack_metadata(
             pack.pack_name = metadata.name;
             pack.edition_label = format!("Java (fmt {fmt})");
         }
-        Edition::Bedrock => {
+        PackType::BedrockResourcePack => {
             metadata.bedrock_min_engine_version =
                 normalize_bedrock_engine_triplet(metadata.bedrock_min_engine_version);
             if metadata.bedrock_min_engine_version[0] != 1 {
@@ -1517,6 +1784,197 @@ pub fn save_pack_metadata(
             let v = metadata.bedrock_min_engine_version;
             pack.pack_name = metadata.name;
             pack.edition_label = format!("Bedrock {}.{}.{}", v[0], v[1], v[2]);
+        }
+        PackType::BedrockAddon => {
+            metadata.bedrock_min_engine_version =
+                normalize_bedrock_engine_triplet(metadata.bedrock_min_engine_version);
+            if metadata.bedrock_min_engine_version[0] != 1 {
+                metadata.bedrock_min_engine_version[0] = 1;
+            }
+            let (bp_prefix, rp_prefix) = find_addon_subpack_prefixes(&pack.container);
+
+            let rp_h_uuid = Uuid::parse_str(metadata.bedrock_header_uuid.trim())
+                .unwrap_or_else(|_| Uuid::new_v4());
+            let mut rp_m_uuid = Uuid::parse_str(metadata.bedrock_module_uuid.trim())
+                .unwrap_or_else(|_| Uuid::new_v4());
+            if rp_m_uuid == rp_h_uuid {
+                rp_m_uuid = Uuid::new_v4();
+            }
+
+            let mut bp_h_uuid = metadata
+                .bp_header_uuid
+                .as_deref()
+                .and_then(|s| Uuid::parse_str(s.trim()).ok())
+                .unwrap_or_else(Uuid::new_v4);
+            while bp_h_uuid == rp_h_uuid || bp_h_uuid == rp_m_uuid {
+                bp_h_uuid = Uuid::new_v4();
+            }
+            let mut bp_m_uuid = metadata
+                .bp_module_uuid
+                .as_deref()
+                .and_then(|s| Uuid::parse_str(s.trim()).ok())
+                .unwrap_or_else(Uuid::new_v4);
+            while bp_m_uuid == bp_h_uuid || bp_m_uuid == rp_h_uuid || bp_m_uuid == rp_m_uuid {
+                bp_m_uuid = Uuid::new_v4();
+            }
+
+            let authors = if metadata.authors.is_empty() {
+                vec![String::from("PackStudio Artist")]
+            } else {
+                metadata.authors.clone()
+            };
+            let mut meta_obj = serde_json::Map::new();
+            meta_obj.insert(String::from("authors"), json!(authors));
+            if !metadata.license.trim().is_empty() {
+                meta_obj.insert(String::from("license"), json!(metadata.license.trim()));
+            }
+            if !metadata.url.trim().is_empty() {
+                meta_obj.insert(String::from("url"), json!(metadata.url.trim()));
+            }
+
+            // 1. Update RP/manifest.json (if RP sub-pack exists)
+            if let Some(rp_pre) = rp_prefix.as_deref() {
+                let rp_manifest_path = format!("{rp_pre}manifest.json");
+                let mut manifest = BedrockManifest::new(
+                    metadata.name.clone(),
+                    metadata.description.clone(),
+                    metadata.version,
+                    metadata.bedrock_min_engine_version,
+                );
+                manifest.format_version = metadata.bedrock_format_version.clamp(1, 3);
+                manifest.header.uuid = rp_h_uuid;
+                if let Some(m) = manifest.modules.first_mut() {
+                    m.uuid = rp_m_uuid;
+                }
+                manifest.capabilities = metadata.bedrock_capabilities.clone();
+                manifest.metadata = Some(BedrockManifestMetadata {
+                    authors: authors.clone(),
+                });
+
+                let base = manifest
+                    .to_json_vec_versioned(manifest.format_version)
+                    .map_err(|e| format!("{e:#}"))?;
+                let mut val: serde_json::Value =
+                    serde_json::from_slice(&base).map_err(|e| format!("{e:#}"))?;
+                if let Some(obj) = val.as_object_mut() {
+                    obj.insert(
+                        String::from("metadata"),
+                        serde_json::Value::Object(meta_obj.clone()),
+                    );
+                    if bp_prefix.is_some() {
+                        obj.insert(
+                            String::from("dependencies"),
+                            json!([{ "uuid": bp_h_uuid.to_string(), "version": metadata.version }]),
+                        );
+                    }
+                }
+                let bytes = serde_json::to_vec_pretty(&val).map_err(|e| format!("{e:#}"))?;
+                pack.write_asset(&rp_manifest_path, bytes)
+                    .map_err(|e| format!("{e:#}"))?;
+            }
+
+            // 2. Update BP/manifest.json (if BP sub-pack exists), preserving script modules & @minecraft/* deps
+            if let Some(bp_pre) = bp_prefix.as_deref() {
+                let bp_manifest_path = format!("{bp_pre}manifest.json");
+                let mut bp_val: serde_json::Value = pack
+                    .container
+                    .get(&bp_manifest_path)
+                    .and_then(|b| parse_minecraft_json::<serde_json::Value>(b).ok())
+                    .unwrap_or_else(|| json!({ "format_version": 2 }));
+
+                let Some(obj) = bp_val.as_object_mut() else {
+                    return Err(String::from("BP/manifest.json root is not a JSON object"));
+                };
+                obj.insert(
+                    String::from("format_version"),
+                    json!(metadata.bedrock_format_version.clamp(1, 3)),
+                );
+                obj.insert(
+                    String::from("header"),
+                    json!({
+                        "name": format!("{} (Behavior Pack)", metadata.name.trim()),
+                        "description": metadata.description,
+                        "uuid": bp_h_uuid.to_string(),
+                        "version": metadata.version,
+                        "min_engine_version": metadata.bedrock_min_engine_version,
+                    }),
+                );
+
+                // Rebuild modules while preserving existing script module or metadata script fields
+                let mut modules = vec![json!({
+                    "description": metadata.description,
+                    "type": "data",
+                    "uuid": bp_m_uuid.to_string(),
+                    "version": metadata.version,
+                })];
+                let existing_script = obj
+                    .get("modules")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|arr| {
+                        arr.iter().find(|m| {
+                            m.get("type")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|t| t.eq_ignore_ascii_case("script"))
+                        })
+                    })
+                    .cloned();
+                if let Some(mut script_mod) = existing_script {
+                    if let Some(sobj) = script_mod.as_object_mut() {
+                        if let Some(suuid) = metadata
+                            .bp_script_module_uuid
+                            .as_deref()
+                            .and_then(|s| Uuid::parse_str(s.trim()).ok())
+                        {
+                            sobj.insert(String::from("uuid"), json!(suuid.to_string()));
+                        }
+                        if let Some(entry) = metadata
+                            .bp_script_entry
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            sobj.insert(String::from("entry"), json!(entry));
+                        }
+                        sobj.insert(String::from("version"), json!(metadata.version));
+                    }
+                    modules.push(script_mod);
+                }
+                obj.insert(String::from("modules"), serde_json::Value::Array(modules));
+
+                // Preserve module_name dependencies (e.g. @minecraft/server) and sync RP UUID dependency
+                let mut deps: Vec<serde_json::Value> = obj
+                    .get("dependencies")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter(|d| d.get("module_name").is_some())
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if rp_prefix.is_some() {
+                    deps.insert(
+                        0,
+                        json!({
+                            "uuid": rp_h_uuid.to_string(),
+                            "version": metadata.version,
+                        }),
+                    );
+                }
+                obj.insert(String::from("dependencies"), serde_json::Value::Array(deps));
+                obj.insert(
+                    String::from("metadata"),
+                    serde_json::Value::Object(meta_obj),
+                );
+
+                let bytes = serde_json::to_vec_pretty(&bp_val).map_err(|e| format!("{e:#}"))?;
+                pack.write_asset(&bp_manifest_path, bytes)
+                    .map_err(|e| format!("{e:#}"))?;
+            }
+
+            let v = metadata.bedrock_min_engine_version;
+            pack.pack_name = metadata.name;
+            pack.edition_label = format!("Bedrock Add-on {}.{}.{}", v[0], v[1], v[2]);
         }
     }
 

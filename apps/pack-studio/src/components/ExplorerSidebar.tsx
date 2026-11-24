@@ -90,6 +90,9 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
     assets: true,
     textures: true,
     models: true,
+    BP: true,
+    RP: true,
+    src: true,
   });
   const [inlineMode, setInlineMode] = useState<
     | null
@@ -264,7 +267,13 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
                     : node.rel_path.endsWith(".json") ||
                         node.rel_path.endsWith(".mcmeta")
                       ? "#f5b83d"
-                      : "#9cdcfe",
+                      : node.rel_path.endsWith(".pstdr") ||
+                          node.rel_path.endsWith(".toml")
+                        ? "#e599f7"
+                        : node.rel_path.endsWith(".js") ||
+                            node.rel_path.endsWith(".ts")
+                          ? "#73c991"
+                          : "#9cdcfe",
               }}
             />
             {isRenamingHere ? (
@@ -354,8 +363,8 @@ export const ExplorerSidebar: React.FC<ExplorerSidebarProps> = ({
             <span className="codicon codicon-files" />
             <h3>No pack open</h3>
             <p>
-              Open a resource pack folder, a .zip / .mcpack, or create a new
-              project.
+              Open a pack or Add-on folder, a .zip / .mcpack / .mcaddon, or
+              create a new project.
             </p>
             <div
               style={{

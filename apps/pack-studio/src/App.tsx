@@ -40,6 +40,7 @@ import {
   isImageAsset,
   isModelAsset,
   isTextCodeAsset,
+  packTypeBadgeLabel,
 } from "./utils/mcFormat";
 
 const DEFAULT_SETTINGS: StudioSettings = {
@@ -391,9 +392,16 @@ export default function App() {
           "success",
           `Opened ${snap.edition_label}: '${snap.pack_name}' (${snap.file_count} files, ${snap.texture_count} textures)`,
         );
-        const metaFile = snap.all_files.find(
-          (f) => f === "pack.mcmeta" || f === "manifest.json",
-        );
+        const metaFile =
+          snap.all_files.find((f) => f === "pstdr.toml") ??
+          snap.all_files.find((f) => f === "src/main.pstdr") ??
+          snap.all_files.find(
+            (f) =>
+              f === "pack.mcmeta" ||
+              f === "manifest.json" ||
+              f === "BP/manifest.json" ||
+              f === "RP/manifest.json",
+          );
         if (metaFile) {
           void openAssetTab(metaFile, "code");
         }
@@ -418,7 +426,9 @@ export default function App() {
     const picked = await dialogOpen({
       multiple: false,
       directory: false,
-      filters: [{ name: "Resource Packs", extensions: ["zip", "mcpack"] }],
+      filters: [
+        { name: "Resource Packs & Add-ons", extensions: ["zip", "mcpack", "mcaddon"] },
+      ],
     });
     if (typeof picked === "string") {
       await openProjectByPath(picked);
@@ -533,7 +543,7 @@ export default function App() {
         action: () => void promptOpenProject(),
       },
       {
-        label: "File: Open Archive (.zip / .mcpack)...",
+        label: "File: Open Archive (.zip / .mcpack / .mcaddon)...",
         action: () => void promptOpenArchive(),
       },
       {
@@ -661,8 +671,22 @@ export default function App() {
               <span style={{ fontSize: 12, color: "#cccccc" }}>
                 {project.pack_name}
               </span>
+              <span
+                className="edition-badge"
+                style={{
+                  color:
+                    project.pack_type === "java_resource_pack"
+                      ? "#73c991"
+                      : project.pack_type === "bedrock_addon"
+                        ? "#f5b83d"
+                        : "#6cb6ff",
+                }}
+                title={project.edition_label}
+              >
+                {packTypeBadgeLabel(project.pack_type)}
+              </span>
               <span className="edition-badge">{project.edition_label}</span>
-              {project.companion_bp_dir && (
+              {project.companion_bp_dir && project.pack_type !== "bedrock_addon" && (
                 <span className="edition-badge" style={{ color: "#73c991" }}>
                   RP + BP
                 </span>
@@ -1592,7 +1616,9 @@ export default function App() {
                                   onClick={() =>
                                     void api
                                       .blockbenchNewBedrockGeo(
-                                        "models/entity/custom_model.geo.json",
+                                        project?.pack_type === "bedrock_addon"
+                                          ? "RP/models/entity/custom_model.geo.json"
+                                          : "models/entity/custom_model.geo.json",
                                         "geometry.custom_model",
                                       )
                                       .then((info) => {
@@ -1812,7 +1838,7 @@ export default function App() {
           >
             <span className="codicon codicon-layers" />
             {project
-              ? `${project.edition_label} (${project.dominant_resolution ?? "Native"})`
+              ? `${packTypeBadgeLabel(project.pack_type)} • ${project.edition_label} (${project.dominant_resolution ?? "Native"})`
               : "No Pack Open"}
           </span>
           {project && (

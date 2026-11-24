@@ -1,4 +1,15 @@
-import type { Edition } from "../types";
+import type { Edition, PackType } from "../types";
+
+export function packTypeBadgeLabel(packType: PackType): string {
+  switch (packType) {
+    case "java_resource_pack":
+      return "Java RP";
+    case "bedrock_resource_pack":
+      return "Bedrock RP";
+    case "bedrock_addon":
+      return "Bedrock Add-on";
+  }
+}
 
 export interface McFormattedSpan {
   text: string;
@@ -152,6 +163,12 @@ export function fileIconClass(relPath: string, isDir: boolean, expanded = false)
   if (lower.endsWith(".molang")) {
     return "codicon-symbol-method";
   }
+  if (lower.endsWith(".pstdr") || lower.endsWith(".js") || lower.endsWith(".ts")) {
+    return "codicon-file-code";
+  }
+  if (lower.endsWith(".toml")) {
+    return "codicon-settings-gear";
+  }
   return "codicon-file";
 }
 
@@ -170,7 +187,11 @@ export function isTextCodeAsset(relPath: string): boolean {
     lower.endsWith(".md") ||
     lower.endsWith(".molang") ||
     lower.endsWith(".material") ||
-    lower.endsWith(".properties")
+    lower.endsWith(".properties") ||
+    lower.endsWith(".pstdr") ||
+    lower.endsWith(".toml") ||
+    lower.endsWith(".js") ||
+    lower.endsWith(".ts")
   );
 }
 

@@ -21,12 +21,14 @@ use tauri::{Emitter, Window};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use crate::state::StudioState;
+use crate::state::{PackType, StudioState};
 use crate::texture::{
     TextureFormatKind, check_uv_atlas_guard, composite_grass_side_tga, decode_texture_bytes,
     encode_texture_bytes, make_texture_opaque, resize_nearest_neighbor,
 };
-use crate::workspace::{detect_pack_edition, sanitize_minecraft_slug};
+use crate::workspace::{
+    detect_pack_edition, detect_pack_type, find_addon_subpack_prefixes, sanitize_minecraft_slug,
+};
 
 /// Handling mode for the 3D UV-Atlas Guard.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +138,7 @@ pub struct ConversionResultDto {
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditResultDto {
     pub edition: Edition,
+    pub pack_type: PackType,
     pub status: AuditStatus,
     pub summary: String,
     pub problems: Vec<ConversionWarning>,
@@ -156,6 +159,8 @@ pub struct PackageExportConfig {
     pub run_semantic_audit: bool,
     #[serde(default)]
     pub allow_export_with_errors: bool,
+    #[serde(default)]
+    pub include_dev_sources: bool,
 }
 
 fn default_balanced() -> String {
@@ -653,15 +658,222 @@ pub fn execute_convert_core(
     Ok((output, dto))
 }
 
+/// Extracts a sub-pack container (e.g. `RP/` or `BP/`) with `prefix` stripped from all keys.
+fn extract_sub_container(container: &PackContainer, prefix: &str) -> Result<PackContainer> {
+    let mut sub = PackContainer::new();
+    for (path, bytes) in container.files() {
+        if let Some(stripped) = path.strip_prefix(prefix)
+            && !stripped.is_empty()
+        {
+            sub.insert(stripped, bytes.clone())?;
+        }
+    }
+    Ok(sub)
+}
+
+/// Phase 3 hook: validates `pstdr.toml` and `src/*.pstdr` workspace sources.
+/// Ready for `pstdr-lang` compiler & semantic validator integration.
+pub fn audit_pstdr_workspace(container: &PackContainer, problems: &mut Vec<ConversionWarning>) {
+    let pstdr_toml_key = container
+        .files()
+        .keys()
+        .find(|k| !k.contains('/') && k.eq_ignore_ascii_case("pstdr.toml"))
+        .cloned();
+
+    if let Some(toml_path) = pstdr_toml_key
+        && let Some(bytes) = container.get(&toml_path)
+        && std::str::from_utf8(bytes).map_or(true, |s| s.trim().is_empty())
+    {
+        problems.push(ConversionWarning {
+            source_path: toml_path.clone(),
+            stage: PipelineStage::Audit,
+            severity: WarningSeverity::Warning,
+            reason: String::from("pstdr.toml is empty or not valid UTF-8"),
+            actionable_fix: String::from(
+                "Populate [package], [target], and [paths] sections in pstdr.toml.",
+            ),
+            asset: toml_path,
+            message: String::from("Invalid pstdr.toml configuration"),
+        });
+    }
+}
+
+fn audit_bedrock_bp_subpack(
+    container: &PackContainer,
+    bp_prefix: &str,
+    rp_header_uuid: Option<&str>,
+    problems: &mut Vec<ConversionWarning>,
+) {
+    let bp_manifest_path = format!("{bp_prefix}manifest.json");
+    let Some(bytes) = container.get(&bp_manifest_path) else {
+        problems.push(ConversionWarning {
+            source_path: bp_manifest_path.clone(),
+            stage: PipelineStage::Audit,
+            severity: WarningSeverity::Error,
+            reason: format!("Missing Behavior Pack manifest at '{bp_manifest_path}'"),
+            actionable_fix: String::from("Add a valid BP/manifest.json with header and modules."),
+            asset: bp_manifest_path,
+            message: String::from("Missing BP/manifest.json"),
+        });
+        return;
+    };
+
+    let Ok(val) = parse_minecraft_json::<serde_json::Value>(bytes) else {
+        problems.push(ConversionWarning {
+            source_path: bp_manifest_path.clone(),
+            stage: PipelineStage::Audit,
+            severity: WarningSeverity::Error,
+            reason: String::from("BP/manifest.json is not valid JSON"),
+            actionable_fix: String::from("Fix JSON syntax errors in BP/manifest.json."),
+            asset: bp_manifest_path,
+            message: String::from("Malformed BP/manifest.json"),
+        });
+        return;
+    };
+
+    // Validate header.min_engine_version
+    if let Some(mev) = val
+        .get("header")
+        .and_then(|h| h.get("min_engine_version"))
+        .and_then(serde_json::Value::as_array)
+    {
+        let major = mev.first().and_then(serde_json::Value::as_u64);
+        if mev.len() != 3 || major != Some(1) {
+            problems.push(ConversionWarning {
+                source_path: bp_manifest_path.clone(),
+                stage: PipelineStage::Audit,
+                severity: WarningSeverity::Error,
+                reason: String::from(
+                    "BP/manifest.json header.min_engine_version must be a 3-element array starting with 1 (e.g. [1, 21, 50])",
+                ),
+                actionable_fix: String::from(
+                    "Update min_engine_version in Metadata & Packaging or BP/manifest.json.",
+                ),
+                asset: bp_manifest_path.clone(),
+                message: String::from("Invalid BP min_engine_version"),
+            });
+        }
+    } else {
+        problems.push(ConversionWarning {
+            source_path: bp_manifest_path.clone(),
+            stage: PipelineStage::Audit,
+            severity: WarningSeverity::Error,
+            reason: String::from("BP/manifest.json is missing header.min_engine_version"),
+            actionable_fix: String::from("Add header.min_engine_version such as [1, 21, 50]."),
+            asset: bp_manifest_path.clone(),
+            message: String::from("Missing BP min_engine_version"),
+        });
+    }
+
+    // Validate modules and script entry file existence
+    let modules = val
+        .get("modules")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if modules.is_empty() {
+        problems.push(ConversionWarning {
+            source_path: bp_manifest_path.clone(),
+            stage: PipelineStage::Audit,
+            severity: WarningSeverity::Error,
+            reason: String::from("BP/manifest.json declares 0 modules"),
+            actionable_fix: String::from(
+                "Declare at least one 'data' or 'script' module in BP/manifest.json.",
+            ),
+            asset: bp_manifest_path.clone(),
+            message: String::from("BP/manifest.json has no modules"),
+        });
+    }
+    for m in &modules {
+        let mtype = m
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if mtype.eq_ignore_ascii_case("script") {
+            match m
+                .get("entry")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(entry) => {
+                    let full_entry = format!("{bp_prefix}{}", entry.trim_start_matches('/'));
+                    if !container.contains(&full_entry) {
+                        problems.push(ConversionWarning {
+                            source_path: bp_manifest_path.clone(),
+                            stage: PipelineStage::Audit,
+                            severity: WarningSeverity::Error,
+                            reason: format!(
+                                "BP script module entry '{entry}' not found at '{full_entry}'"
+                            ),
+                            actionable_fix: format!(
+                                "Create '{full_entry}' or update the script module 'entry' path in BP/manifest.json."
+                            ),
+                            asset: bp_manifest_path.clone(),
+                            message: format!("Missing BP script entry '{full_entry}'"),
+                        });
+                    }
+                }
+                None => {
+                    problems.push(ConversionWarning {
+                        source_path: bp_manifest_path.clone(),
+                        stage: PipelineStage::Audit,
+                        severity: WarningSeverity::Error,
+                        reason: String::from("BP script module is missing required 'entry' path"),
+                        actionable_fix: String::from(
+                            "Set \"entry\": \"scripts/main.js\" on the script module in BP/manifest.json.",
+                        ),
+                        asset: bp_manifest_path.clone(),
+                        message: String::from("Missing BP script entry field"),
+                    });
+                }
+            }
+        }
+    }
+
+    // Validate RP dependency UUID match when RP/manifest.json is present
+    if let Some(expected_rp_uuid) = rp_header_uuid {
+        let deps = val
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let has_matching_rp_dep = deps.iter().any(|d| {
+            d.get("uuid")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|u| u.eq_ignore_ascii_case(expected_rp_uuid))
+        });
+        if !has_matching_rp_dep {
+            problems.push(ConversionWarning {
+                source_path: bp_manifest_path.clone(),
+                stage: PipelineStage::Audit,
+                severity: WarningSeverity::Warning,
+                reason: format!(
+                    "BP/manifest.json dependencies do not reference RP header UUID '{expected_rp_uuid}'"
+                ),
+                actionable_fix: String::from(
+                    "Open Metadata & Packaging and click Save Metadata to auto-link BP and RP UUIDs.",
+                ),
+                asset: bp_manifest_path,
+                message: String::from("BP -> RP dependency UUID mismatch"),
+            });
+        }
+    }
+}
+
 /// Core pure audit function (testable directly without Tauri runtime).
 pub fn run_audit_core(container: &PackContainer) -> Result<AuditResultDto> {
     let start = Instant::now();
     let mappings = MappingTable::default_embedded()?;
-    let edition = detect_pack_edition(container)?;
-    let mut problems = check_uv_atlas_guard(container);
+    let pack_type = detect_pack_type(container)?;
+    let edition = match pack_type {
+        PackType::JavaResourcePack => Edition::Java,
+        PackType::BedrockResourcePack | PackType::BedrockAddon => Edition::Bedrock,
+    };
 
-    match edition {
-        Edition::Bedrock => {
+    match pack_type {
+        PackType::BedrockResourcePack => {
+            let mut problems = check_uv_atlas_guard(container);
             let input_tex_count = container
                 .files()
                 .keys()
@@ -683,13 +895,15 @@ pub fn run_audit_core(container: &PackContainer) -> Result<AuditResultDto> {
             );
             Ok(AuditResultDto {
                 edition,
+                pack_type,
                 status,
                 summary,
                 problems,
                 elapsed_ms: start.elapsed().as_millis(),
             })
         }
-        Edition::Java => {
+        PackType::JavaResourcePack => {
+            let mut problems = check_uv_atlas_guard(container);
             let (ir, report) = parse_java_pack(container, &mappings)?;
             problems.extend(report.warnings);
 
@@ -717,6 +931,93 @@ pub fn run_audit_core(container: &PackContainer) -> Result<AuditResultDto> {
             );
             Ok(AuditResultDto {
                 edition,
+                pack_type,
+                status,
+                summary,
+                problems,
+                elapsed_ms: start.elapsed().as_millis(),
+            })
+        }
+        PackType::BedrockAddon => {
+            let mut problems = Vec::new();
+            let (bp_prefix, rp_prefix) = find_addon_subpack_prefixes(container);
+            let mut rp_header_uuid: Option<String> = None;
+
+            if let Some(rp_pre) = rp_prefix.as_deref() {
+                let rp_sub = extract_sub_container(container, rp_pre)?;
+                if let Some(bytes) = rp_sub.get("manifest.json")
+                    && let Ok(m) = parse_minecraft_json::<BedrockManifest>(bytes)
+                {
+                    rp_header_uuid = Some(m.header.uuid.to_string());
+                }
+                let mut rp_problems = check_uv_atlas_guard(&rp_sub);
+                let rp_tex_count = rp_sub
+                    .files()
+                    .keys()
+                    .filter(|p| {
+                        let l = p.to_ascii_lowercase();
+                        l.ends_with(".png") && l != "pack_icon.png" && l != "bug_pack_icon.png"
+                    })
+                    .count();
+                let rp_audit = audit_bedrock_container(&rp_sub, rp_tex_count, &mappings);
+                append_audit_diagnostics(&rp_audit, &mut rp_problems);
+                for p in &mut rp_problems {
+                    if !p.source_path.is_empty() && !p.source_path.starts_with(rp_pre) {
+                        p.source_path = format!("{rp_pre}{}", p.source_path);
+                    }
+                    if !p.asset.is_empty() && !p.asset.starts_with(rp_pre) {
+                        p.asset = format!("{rp_pre}{}", p.asset);
+                    }
+                }
+                problems.extend(rp_problems);
+            }
+
+            if let Some(bp_pre) = bp_prefix.as_deref() {
+                audit_bedrock_bp_subpack(
+                    container,
+                    bp_pre,
+                    rp_header_uuid.as_deref(),
+                    &mut problems,
+                );
+            }
+
+            audit_pstdr_workspace(container, &mut problems);
+
+            let err_count = problems
+                .iter()
+                .filter(|p| p.severity == WarningSeverity::Error)
+                .count();
+            let warn_count = problems
+                .iter()
+                .filter(|p| p.severity == WarningSeverity::Warning)
+                .count();
+
+            let (status, summary) = if err_count > 0 {
+                (
+                    AuditStatus::Failed,
+                    format!(
+                        "FAILED: {err_count} error(s), {warn_count} warning(s) in Bedrock Add-on workspace"
+                    ),
+                )
+            } else if warn_count > 0 {
+                (
+                    AuditStatus::Partial,
+                    format!(
+                        "PARTIAL: 0 errors, {warn_count} warning(s) in Bedrock Add-on workspace"
+                    ),
+                )
+            } else {
+                (
+                    AuditStatus::Passed,
+                    String::from(
+                        "PASSED: Bedrock Add-on BP + RP manifests, dependencies, and assets verified",
+                    ),
+                )
+            };
+
+            Ok(AuditResultDto {
+                edition,
+                pack_type,
                 status,
                 summary,
                 problems,
@@ -726,12 +1027,18 @@ pub fn run_audit_core(container: &PackContainer) -> Result<AuditResultDto> {
     }
 }
 
+fn is_addon_dev_source(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    lower == "pstdr.toml" || lower.starts_with("src/") || lower.ends_with(".pstdr")
+}
+
 /// Core packaging function (testable directly without Tauri runtime).
 pub fn package_pack_core(
     container: &PackContainer,
     companion_bp_dir: Option<&Path>,
     cfg: &PackageExportConfig,
     edition: Edition,
+    pack_type: PackType,
     pack_name: &str,
     version: [u32; 3],
 ) -> Result<PackageExportSummary> {
@@ -768,7 +1075,12 @@ pub fn package_pack_core(
     let ext = match cfg.format.trim().to_ascii_lowercase().as_str() {
         "mcpack" => "mcpack",
         "mcaddon" => "mcaddon",
-        _ => "zip",
+        "zip" => "zip",
+        _ => match pack_type {
+            PackType::JavaResourcePack => "zip",
+            PackType::BedrockResourcePack => "mcpack",
+            PackType::BedrockAddon => "mcaddon",
+        },
     };
 
     let safe_name = sanitize_minecraft_slug(pack_name);
@@ -778,10 +1090,12 @@ pub fn package_pack_core(
         safe_name
     };
     let ver_str = format!("{}.{}.{}", version[0], version[1], version[2]);
-    let ed_str = match edition {
-        Edition::Java => "java",
-        Edition::Bedrock => "bedrock",
+    let ed_str = match pack_type {
+        PackType::JavaResourcePack => "java",
+        PackType::BedrockResourcePack => "bedrock",
+        PackType::BedrockAddon => "bedrock_addon",
     };
+    let _ = edition;
     let stem = cfg
         .filename_template
         .trim()
@@ -808,34 +1122,66 @@ pub fn package_pack_core(
     let mut zip = ZipWriter::new(file);
     let mut asset_count = 0usize;
 
-    if ext == "mcaddon" {
-        for (path, bytes) in cleaned.files() {
-            let clean = sanitize_archive_path(path)?;
-            zip.start_file(format!("RP/{clean}"), options)?;
-            zip.write_all(bytes)?;
-            asset_count += 1;
-        }
-        if let Some(bp_dir) = companion_bp_dir
-            && bp_dir.is_dir()
-        {
-            let bp_container = PackContainer::read_from_directory(bp_dir, IoLimits::default())?;
-            for (path, bytes) in bp_container.files() {
-                if cfg.strip_junk_files && is_packaging_junk(path) {
-                    stripped_junk_count += 1;
-                    continue;
+    match pack_type {
+        PackType::BedrockAddon => {
+            if ext == "mcpack" {
+                // Export only the RP sub-pack unwrapped to root when user explicitly requests .mcpack
+                let (_, rp_prefix) = find_addon_subpack_prefixes(&cleaned);
+                let Some(rp_pre) = rp_prefix else {
+                    bail!("Cannot export .mcpack from Bedrock Add-on without an RP/ sub-pack");
+                };
+                let rp_sub = extract_sub_container(&cleaned, &rp_pre)?;
+                for (path, bytes) in rp_sub.files() {
+                    let clean = sanitize_archive_path(path)?;
+                    zip.start_file(clean, options)?;
+                    zip.write_all(bytes)?;
+                    asset_count += 1;
                 }
-                let clean = sanitize_archive_path(path)?;
-                zip.start_file(format!("BP/{clean}"), options)?;
-                zip.write_all(bytes)?;
-                asset_count += 1;
+            } else {
+                // .mcaddon (or .zip): bundle BP/ and RP/ directly, excluding pstdr dev sources unless opted in
+                for (path, bytes) in cleaned.files() {
+                    if !cfg.include_dev_sources && is_addon_dev_source(path) {
+                        continue;
+                    }
+                    let clean = sanitize_archive_path(path)?;
+                    zip.start_file(clean, options)?;
+                    zip.write_all(bytes)?;
+                    asset_count += 1;
+                }
             }
         }
-    } else {
-        for (path, bytes) in cleaned.files() {
-            let clean = sanitize_archive_path(path)?;
-            zip.start_file(clean, options)?;
-            zip.write_all(bytes)?;
-            asset_count += 1;
+        PackType::JavaResourcePack | PackType::BedrockResourcePack => {
+            if ext == "mcaddon" {
+                for (path, bytes) in cleaned.files() {
+                    let clean = sanitize_archive_path(path)?;
+                    zip.start_file(format!("RP/{clean}"), options)?;
+                    zip.write_all(bytes)?;
+                    asset_count += 1;
+                }
+                if let Some(bp_dir) = companion_bp_dir
+                    && bp_dir.is_dir()
+                {
+                    let bp_container =
+                        PackContainer::read_from_directory(bp_dir, IoLimits::default())?;
+                    for (path, bytes) in bp_container.files() {
+                        if cfg.strip_junk_files && is_packaging_junk(path) {
+                            stripped_junk_count += 1;
+                            continue;
+                        }
+                        let clean = sanitize_archive_path(path)?;
+                        zip.start_file(format!("BP/{clean}"), options)?;
+                        zip.write_all(bytes)?;
+                        asset_count += 1;
+                    }
+                }
+            } else {
+                for (path, bytes) in cleaned.files() {
+                    let clean = sanitize_archive_path(path)?;
+                    zip.start_file(clean, options)?;
+                    zip.write_all(bytes)?;
+                    asset_count += 1;
+                }
+            }
         }
     }
 
@@ -938,13 +1284,17 @@ pub async fn package_pack(
     project_path: Option<String>,
     export_config: PackageExportConfig,
 ) -> Result<PackageExportSummary, String> {
-    let (container, companion_bp_dir, edition, pack_name) = if let Some(p) =
+    let (container, companion_bp_dir, edition, pack_type, pack_name) = if let Some(p) =
         project_path.as_deref().map(str::trim).filter(|s| !s.is_empty())
     {
         let c = PackContainer::read_from_path(Path::new(p), IoLimits::default())
             .map_err(|e| format!("{e:#}"))?;
-        let ed = detect_pack_edition(&c).map_err(|e| format!("{e:#}"))?;
-        (c, None, ed, String::from("resource_pack"))
+        let pt = detect_pack_type(&c).map_err(|e| format!("{e:#}"))?;
+        let ed = match pt {
+            PackType::JavaResourcePack => Edition::Java,
+            PackType::BedrockResourcePack | PackType::BedrockAddon => Edition::Bedrock,
+        };
+        (c, None, ed, pt, String::from("resource_pack"))
     } else {
         let guard = state
             .active_pack
@@ -957,17 +1307,19 @@ pub async fn package_pack(
             pack.container.clone(),
             pack.companion_bp_dir.clone(),
             pack.edition,
+            pack.pack_type,
             pack.pack_name.clone(),
         )
     };
 
-    let version = extract_pack_version(&container, edition);
+    let version = extract_pack_version(&container, pack_type);
     tauri::async_runtime::spawn_blocking(move || {
         package_pack_core(
             &container,
             companion_bp_dir.as_deref(),
             &export_config,
             edition,
+            pack_type,
             &pack_name,
             version,
         )
@@ -977,12 +1329,32 @@ pub async fn package_pack(
     .map_err(|e| format!("{e:#}"))
 }
 
-fn extract_pack_version(container: &PackContainer, edition: Edition) -> [u32; 3] {
-    if edition == Edition::Bedrock
-        && let Some(bytes) = container.get("manifest.json")
-        && let Ok(m) = parse_minecraft_json::<BedrockManifest>(bytes)
-    {
-        return m.header.version;
+fn extract_pack_version(container: &PackContainer, pack_type: PackType) -> [u32; 3] {
+    match pack_type {
+        PackType::BedrockResourcePack => {
+            if let Some(bytes) = container.get("manifest.json")
+                && let Ok(m) = parse_minecraft_json::<BedrockManifest>(bytes)
+            {
+                return m.header.version;
+            }
+        }
+        PackType::BedrockAddon => {
+            let (bp_prefix, rp_prefix) = find_addon_subpack_prefixes(container);
+            let bytes = rp_prefix
+                .as_deref()
+                .and_then(|p| container.get(&format!("{p}manifest.json")))
+                .or_else(|| {
+                    bp_prefix
+                        .as_deref()
+                        .and_then(|p| container.get(&format!("{p}manifest.json")))
+                });
+            if let Some(b) = bytes
+                && let Ok(m) = parse_minecraft_json::<BedrockManifest>(b)
+            {
+                return m.header.version;
+            }
+        }
+        PackType::JavaResourcePack => {}
     }
     [1, 0, 0]
 }

@@ -10,6 +10,7 @@ import type {
 import {
   formatBytes,
   generateUuidV4,
+  packTypeBadgeLabel,
   parseMinecraftFormatting,
 } from "../utils/mcFormat";
 
@@ -30,8 +31,19 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
   const [authorsText, setAuthorsText] = useState("");
   const [savingMeta, setSavingMeta] = useState(false);
 
+  const defaultExportFormat = (
+    p: ProjectSnapshot | null,
+  ): PackageExportConfig["format"] => {
+    if (!p) return "zip";
+    if (p.pack_type === "bedrock_addon") return "mcaddon";
+    if (p.pack_type === "bedrock_resource_pack") {
+      return p.companion_bp_dir ? "mcaddon" : "mcpack";
+    }
+    return "zip";
+  };
+
   const [exportCfg, setExportCfg] = useState<PackageExportConfig>({
-    format: project?.edition === "bedrock" ? "mcpack" : "zip",
+    format: defaultExportFormat(project),
     filename_template: "{pack_name}_{version}_{edition}",
     output_dir: project?.source_path
       ? `${project.source_path}`
@@ -40,6 +52,7 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
     compression: "balanced",
     run_semantic_audit: true,
     allow_export_with_errors: false,
+    include_dev_sources: false,
   });
   const [exporting, setExporting] = useState(false);
   const [exportSummary, setExportSummary] =
@@ -57,12 +70,12 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
         setAuthorsText(dto.authors.join(", "));
         setExportCfg((prev) => ({
           ...prev,
-          format: dto.edition === "bedrock" ? (project.companion_bp_dir ? "mcaddon" : "mcpack") : "zip",
+          format: defaultExportFormat(project),
           output_dir: project.source_path || prev.output_dir,
         }));
       })
       .catch((e) => onLog("error", `Failed reading metadata: ${String(e)}`));
-  }, [project?.pack_name, project?.source_path, project?.edition]);
+  }, [project?.pack_name, project?.source_path, project?.edition, project?.pack_type]);
 
   const descriptionSpans = useMemo(
     () => parseMinecraftFormatting(meta?.description ?? ""),
@@ -99,7 +112,12 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
       const snap = await api.savePackMetadata(updated);
       setMeta(updated);
       onProjectUpdated(snap);
-      onLog("success", "Saved pack metadata and regenerated manifest/mcmeta.");
+      onLog(
+        "success",
+        meta.pack_type === "bedrock_addon"
+          ? "Saved linked BP/manifest.json & RP/manifest.json metadata."
+          : "Saved pack metadata and regenerated manifest/mcmeta.",
+      );
     } catch (e) {
       onLog("error", `Failed saving metadata: ${String(e)}`);
     } finally {
@@ -138,7 +156,14 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3 className="card-title">
             <span className="codicon codicon-symbol-property" />
-            Pack Manifest &amp; Identity ({meta.edition.toUpperCase()})
+            {meta.pack_type === "bedrock_addon"
+              ? "Linked BP + RP Manifests & Identity"
+              : meta.pack_type === "java_resource_pack"
+                ? "Java pack.mcmeta & Identity"
+                : "Bedrock manifest.json & Identity"}{" "}
+            <span className="edition-badge" style={{ marginLeft: 6 }}>
+              {packTypeBadgeLabel(meta.pack_type)}
+            </span>
           </h3>
           <button
             className="vsc-btn"
@@ -245,7 +270,7 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
             />
           </label>
 
-          {meta.edition === "java" ? (
+          {meta.pack_type === "java_resource_pack" ? (
             <label className="field-label">
               <span>Java pack_format</span>
               <input
@@ -309,7 +334,11 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
               </label>
 
               <label className="field-label">
-                <span>Header UUIDv4</span>
+                <span>
+                  {meta.pack_type === "bedrock_addon"
+                    ? "RP Header UUIDv4 (auto-linked in BP dependencies)"
+                    : "Header UUIDv4"}
+                </span>
                 <div style={{ display: "flex", gap: 6 }}>
                   <input
                     className="vsc-input mono"
@@ -331,7 +360,11 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
               </label>
 
               <label className="field-label">
-                <span>Module UUIDv4</span>
+                <span>
+                  {meta.pack_type === "bedrock_addon"
+                    ? "RP Module UUIDv4"
+                    : "Module UUIDv4"}
+                </span>
                 <div style={{ display: "flex", gap: 6 }}>
                   <input
                     className="vsc-input mono"
@@ -351,6 +384,66 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
                   </button>
                 </div>
               </label>
+
+              {meta.pack_type === "bedrock_addon" && (
+                <>
+                  <label className="field-label">
+                    <span>BP Header UUIDv4 (linked in RP dependencies)</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        className="vsc-input mono"
+                        style={{ flex: 1 }}
+                        value={meta.bp_header_uuid ?? ""}
+                        onChange={(e) =>
+                          setMeta({ ...meta, bp_header_uuid: e.target.value })
+                        }
+                      />
+                      <button
+                        className="vsc-btn secondary small"
+                        onClick={() =>
+                          setMeta({ ...meta, bp_header_uuid: generateUuidV4() })
+                        }
+                      >
+                        New UUID
+                      </button>
+                    </div>
+                  </label>
+
+                  <label className="field-label">
+                    <span>BP Data Module UUIDv4</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        className="vsc-input mono"
+                        style={{ flex: 1 }}
+                        value={meta.bp_module_uuid ?? ""}
+                        onChange={(e) =>
+                          setMeta({ ...meta, bp_module_uuid: e.target.value })
+                        }
+                      />
+                      <button
+                        className="vsc-btn secondary small"
+                        onClick={() =>
+                          setMeta({ ...meta, bp_module_uuid: generateUuidV4() })
+                        }
+                      >
+                        New UUID
+                      </button>
+                    </div>
+                  </label>
+
+                  <label className="field-label">
+                    <span>BP Script Module Entry</span>
+                    <input
+                      className="vsc-input mono"
+                      value={meta.bp_script_entry ?? ""}
+                      placeholder="scripts/main.js"
+                      onChange={(e) =>
+                        setMeta({ ...meta, bp_script_entry: e.target.value })
+                      }
+                    />
+                  </label>
+                </>
+              )}
             </>
           )}
         </div>
@@ -475,6 +568,21 @@ export const MetadataPackagingTab: React.FC<MetadataPackagingTabProps> = ({
             />
             Allow export even on Audit errors
           </label>
+          {meta.pack_type === "bedrock_addon" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={!!exportCfg.include_dev_sources}
+                onChange={(e) =>
+                  setExportCfg((c) => ({
+                    ...c,
+                    include_dev_sources: e.target.checked,
+                  }))
+                }
+              />
+              Include pstdr dev sources (pstdr.toml, src/) in archive
+            </label>
+          )}
         </div>
 
         <div style={{ marginTop: 14 }}>

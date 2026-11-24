@@ -278,9 +278,16 @@ impl PackContainer {
     /// Strips wrapping folder prefixes (e.g. `Downloads/MyPack/Pack.mcmeta` -> `pack.mcmeta`)
     /// when all non-junk entries sit inside a single folder containing `pack.mcmeta` or `manifest.json`,
     /// and normalizes root metadata filename casing.
+    ///
+    /// Preserves Bedrock Add-on multi-pack workspaces (`BP/` + `RP/`, or `pstdr.toml` + `BP/`),
+    /// unwrapping only an outer archive wrapper folder (e.g. `my-addon/BP/...`, `my-addon/RP/...`)
+    /// without ever dropping sibling packs or workspace files.
     pub fn unwrap_single_root_folder(&mut self) {
         self.normalize_root_metadata_names();
         if self.files.contains_key("pack.mcmeta") || self.files.contains_key("manifest.json") {
+            return;
+        }
+        if is_bedrock_addon_keys(self.files.keys().map(String::as_str)) {
             return;
         }
 
@@ -297,10 +304,39 @@ impl PackContainer {
                 }
             })
             .collect();
+        if candidates.is_empty() {
+            return;
+        }
         // Shallowest nesting depth first
         candidates.sort_by_key(|p| (p.matches('/').count(), p.len()));
 
-        let Some(prefix) = candidates
+        // 1. Check if all non-junk entries sit inside a single outer wrapper directory
+        //    (e.g. `my-addon/BP/manifest.json` + `my-addon/RP/manifest.json` + `my-addon/pstdr.toml`,
+        //    or `Downloads/MyPack/pack.mcmeta`).
+        if let Some(common_prefix) = common_directory_prefix(self.files.keys().map(String::as_str))
+        {
+            let stripped_keys: Vec<&str> = self
+                .files
+                .keys()
+                .filter_map(|k| k.strip_prefix(&common_prefix))
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let exposes_single_pack = stripped_keys.iter().any(|k| {
+                !k.contains('/')
+                    && (k.eq_ignore_ascii_case("pack.mcmeta")
+                        || k.eq_ignore_ascii_case("manifest.json"))
+            });
+            let exposes_addon = is_bedrock_addon_keys(stripped_keys.iter().copied());
+
+            if exposes_single_pack || exposes_addon {
+                self.strip_prefix_in_place(&common_prefix);
+                return;
+            }
+        }
+
+        // 2. Check if a single manifest candidate wraps all non-junk files.
+        if let Some(prefix) = candidates
             .iter()
             .find(|prefix| {
                 self.files
@@ -308,14 +344,27 @@ impl PackContainer {
                     .all(|k| k.starts_with(prefix.as_str()) || is_os_junk(k))
             })
             .cloned()
-            .or_else(|| candidates.into_iter().next())
-        else {
+        {
+            self.strip_prefix_in_place(&prefix);
             return;
-        };
+        }
 
+        // 3. Fallback for single-pack archives that include a stray root file (e.g. README.txt):
+        //    ONLY unwrap when there is a single pack manifest and no `pstdr.toml` workspace marker.
+        let has_pstdr_toml = self.files.keys().any(|k| {
+            k.rsplit('/')
+                .next()
+                .is_some_and(|f| f.eq_ignore_ascii_case("pstdr.toml"))
+        });
+        if candidates.len() == 1 && !has_pstdr_toml {
+            self.strip_prefix_in_place(&candidates[0]);
+        }
+    }
+
+    fn strip_prefix_in_place(&mut self, prefix: &str) {
         let mut unwrapped = BTreeMap::new();
         for (path, bytes) in std::mem::take(&mut self.files) {
-            if let Some(stripped) = path.strip_prefix(&prefix)
+            if let Some(stripped) = path.strip_prefix(prefix)
                 && !stripped.is_empty()
             {
                 unwrapped.insert(stripped.to_string(), bytes);
@@ -386,13 +435,15 @@ impl PackContainer {
         Ok(())
     }
 
-    /// Writes the container to `path` as a `.zip`/`.mcpack` archive or directory based on extension.
+    /// Writes the container to `path` as a `.zip`/`.mcpack`/`.mcaddon` archive or directory based on extension.
     pub fn write_to_path(&self, path: &Path) -> Result<(), IoError> {
         let is_archive = path
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("zip") || ext.eq_ignore_ascii_case("mcpack")
+                ext.eq_ignore_ascii_case("zip")
+                    || ext.eq_ignore_ascii_case("mcpack")
+                    || ext.eq_ignore_ascii_case("mcaddon")
             });
 
         if is_archive {
@@ -452,6 +503,66 @@ fn collect_dir_entries(
     }
 
     Ok(())
+}
+
+/// Returns `true` if `keys` represent a Bedrock Add-on root layout:
+/// either at least two depth-1 `<folder>/manifest.json` sub-packs (e.g. `BP/` + `RP/`),
+/// or a root `pstdr.toml` alongside at least one depth-1 `<folder>/manifest.json`.
+fn is_bedrock_addon_keys<'a>(keys: impl Iterator<Item = &'a str>) -> bool {
+    let mut subpack_manifest_dirs = std::collections::BTreeSet::new();
+    let mut has_root_pstdr_toml = false;
+
+    for key in keys {
+        if is_os_junk(key) {
+            continue;
+        }
+        if !key.contains('/') {
+            if key.eq_ignore_ascii_case("pstdr.toml") {
+                has_root_pstdr_toml = true;
+            }
+            continue;
+        }
+        if let Some((dir, file)) = key.split_once('/')
+            && !file.contains('/')
+            && file.eq_ignore_ascii_case("manifest.json")
+        {
+            subpack_manifest_dirs.insert(dir.to_ascii_lowercase());
+        }
+    }
+
+    subpack_manifest_dirs.len() >= 2 || (has_root_pstdr_toml && !subpack_manifest_dirs.is_empty())
+}
+
+/// Computes the longest common directory prefix (ending with `/`) shared by all non-junk keys,
+/// returning `None` if no common directory prefix exists.
+fn common_directory_prefix<'a>(keys: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut shared: Option<Vec<&str>> = None;
+    for key in keys {
+        if is_os_junk(key) {
+            continue;
+        }
+        let dir_segments: Vec<&str> = match key.rsplit_once('/') {
+            Some((dir, _)) => dir.split('/').collect(),
+            None => Vec::new(),
+        };
+        match &mut shared {
+            None => shared = Some(dir_segments),
+            Some(cur) => {
+                let common_len = cur
+                    .iter()
+                    .zip(dir_segments.iter())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                cur.truncate(common_len);
+            }
+        }
+    }
+    let segs = shared?;
+    if segs.is_empty() {
+        None
+    } else {
+        Some(format!("{}/", segs.join("/")))
+    }
 }
 
 /// Returns `true` if `path` is an OS metadata/junk entry (`desktop.ini`, `.DS_Store`,
@@ -620,5 +731,71 @@ mod tests {
         assert!(parsed.contains("pack.mcmeta"));
         assert!(parsed.contains("assets/minecraft/textures/block/stone.png"));
         assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn preserves_flat_bedrock_addon_workspace_intact() {
+        let zip_bytes = build_raw_zip(&[
+            ("BP/manifest.json", b"{\"header\":{\"name\":\"Test BP\"}}"),
+            ("BP/scripts/main.js", b"console.log('hi');"),
+            ("RP/manifest.json", b"{\"header\":{\"name\":\"Test RP\"}}"),
+            ("RP/textures/blocks/stone.png", b"png"),
+            ("pstdr.toml", b"[package]\nname = \"test\"\n"),
+            ("src/main.pstdr", b"addon \"test\" {}\n"),
+        ]);
+        let parsed =
+            PackContainer::read_from_zip_bytes(&zip_bytes, IoLimits::default()).expect("read zip");
+        assert!(parsed.contains("BP/manifest.json"));
+        assert!(parsed.contains("BP/scripts/main.js"));
+        assert!(parsed.contains("RP/manifest.json"));
+        assert!(parsed.contains("RP/textures/blocks/stone.png"));
+        assert!(parsed.contains("pstdr.toml"));
+        assert!(parsed.contains("src/main.pstdr"));
+        assert!(!parsed.contains("manifest.json"));
+        assert_eq!(parsed.len(), 6);
+
+        // Also verify reading from an on-disk directory preserves all files intact.
+        let temp = TempDir::new().expect("tempdir");
+        parsed
+            .write_to_directory(temp.path())
+            .expect("write addon dir");
+        let from_dir =
+            PackContainer::read_from_directory(temp.path(), IoLimits::default()).expect("read dir");
+        assert_eq!(from_dir, parsed);
+    }
+
+    #[test]
+    fn unwraps_only_outer_wrapper_for_wrapped_bedrock_addon() {
+        let zip_bytes = build_raw_zip(&[
+            ("my-addon/BP/manifest.json", b"{\"header\":{\"name\":\"BP\"}}"),
+            ("my-addon/RP/manifest.json", b"{\"header\":{\"name\":\"RP\"}}"),
+            ("my-addon/RP/textures/items/sword.png", b"png"),
+            ("my-addon/pstdr.toml", b"[package]\nname = \"my-addon\"\n"),
+            ("my-addon/src/main.pstdr", b"addon \"my-addon\" {}\n"),
+            ("__MACOSX/my-addon/._pstdr.toml", b"junk"),
+        ]);
+        let parsed =
+            PackContainer::read_from_zip_bytes(&zip_bytes, IoLimits::default()).expect("read zip");
+        assert!(parsed.contains("BP/manifest.json"));
+        assert!(parsed.contains("RP/manifest.json"));
+        assert!(parsed.contains("RP/textures/items/sword.png"));
+        assert!(parsed.contains("pstdr.toml"));
+        assert!(parsed.contains("src/main.pstdr"));
+        assert!(!parsed.contains("my-addon/BP/manifest.json"));
+        assert!(!parsed.contains("manifest.json"));
+        assert_eq!(parsed.len(), 5);
+
+        // Also verify pstdr.toml + BP/ only (without RP/) does not promote BP/ to root.
+        let bp_only_pstdr = build_raw_zip(&[
+            ("wrapped/BP/manifest.json", b"{}"),
+            ("wrapped/pstdr.toml", b"[package]\n"),
+            ("wrapped/src/main.pstdr", b"addon \"bp\" {}\n"),
+        ]);
+        let parsed_bp = PackContainer::read_from_zip_bytes(&bp_only_pstdr, IoLimits::default())
+            .expect("read bp-only pstdr");
+        assert!(parsed_bp.contains("BP/manifest.json"));
+        assert!(parsed_bp.contains("pstdr.toml"));
+        assert!(parsed_bp.contains("src/main.pstdr"));
+        assert!(!parsed_bp.contains("manifest.json"));
     }
 }

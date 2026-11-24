@@ -32,6 +32,7 @@ export const NewProjectWizardModal: React.FC<NewProjectWizardModalProps> = ({
   const [javaNamespace, setJavaNamespace] = useState("minecraft");
   const [bedrockMinor, setBedrockMinor] = useState(21);
   const [bedrockPatch, setBedrockPatch] = useState(50);
+  const [includePstdrWorkspace, setIncludePstdrWorkspace] = useState(true);
   const [targetParentDir, setTargetParentDir] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
@@ -69,6 +70,8 @@ export const NewProjectWizardModal: React.FC<NewProjectWizardModalProps> = ({
         bedrock_min_engine_version: [1, bedrockMinor, bedrockPatch],
         icon_path: null,
         target_parent_dir: targetParentDir.trim(),
+        include_pstdr_workspace:
+          kind === "bedrock_addon_workspace" ? includePstdrWorkspace : false,
       });
       onClose();
     } catch (err) {
@@ -96,26 +99,64 @@ export const NewProjectWizardModal: React.FC<NewProjectWizardModalProps> = ({
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
             {(
               [
-                ["java_resource_pack", "Java RP", "pack.mcmeta + assets/"],
-                ["bedrock_resource_pack", "Bedrock RP", "manifest.json [1,x,x]"],
-                ["bedrock_addon_workspace", "Bedrock Add-On", "Linked RP + BP"],
+                [
+                  "java_resource_pack",
+                  "Java Resource Pack",
+                  "Java RP",
+                  "#4caf50",
+                  `MC 1.21+ (fmt ${javaPackFormat})`,
+                  "pack.mcmeta + assets/ • .zip",
+                ],
+                [
+                  "bedrock_resource_pack",
+                  "Bedrock Resource Pack",
+                  "Bedrock RP",
+                  "#3794ff",
+                  `Bedrock 1.${bedrockMinor}.${bedrockPatch}`,
+                  "manifest.json + textures/ • .mcpack",
+                ],
+                [
+                  "bedrock_addon_workspace",
+                  "Bedrock Add-on (BP + RP + pstdr)",
+                  "Bedrock Add-on",
+                  "#d97706",
+                  "Bedrock 26.60 / @minecraft/server 2.11.0",
+                  "Linked BP + RP + pstdr • .mcaddon",
+                ],
               ] as const
-            ).map(([k, title, sub]) => (
+            ).map(([k, title, badge, badgeColor, targetVer, sub]) => (
               <button
                 key={k}
                 type="button"
-                className={`stat-card`}
+                className="stat-card"
                 style={{
                   flex: 1,
                   textAlign: "left",
                   cursor: "pointer",
-                  borderColor: kind === k ? "var(--vsc-status-blue)" : "var(--vsc-border-strong)",
+                  borderColor: kind === k ? badgeColor : "var(--vsc-border-strong)",
                   background: kind === k ? "#094771" : "#1f1f21",
                   color: "var(--vsc-text-bright)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
                 }}
                 onClick={() => setKind(k)}
               >
-                <div style={{ fontWeight: 700, fontSize: 13 }}>{title}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontWeight: 700, fontSize: 12 }}>{title}</span>
+                  <span
+                    className="edition-badge"
+                    style={{
+                      borderColor: badgeColor,
+                      color: badgeColor,
+                      fontSize: 10,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {badge}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: "#9cdcfe" }}>{targetVer}</div>
                 <div style={{ fontSize: 11, color: "#bbbbbb" }}>{sub}</div>
               </button>
             ))}
@@ -250,6 +291,32 @@ export const NewProjectWizardModal: React.FC<NewProjectWizardModalProps> = ({
               </label>
             )}
 
+            {kind === "bedrock_addon_workspace" && (
+              <label
+                style={{
+                  gridColumn: "1 / -1",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 10px",
+                  background: "#1e1e1e",
+                  border: "1px solid var(--vsc-border-strong)",
+                  borderRadius: 4,
+                  fontSize: 12,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={includePstdrWorkspace}
+                  onChange={(e) => setIncludePstdrWorkspace(e.target.checked)}
+                />
+                <span>
+                  Include <code>pstdr</code> DSL workspace (<code>pstdr.toml</code> +{" "}
+                  <code>src/main.pstdr</code> targeting Bedrock 26.60)
+                </span>
+              </label>
+            )}
+
             <label className="field-label" style={{ gridColumn: "1 / -1" }}>
               <span>Parent Output Directory</span>
               <div style={{ display: "flex", gap: 6 }}>
@@ -302,7 +369,11 @@ export const NewProjectWizardModal: React.FC<NewProjectWizardModalProps> = ({
           </button>
           <button type="submit" className="vsc-btn" disabled={submitting}>
             <span className="codicon codicon-add" />
-            {submitting ? "Creating..." : "Create Resource Pack"}
+            {submitting
+              ? "Creating..."
+              : kind === "bedrock_addon_workspace"
+                ? "Create Bedrock Add-on"
+                : "Create Resource Pack"}
           </button>
         </div>
       </form>

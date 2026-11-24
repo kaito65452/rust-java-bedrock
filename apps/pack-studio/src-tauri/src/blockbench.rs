@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-use crate::state::{ActivePackState, StudioState};
+use crate::state::{ActivePackState, PackType, StudioState};
 
 #[cfg(feature = "embed-blockbench")]
 const EMBEDDED_BLOCKBENCH_ARCHIVE: &[u8] =
@@ -654,8 +654,18 @@ pub fn blockbench_new_bedrock_geo(
     identifier: String,
 ) -> Result<BlockbenchLaunchInfo, String> {
     let info = blockbench_start(app, state.clone())?;
+    let is_addon = state
+        .active_pack
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.pack_type == PackType::BedrockAddon))
+        .unwrap_or(false);
     let clean_path = if rel_path.trim().is_empty() {
-        String::from("models/entity/custom_model.geo.json")
+        if is_addon {
+            String::from("RP/models/entity/custom_model.geo.json")
+        } else {
+            String::from("models/entity/custom_model.geo.json")
+        }
     } else {
         rel_path
     };
@@ -705,6 +715,9 @@ fn lookup_texture_in_container<'a>(
     let candidates = [
         format!("assets/{ns}/textures/{subpath_no_ext}.png"),
         format!("textures/{subpath_no_ext}.png"),
+        format!("RP/textures/{subpath_no_ext}.png"),
+        format!("rp/textures/{subpath_no_ext}.png"),
+        format!("RP/{subpath_no_ext}.png"),
     ];
     for cand in &candidates {
         if let Some(bytes) = container.get(cand) {

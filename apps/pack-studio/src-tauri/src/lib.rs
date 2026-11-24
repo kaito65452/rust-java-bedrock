@@ -86,12 +86,13 @@ mod tests {
         ConverterOptions, PackageExportConfig, UvAtlasGuardMode, execute_convert_core,
         package_pack_core, run_audit_core, run_preflight_core,
     };
+    use crate::state::PackType;
     use crate::texture::{
         TextureFormatKind, composite_grass_side_tga, create_blank_png_bytes, encode_texture_bytes,
         resize_nearest_neighbor,
     };
     use crate::workspace::{
-        NewProjectConfig, ProjectTemplateKind, generate_minecraft_resource_id,
+        NewProjectConfig, ProjectTemplateKind, detect_pack_type, generate_minecraft_resource_id,
         parse_yazi_chooser_output, sanitize_minecraft_filename, scaffold_project_on_disk,
     };
 
@@ -144,6 +145,7 @@ mod tests {
             bedrock_min_engine_version: [1, 21, 50],
             icon_path: None,
             target_parent_dir: parent.clone(),
+            include_pstdr_workspace: false,
         })
         .unwrap();
         assert!(java_dir.join("pack.mcmeta").is_file());
@@ -163,13 +165,14 @@ mod tests {
             bedrock_min_engine_version: [26, 0, 0],
             icon_path: None,
             target_parent_dir: parent.clone(),
+            include_pstdr_workspace: false,
         })
         .unwrap();
         let manifest_txt = fs::read_to_string(bedrock_dir.join("manifest.json")).unwrap();
         let manifest: serde_json::Value = serde_json::from_str(&manifest_txt).unwrap();
         assert_eq!(manifest["header"]["min_engine_version"][0], 1);
 
-        let addon_rp = scaffold_project_on_disk(&NewProjectConfig {
+        let addon_root = scaffold_project_on_disk(&NewProjectConfig {
             kind: ProjectTemplateKind::BedrockAddonWorkspace,
             pack_name: String::from("Solar Addon"),
             description: String::from("RP+BP"),
@@ -180,23 +183,37 @@ mod tests {
             java_pack_format: 34,
             java_supported_formats: None,
             java_namespace: String::from("minecraft"),
-            bedrock_min_engine_version: [1, 21, 0],
+            bedrock_min_engine_version: [1, 21, 50],
             icon_path: None,
             target_parent_dir: parent,
+            include_pstdr_workspace: true,
         })
         .unwrap();
         let rp_manifest: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(addon_rp.join("manifest.json")).unwrap(),
+            &fs::read_to_string(addon_root.join("RP/manifest.json")).unwrap(),
         )
         .unwrap();
-        let bp_manifest_path = addon_rp.parent().unwrap().join("BP/manifest.json");
+        let bp_manifest_path = addon_root.join("BP/manifest.json");
         assert!(bp_manifest_path.is_file());
+        assert!(addon_root.join("BP/scripts/main.js").is_file());
+        assert!(addon_root.join("pstdr.toml").is_file());
+        assert!(addon_root.join("src/main.pstdr").is_file());
         let bp_manifest: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(bp_manifest_path).unwrap()).unwrap();
         assert_eq!(
             bp_manifest["dependencies"][0]["uuid"],
             rp_manifest["header"]["uuid"]
         );
+
+        let addon_container =
+            PackContainer::read_from_directory(&addon_root, rp_io::IoLimits::default()).unwrap();
+        assert_eq!(
+            detect_pack_type(&addon_container).unwrap(),
+            PackType::BedrockAddon
+        );
+        let addon_audit = run_audit_core(&addon_container).unwrap();
+        assert_eq!(addon_audit.pack_type, PackType::BedrockAddon);
+        assert_ne!(addon_audit.status, AuditStatus::Failed);
     }
 
     #[test]
@@ -302,8 +319,10 @@ mod tests {
                 compression: String::from("balanced"),
                 run_semantic_audit: true,
                 allow_export_with_errors: false,
+                include_dev_sources: false,
             },
             Edition::Bedrock,
+            PackType::BedrockResourcePack,
             "Sample Pack",
             [1, 0, 0],
         )
