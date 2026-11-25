@@ -1,11 +1,19 @@
-# PackStudio (`rust-java-bedrock`)
+<div align="center">
+  <img src="apps/pack-studio/src-tauri/icons/128x128@2x.png" alt="PackStudio Voxel Tesseract Logo" width="128" height="128" />
 
-[![Release](https://img.shields.io/badge/release-v0.3.1--beta-blue)](https://github.com/kaito65452/rust-java-bedrock/releases)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux%20(x86__64%2FARM64)-blueviolet)](https://github.com/kaito65452/rust-java-bedrock/actions)
-[![Rust](https://img.shields.io/badge/Rust-Edition%202024-orange?logo=rust)](https://www.rust-lang.org/)
-[![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri)](https://v2.tauri.app/)
-[![PSTDR-DSL](https://img.shields.io/badge/PSTDR--DSL-Wave%203B%20In--Process-3fb950)](https://github.com/kaito65452/pstdr-dsl)
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
+  <h1>PackStudio (<code>rust-java-bedrock</code>)</h1>
+
+  <p><strong>Offline-first Minecraft Java &amp; Bedrock Resource Pack, Add-on &amp; PSTDR-DSL Workbench</strong></p>
+
+  <p>
+    <a href="https://github.com/kaito65452/rust-java-bedrock/releases"><img src="https://img.shields.io/badge/release-v0.3.1--beta-blue" alt="Release" /></a>
+    <a href="https://github.com/kaito65452/rust-java-bedrock/actions"><img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux%20(x86__64%2FARM64)-blueviolet" alt="Platforms" /></a>
+    <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-Edition%202024-orange?logo=rust" alt="Rust" /></a>
+    <a href="https://v2.tauri.app/"><img src="https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri" alt="Tauri v2" /></a>
+    <a href="https://github.com/kaito65452/pstdr-dsl"><img src="https://img.shields.io/badge/PSTDR--DSL-Wave%203B%20In--Process-3fb950" alt="PSTDR-DSL" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg" alt="License: GPL-3.0-or-later" /></a>
+  </p>
+</div>
 
 **PackStudio** is a fast, offline-first **VS Code-style Minecraft Resource Pack & Bedrock Add-on Workbench** built with **Rust**, **Tauri v2**, **React**, **Monaco Editor**, **Embedded Blockbench 3D**, and the **in-process `pstdr-dsl` compiler & Language Server**.
 
