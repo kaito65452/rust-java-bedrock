@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/Rust-Edition%202024-orange?logo=rust)](https://www.rust-lang.org/)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri)](https://v2.tauri.app/)
 [![PSTDR-DSL](https://img.shields.io/badge/PSTDR--DSL-Wave%203B%20In--Process-3fb950)](https://github.com/kaito65452/pstdr-dsl)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 
 **PackStudio** is a fast, offline-first **VS Code-style Minecraft Resource Pack & Bedrock Add-on Workbench** built with **Rust**, **Tauri v2**, **React**, **Monaco Editor**, **Embedded Blockbench 3D**, and the **in-process `pstdr-dsl` compiler & Language Server**.
 
@@ -162,6 +162,6 @@ on cmd "my_pack:shop" description "Open the starter shop menu" permission any ()
 
 ## Disclaimer & License
 
-Licensed under the **MIT License** (see third-party notices in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for bundled Blockbench Web GPL-3.0 licensing).
+Licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** — see [`LICENSE`](LICENSE) and third-party notices in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) (including in-process `pstdr-lang` `GPL-3.0-or-later` and bundled Blockbench Web `GPL-3.0` licensing).
 
 > **Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.**

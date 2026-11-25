@@ -107,6 +107,9 @@ fi
 if [[ -f "${REPO_ROOT}/assets/vendor/blockbench-web.sha256" ]]; then
   cp "${REPO_ROOT}/assets/vendor/blockbench-web.sha256" "${STAGE_ROOT}/usr/share/${PKG_NAME}/blockbench-web.sha256"
 fi
+if [[ -f "${REPO_ROOT}/LICENSE" ]]; then
+  cp "${REPO_ROOT}/LICENSE" "${STAGE_ROOT}/usr/share/doc/${PKG_NAME}/LICENSE"
+fi
 if [[ -f "${REPO_ROOT}/THIRD_PARTY_LICENSES.md" ]]; then
   cp "${REPO_ROOT}/THIRD_PARTY_LICENSES.md" "${STAGE_ROOT}/usr/share/doc/${PKG_NAME}/THIRD_PARTY_LICENSES.md"
 fi
@@ -118,7 +121,9 @@ Source: https://github.com/kaito65452/rust-java-bedrock
 
 Files: *
 Copyright: 2025-2026 rust-java-bedrock contributors
-License: MIT
+License: GPL-3.0-or-later
+ On Debian systems, the full text of the GNU General Public License version 3
+ can be found in /usr/share/common-licenses/GPL-3 and /usr/share/doc/pack-studio/LICENSE.
 
 Files: assets/vendor/blockbench-web.tar.zst
 Copyright: Jannis Tobias Petersen (JannisX11) and Blockbench contributors
@@ -128,7 +133,7 @@ License: GPL-3.0
 EOF
 
 # Install application icon from Tauri app icons (single source of truth)
-cp "${REPO_ROOT}/apps/pack-studio/src-tauri/icons/icon.png" "${STAGE_ROOT}/usr/share/icons/hicolor/128x128/apps/${PKG_NAME}.png"
+cp "${REPO_ROOT}/apps/pack-studio/src-tauri/icons/128x128.png" "${STAGE_ROOT}/usr/share/icons/hicolor/128x128/apps/${PKG_NAME}.png"
 
 cat > "${STAGE_ROOT}/usr/share/applications/${PKG_NAME}.desktop" <<'EOF'
 [Desktop Entry]

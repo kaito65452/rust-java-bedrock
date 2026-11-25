@@ -18,12 +18,11 @@ fn resolve_short_commit_sha() -> String {
     if let Ok(output) = Command::new("git")
         .args(["rev-parse", "--short=7", "HEAD"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !sha.is_empty() {
-                return sha;
-            }
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !sha.is_empty() {
+            return sha;
         }
     }
     String::from("dev")

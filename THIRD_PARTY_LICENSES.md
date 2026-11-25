@@ -15,6 +15,14 @@ This project (`rust-java-bedrock` / `pack-studio`) integrates or builds upon the
 
 ---
 
+## PSTDR-DSL (`pstdr-lang`)
+
+- **Project:** [kaito65452/pstdr-dsl](https://github.com/kaito65452/pstdr-dsl)
+- **License:** GNU General Public License v3.0 or later (`GPL-3.0-or-later`)
+- **Usage in PackStudio:** Linked in-process in `apps/pack-studio/src-tauri` for native `.pstdr` parsing, semantic validation, diagnostics, LSP, and Bedrock Script API transpilation.
+
+---
+
 ## Core Rust Dependencies
 
 Key Rust crates used by `pack-studio` (subject to their respective MIT / Apache-2.0 / CC0-1.0 licenses):
