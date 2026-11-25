@@ -2178,6 +2178,34 @@ pub fn lsp_code_actions(
     out
 }
 
+/// Tauri Command: Forward frontend errors, warnings, and opt-in trace breadcrumbs to terminal `stderr`.
+#[tauri::command]
+pub fn frontend_trace_log(level: String, scope: String, message: String, stack: Option<String>) {
+    let norm_level = level.trim().to_ascii_lowercase();
+    let always_print = matches!(norm_level.as_str(), "error" | "warn");
+    if !always_print && !crate::is_trace_enabled() {
+        return;
+    }
+    let clean_level = if norm_level.is_empty() {
+        "info"
+    } else {
+        norm_level.as_str()
+    };
+    let clean_scope = if scope.trim().is_empty() {
+        "app"
+    } else {
+        scope.trim()
+    };
+    eprintln!("[pack-studio:frontend:{clean_level}] [{clean_scope}] {message}");
+    if let Some(st) = stack {
+        for line in st.lines() {
+            if !line.trim().is_empty() {
+                eprintln!("    {line}");
+            }
+        }
+    }
+}
+
 /// Converts an `LspDiagnosticDto` into `rp_core::ConversionWarning` for unified Problems display.
 #[must_use]
 pub fn diagnostic_to_problem(diag: &LspDiagnosticDto) -> ConversionWarning {
