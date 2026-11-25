@@ -3,7 +3,9 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::pstdr_sync::PACKSTUDIO_DISPLAY_VERSION;
