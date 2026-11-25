@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../api";
+import { APP_DISPLAY_VERSION } from "../utils/version";
 import type {
   AiAgentsStatusDto,
   AiContextPacketDto,
@@ -466,7 +467,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div style={{ fontSize: 12, color: "var(--vsc-text-dim)", marginTop: 2 }}>
                       Installed version:{" "}
                       <span style={{ fontFamily: "var(--font-mono)", color: "#9cdcfe" }}>
-                        v{studioUpdate?.current_version ?? "0.3.0-beta.1"}
+                        v{studioUpdate?.current_version ?? APP_DISPLAY_VERSION}
                       </span>
                     </div>
                   </div>

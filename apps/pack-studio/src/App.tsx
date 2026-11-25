@@ -14,9 +14,14 @@ import { MetadataPackagingTab } from "./components/MetadataPackagingTab";
 import { MonacoCodeTab } from "./components/MonacoCodeTab";
 import { NewProjectWizardModal } from "./components/NewProjectWizardModal";
 import { PstdrUpdateModal } from "./components/PstdrUpdateModal";
+import {
+  GUIDED_PSTDR_STARTER_SOURCE,
+  QuickTutorialView,
+} from "./components/QuickTutorialView";
 import { SettingsView, type SettingsCategory } from "./components/SettingsView";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { TexturePaintTab } from "./components/TexturePaintTab";
+import { VoxelTesseractLogo } from "./components/VoxelTesseractLogo";
 import type {
   ActivityView,
   AiAgentsStatusDto,
@@ -36,10 +41,12 @@ import type {
   ProjectSnapshot,
   PstdrSyncStatusDto,
   PstdrUpdateOfferDto,
+  RecentProjectEntry,
   StudioSettings,
   UvAtlasGuardMode,
 } from "./types";
 import { safeListen, safeUnlisten } from "./utils/tauriEvents";
+import { APP_DISPLAY_VERSION } from "./utils/version";
 import {
   baseName,
   computeResourceId,
@@ -61,6 +68,26 @@ const DEFAULT_SETTINGS: StudioSettings = {
   externalImageEditor: "",
   blockbenchUiScale: 0.86,
 };
+
+const RECENT_PROJECTS_KEY = "pack_studio_recent_projects_v1";
+
+function loadRecentProjects(): RecentProjectEntry[] {
+  try {
+    const raw = localStorage.getItem(RECENT_PROJECTS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item): item is RecentProjectEntry =>
+            Boolean(item && typeof item.path === "string" && typeof item.name === "string"),
+        );
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return [];
+}
 
 function loadInitialSettings(): StudioSettings {
   try {
@@ -96,6 +123,8 @@ export default function App() {
   const logSeqRef = useRef(1);
 
   const [settings, setSettings] = useState<StudioSettings>(loadInitialSettings);
+  const [recentProjects, setRecentProjects] =
+    useState<RecentProjectEntry[]>(loadRecentProjects);
   const [fileManagers, setFileManagers] =
     useState<DetectedFileManagers | null>(null);
   const [extensionsSnapshot, setExtensionsSnapshot] =
@@ -170,6 +199,29 @@ export default function App() {
     }
   }, [settings]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(recentProjects));
+    } catch {
+      // ignore storage errors
+    }
+  }, [recentProjects]);
+
+  const recordRecentProject = useCallback((snap: ProjectSnapshot) => {
+    const src = snap.source_path;
+    if (!src) return;
+    setRecentProjects((prev) => {
+      const entry: RecentProjectEntry = {
+        path: src,
+        name: snap.pack_name,
+        edition_label: snap.edition_label,
+        pack_type: snap.pack_type,
+        opened_at: Date.now(),
+      };
+      return [entry, ...prev.filter((item) => item.path !== src)].slice(0, 8);
+    });
+  }, []);
+
   const refreshFileManagers = useCallback(async () => {
     try {
       const fm = await api.detectFileManagers();
@@ -195,7 +247,7 @@ export default function App() {
   useEffect(() => {
     appendLog(
       "info",
-      "PackStudio Tauri v2 Workbench ready. Use Ctrl+Shift+P for Command Palette.",
+      `PackStudio v${APP_DISPLAY_VERSION} ready. Use Ctrl+Shift+P for Command Palette.`,
     );
     void refreshFileManagers();
     void refreshExtensionsAndLsp();
@@ -396,6 +448,15 @@ export default function App() {
     return () => window.removeEventListener("mousedown", onPointerDown);
   }, [activityMenu]);
 
+  const openQuickTutorial = useCallback(() => {
+    setActivityMenu(null);
+    openOrFocusTab({
+      id: "tool:tutorial",
+      kind: "tutorial",
+      title: "Quick Tutorial",
+    });
+  }, [openOrFocusTab]);
+
   const openSettingsCategory = useCallback(
     (category: SettingsCategory) => {
       setActivityMenu(null);
@@ -491,6 +552,7 @@ export default function App() {
       try {
         const snap = await api.openProject(path);
         setProject(snap);
+        recordRecentProject(snap);
         setTabs([]);
         setActiveTabId(null);
         setTextCache({});
@@ -518,8 +580,48 @@ export default function App() {
         appendLog("error", `Open project failed: ${String(e)}`);
       }
     },
-    [appendLog, openAssetTab],
+    [appendLog, openAssetTab, recordRecentProject],
   );
+
+  const handleOpenPstdrStarter = useCallback(async () => {
+    const activeProject = projectRef.current;
+    if (activeProject) {
+      const targetRel =
+        activeProject.all_files.find((f) => f === "src/tutorial_starter.pstdr") ??
+        activeProject.all_files.find((f) => f.toLowerCase().endsWith(".pstdr")) ??
+        "src/tutorial_starter.pstdr";
+      try {
+        if (!activeProject.all_files.includes(targetRel)) {
+          const snap = await api.fsCreateFile(
+            targetRel,
+            GUIDED_PSTDR_STARTER_SOURCE,
+          );
+          setProject(snap);
+          appendLog("success", `Created guided PSTDR starter: ${targetRel}`);
+        }
+        await openAssetTab(targetRel, "code");
+      } catch (e) {
+        appendLog("error", `Failed opening guided .pstdr starter: ${String(e)}`);
+      }
+      return;
+    }
+
+    // No project open yet: open a live scratch starter in Monaco so users can explore immediately
+    const scratchRel = "tutorial_starter.pstdr";
+    setTextCache((prev) => ({
+      ...prev,
+      [scratchRel]: GUIDED_PSTDR_STARTER_SOURCE,
+    }));
+    openOrFocusTab({
+      id: `code:${scratchRel}`,
+      kind: "code",
+      title: scratchRel,
+      relPath: scratchRel,
+    });
+    showToast(
+      "Opened guided PSTDR Wave 3B starter — create or open a project to save & build.",
+    );
+  }, [appendLog, openAssetTab, openOrFocusTab, showToast]);
 
   const promptOpenProject = useCallback(async () => {
     const picked = await dialogOpen({
@@ -687,6 +789,12 @@ export default function App() {
         e.preventDefault();
         setActivity("extensions");
         setSidebarOpen(true);
+      } else if (ctrl && !e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        void promptOpenProject();
+      } else if (ctrl && e.shiftKey && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        setWizardOpen(true);
       } else if (ctrl && !e.shiftKey && e.key === ",") {
         e.preventDefault();
         openSettingsCategory("updates");
@@ -697,7 +805,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openSettingsCategory]);
+  }, [openSettingsCategory, promptOpenProject]);
 
   const searchResults = useMemo(() => {
     if (!project) return [];
@@ -772,6 +880,10 @@ export default function App() {
         action: () => void handleRunAudit(),
       },
       {
+        label: "Help: Open Quick Tutorial",
+        action: () => openQuickTutorial(),
+      },
+      {
         label: "Preferences: Open Settings (Ctrl+,)",
         action: () =>
           openOrFocusTab({
@@ -812,6 +924,7 @@ export default function App() {
       handleRunAudit,
       hasPstdrWorkspace,
       openOrFocusTab,
+      openQuickTutorial,
       promptOpenArchive,
       promptOpenProject,
     ],
@@ -871,8 +984,13 @@ export default function App() {
       {/* VS Code Title / Command Bar */}
       <div className="title-command-bar">
         <div className="title-left">
-          <span className="brand-pill">
-            <span className="codicon codicon-layers" style={{ color: "#3794ff" }} />
+          <span
+            className="brand-pill"
+            onClick={() => openQuickTutorial()}
+            style={{ cursor: "pointer" }}
+            title={`PackStudio v${APP_DISPLAY_VERSION} — Open Quick Tutorial`}
+          >
+            <VoxelTesseractLogo variant="badge" size={18} />
             PackStudio
           </span>
           {project && (
@@ -1167,7 +1285,7 @@ export default function App() {
             {activityMenu === "accounts" && (
               <div
                 className="menu-popover"
-                style={{ left: 54, bottom: 52, minWidth: 236 }}
+                style={{ left: 54, bottom: 68, minWidth: 236 }}
               >
                 {githubStatus?.connected ? (
                   <>
@@ -1289,7 +1407,7 @@ export default function App() {
             {activityMenu === "gear" && (
               <div
                 className="menu-popover"
-                style={{ left: 54, bottom: 26, minWidth: 256 }}
+                style={{ left: 54, bottom: 42, minWidth: 256 }}
               >
                 <div
                   className="menu-item"
@@ -1307,6 +1425,14 @@ export default function App() {
                   <span style={{ fontSize: 10.5, color: "var(--vsc-text-dim)" }}>
                     Ctrl+Shift+P
                   </span>
+                </div>
+
+                <div
+                  className="menu-item"
+                  onClick={() => openQuickTutorial()}
+                >
+                  <span className="codicon codicon-mortar-board" />
+                  <span>Quick Tutorial</span>
                 </div>
 
                 <div
@@ -1761,9 +1887,11 @@ export default function App() {
                                       ? "codicon-extensions"
                                       : tab.kind === "settings"
                                         ? "codicon-settings-gear"
-                                        : tab.kind === "blockbench"
-                                          ? "codicon-cube"
-                                          : fileIconClass(tab.relPath || "", false)
+                                        : tab.kind === "tutorial"
+                                          ? "codicon-mortar-board"
+                                          : tab.kind === "blockbench"
+                                            ? "codicon-cube"
+                                            : fileIconClass(tab.relPath || "", false)
                               }`}
                             />
                             <span className="editor-tab-title">{tab.title}</span>
@@ -1789,58 +1917,31 @@ export default function App() {
                     </div>
 
                     <div className="editor-content-area">
-                      {!activeTab && (
-                        <div
-                          className="panel-scroll"
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            gap: 14,
-                          }}
-                        >
-                          <span
-                            className="codicon codicon-layers"
-                            style={{ fontSize: 52, color: "#007acc" }}
-                          />
-                          <h2 style={{ margin: 0, color: "var(--vsc-text-bright)" }}>
-                            PackStudio Workbench (Tauri v2)
-                          </h2>
-                          <p style={{ margin: 0, color: "var(--vsc-text-dim)" }}>
-                            VS Code-grade Minecraft Java &amp; Bedrock Resource Pack IDE &amp; Converter
-                          </p>
-                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                            <button
-                              className="vsc-btn"
-                              onClick={() => void promptOpenProject()}
-                            >
-                              <span className="codicon codicon-folder-opened" />
-                              Open Pack Folder
-                            </button>
-                            <button
-                              className="vsc-btn secondary"
-                              onClick={() => void promptOpenArchive()}
-                            >
-                              <span className="codicon codicon-file-zip" />
-                              Open .zip / .mcpack
-                            </button>
-                            <button
-                              className="vsc-btn secondary"
-                              onClick={() => setWizardOpen(true)}
-                            >
-                              <span className="codicon codicon-add" />
-                              New Project Wizard
-                            </button>
-                            <button
-                              className="vsc-btn secondary"
-                              onClick={() => void handleOpenBlockbench()}
-                            >
-                              <span className="codicon codicon-cube" />
-                              Launch Blockbench 3D
-                            </button>
-                          </div>
-                        </div>
+                      {(!activeTab || activeTab.kind === "tutorial") && (
+                        <QuickTutorialView
+                          recentProjects={recentProjects}
+                          hasOpenProject={Boolean(project)}
+                          onOpenFolder={() => void promptOpenProject()}
+                          onOpenArchive={() => void promptOpenArchive()}
+                          onOpenWizard={() => setWizardOpen(true)}
+                          onOpenBlockbench={() => void handleOpenBlockbench()}
+                          onOpenConverter={() =>
+                            openOrFocusTab({
+                              id: "tool:converter",
+                              kind: "converter",
+                              title: "Converter & Preflight",
+                            })
+                          }
+                          onOpenPstdrStarter={() => void handleOpenPstdrStarter()}
+                          onOpenSettings={(cat) => openSettingsCategory(cat)}
+                          onOpenRecentProject={(path) => void openProjectByPath(path)}
+                          onRemoveRecentProject={(path) =>
+                            setRecentProjects((prev) =>
+                              prev.filter((item) => item.path !== path),
+                            )
+                          }
+                          onClearRecentProjects={() => setRecentProjects([])}
+                        />
                       )}
 
                       {activeTab?.kind === "code" && activeTab.relPath && (
@@ -1858,6 +1959,13 @@ export default function App() {
                             lspDiagnostics={allLspDiagnostics}
                             onDirtyChange={(dirty) => setTabDirty(activeTab.id, dirty)}
                             onSave={async (rel, content) => {
+                              if (!projectRef.current) {
+                                setTextCache((c) => ({ ...c, [rel]: content }));
+                                showToast(
+                                  "Open or create a PackStudio project to save this file to disk.",
+                                );
+                                return;
+                              }
                               const snap = await api.fsWriteText(rel, content);
                               setTextCache((c) => ({ ...c, [rel]: content }));
                               setProject(snap);
@@ -2403,22 +2511,6 @@ export default function App() {
         </div>
 
         <div className="status-group">
-          {githubStatus?.connected && githubStatus.login && (
-            <span
-              className="status-item"
-              onClick={() =>
-                openOrFocusTab({
-                  id: "tool:settings",
-                  kind: "settings",
-                  title: "Settings",
-                })
-              }
-              title={`GitHub connected as @${githubStatus.login} — open Settings`}
-            >
-              <span className="codicon codicon-github-inverted" />
-              @{githubStatus.login}
-            </span>
-          )}
           {pstdrUpdateOffer?.update_available && (
             <span
               className="status-item"
@@ -2477,6 +2569,7 @@ export default function App() {
           onCreate={async (cfg: NewProjectConfig) => {
             const snap = await api.createProject(cfg);
             setProject(snap);
+            recordRecentProject(snap);
             setTabs([]);
             setActiveTabId(null);
             setProblems([]);

@@ -1,8 +1,8 @@
 # PackStudio Wiki
 
-Welcome to the **PackStudio (`v0.3.0-beta.1`)** & **PSTDR-DSL** documentation hub!
+Welcome to the **PackStudio (`v0.3.1-beta+<commit>`)** & **PSTDR-DSL** documentation hub!
 
-PackStudio is an offline-first **VS Code-style Minecraft Resource Pack & Bedrock Add-on Workbench** powered by Rust, Tauri v2, Monaco Editor, Embedded Blockbench 3D, and the in-process `pstdr-lang` compiler and LSP.
+PackStudio is an offline-first, cross-platform (**Windows `.exe`/`.msi`**, **macOS `.dmg`/`.app`**, **Linux ARM64 & x86_64 `.deb`/`.AppImage`**) **VS Code-style Minecraft Resource Pack & Bedrock Add-on Workbench** powered by Rust, Tauri v2, Monaco Editor, Embedded Blockbench 3D, and the in-process `pstdr-lang` compiler and LSP.
 
 ---
 
@@ -11,7 +11,7 @@ PackStudio is an offline-first **VS Code-style Minecraft Resource Pack & Bedrock
 ### PackStudio Workbench
 | Page | What You'll Learn |
 | --- | --- |
-| **[Getting Started](./PackStudio-Getting-Started.md)** | Installing `.deb` / building from source, 3-mode New Project Wizard, Activity Bar, VS Code-style Settings (`Ctrl+,`), and GitHub Account Connect |
+| **[Getting Started](./PackStudio-Getting-Started.md)** | Cross-platform installers (`.exe`, `.dmg`, `.deb`, `.AppImage`), Interactive Quick Tutorial Walkthrough, Voxel Tesseract icons, 3-mode New Project Wizard, Activity Bar, VS Code-style Settings (`Ctrl+,`), and GitHub Account Connect |
 | **[Converter & Blockbench 3D](./PackStudio-Converter-and-Blockbench.md)** | Bidirectional Java ↔ Bedrock conversion, Semantic Audit Gate, 2D Texture Paint, and Embedded Offline Blockbench 3D |
 | **[Verified PSTDR Sync & AI Agents](./PackStudio-Verified-Sync-and-AI.md)** | Zero-trust Ed25519 + SHA-256 update verification, quarantine & manual approval modal, and Claude Code / Antigravity / OpenCode integration |
 

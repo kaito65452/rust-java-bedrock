@@ -1,0 +1,361 @@
+name: Release PackStudio (Cross-Platform)
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - ci/test-pack-studio
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      base_version:
+        description: "Base SemVer version (commit metadata +<sha> is appended automatically)"
+        type: string
+        default: "0.3.1-beta"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-packstudio-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-blockbench-bundle:
+    name: Build Blockbench Web Bundle
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Build & Compress Blockbench Web Bundle
+        run: bash scripts/build_blockbench.sh
+
+      - name: Upload Blockbench Vendor Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: blockbench-web-vendor-cross
+          path: |
+            assets/vendor/blockbench-web.tar.zst
+            assets/vendor/blockbench-web.sha256
+          retention-days: 7
+
+  build-linux-arm64:
+    name: Linux ARM64 (.deb)
+    needs: build-blockbench-bundle
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor-cross
+          path: assets/vendor
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve Build Version (0.3.1-beta+<commit>)
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BASE_VER="${{ inputs.base_version || '0.3.1-beta' }}"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "VITE_APP_COMMIT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "PACKSTUDIO_COMMIT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "FULL_VERSION=${BASE_VER}+${SHORT_SHA}" >> "$GITHUB_ENV"
+
+      - name: Build PackStudio Frontend
+        working-directory: apps/pack-studio
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Install Linux ARM64 Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            dpkg-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust Stable (aarch64-unknown-linux-gnu)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Build (Linux ARM64)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v3-release-linux-arm64"
+
+      - name: Build PackStudio Release Binary & .deb (ARM64)
+        run: |
+          cargo build --release -p pack-studio-tauri --features "embed-blockbench,custom-protocol"
+          chmod +x scripts/build_deb_arm64.sh
+          DEB_ARCH=arm64 DEB_VERSION="${FULL_VERSION}" bash scripts/build_deb_arm64.sh target/release/pack-studio-tauri dist-release
+
+      - name: Upload Linux ARM64 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packstudio-linux-arm64
+          path: dist-release/*
+          retention-days: 30
+
+  build-linux-x86_64:
+    name: Linux x86_64 (.deb & .AppImage)
+    needs: build-blockbench-bundle
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor-cross
+          path: assets/vendor
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve Build Version (0.3.1-beta+<commit>)
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BASE_VER="${{ inputs.base_version || '0.3.1-beta' }}"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "VITE_APP_COMMIT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "PACKSTUDIO_COMMIT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "FULL_VERSION=${BASE_VER}+${SHORT_SHA}" >> "$GITHUB_ENV"
+
+      - name: Install Linux x86_64 Tauri Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            pkg-config \
+            libssl-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            fuse \
+            libfuse2
+
+      - name: Install Rust Stable (x86_64-unknown-linux-gnu)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Build (Linux x86_64)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v3-release-linux-x86_64"
+
+      - name: Install Frontend Dependencies & Build Tauri Bundles (.deb & .AppImage)
+        working-directory: apps/pack-studio
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          npm install --no-audit --no-fund
+          npx --yes @tauri-apps/cli@2 build --bundles deb,appimage -- --features embed-blockbench,custom-protocol
+
+      - name: Collect Linux x86_64 Bundles & Checksums
+        shell: bash
+        run: |
+          mkdir -p dist-release
+          find target apps/pack-studio/src-tauri/target -type f \( -name "*.deb" -o -name "*.AppImage" \) 2>/dev/null | while read -r f; do
+            base="$(basename "$f")"
+            cp "$f" "dist-release/${base}"
+          done
+          ls -lh dist-release/
+          (cd dist-release && sha256sum * > "packstudio-linux-x86_64-${FULL_VERSION}.sha256")
+
+      - name: Upload Linux x86_64 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packstudio-linux-x86_64
+          path: dist-release/*
+          retention-days: 30
+
+  build-windows-x86_64:
+    name: Windows x86_64 (.exe NSIS & .msi)
+    needs: build-blockbench-bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor-cross
+          path: assets/vendor
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve Build Version (0.3.1-beta+<commit>)
+        shell: pwsh
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $baseVer = "${{ inputs.base_version || '0.3.1-beta' }}"
+          "SHORT_SHA=$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VITE_APP_COMMIT_SHA=$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PACKSTUDIO_COMMIT_SHA=$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "FULL_VERSION=$baseVer+$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Rust Stable (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Build (Windows x86_64)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v3-release-windows-x86_64"
+
+      - name: Install Frontend Dependencies & Build Tauri Installers (.exe & .msi)
+        working-directory: apps/pack-studio
+        shell: pwsh
+        run: |
+          npm install --no-audit --no-fund
+          npx --yes @tauri-apps/cli@2 build --bundles nsis,msi -- --features embed-blockbench,custom-protocol
+
+      - name: Collect Windows Installers & Checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-release | Out-Null
+          $roots = @("target", "apps/pack-studio/src-tauri/target") | Where-Object { Test-Path $_ }
+          $files = Get-ChildItem -Path $roots -Recurse -File -Include *.exe,*.msi | Where-Object { $_.FullName -match "bundle" }
+          foreach ($f in $files) {
+            Copy-Item $f.FullName -Destination (Join-Path "dist-release" $f.Name) -Force
+          }
+          Get-ChildItem dist-release | Format-Table Name, Length
+          $hashes = Get-ChildItem dist-release -File | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)"
+          }
+          $hashes | Set-Content -Path "dist-release/packstudio-windows-x86_64-$($env:FULL_VERSION).sha256"
+
+      - name: Upload Windows x86_64 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packstudio-windows-x86_64
+          path: dist-release/*
+          retention-days: 30
+
+  build-macos:
+    name: macOS Universal (.dmg & .app)
+    needs: build-blockbench-bundle
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blockbench Vendor Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: blockbench-web-vendor-cross
+          path: assets/vendor
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve Build Version (0.3.1-beta+<commit>)
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BASE_VER="${{ inputs.base_version || '0.3.1-beta' }}"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "VITE_APP_COMMIT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "PACKSTUDIO_COMMIT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "FULL_VERSION=${BASE_VER}+${SHORT_SHA}" >> "$GITHUB_ENV"
+
+      - name: Install Rust Stable (Universal macOS Targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo Build (macOS Universal)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v3-release-macos-universal"
+
+      - name: Install Frontend Dependencies & Build Tauri Bundles (.dmg & .app)
+        working-directory: apps/pack-studio
+        run: |
+          npm install --no-audit --no-fund
+          npx --yes @tauri-apps/cli@2 build --target universal-apple-darwin --bundles dmg,app -- --features embed-blockbench,custom-protocol
+
+      - name: Collect macOS .dmg, Archived .app & Checksums
+        shell: bash
+        run: |
+          mkdir -p dist-release
+          find target apps/pack-studio/src-tauri/target -path "*/bundle/dmg/*.dmg" -type f 2>/dev/null | while read -r f; do
+            cp "$f" "dist-release/$(basename "$f")"
+          done
+          APP_PATH="$(find target apps/pack-studio/src-tauri/target -path "*/bundle/macos/*.app" -maxdepth 6 -type d 2>/dev/null | head -n 1)"
+          if [ -n "$APP_PATH" ]; then
+            tar -czf "dist-release/PackStudio_${FULL_VERSION}_universal.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
+          fi
+          ls -lh dist-release/
+          (cd dist-release && shasum -a 256 * > "packstudio-macos-universal-${FULL_VERSION}.sha256")
+
+      - name: Upload macOS Universal Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packstudio-macos-universal
+          path: dist-release/*
+          retention-days: 30
+
+  publish-release:
+    name: Attach Cross-Platform Installers to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-linux-arm64
+      - build-linux-x86_64
+      - build-windows-x86_64
+      - build-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Platform Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify Collected Release Assets
+        run: |
+          ls -lh release-assets/
+          (cd release-assets && sha256sum $(find . -maxdepth 1 -type f ! -name "*.sha256" ! -name "SHA256SUMS.txt" -printf "%f\n" | sort) > SHA256SUMS.txt)
+          cat release-assets/SHA256SUMS.txt
+
+      - name: Publish GitHub Release with Cross-Platform Installers
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: release-assets/*

@@ -460,7 +460,16 @@ export type EditorTabKind =
   | "metadata"
   | "extensions"
   | "settings"
+  | "tutorial"
   | "blockbench";
+
+export interface RecentProjectEntry {
+  path: string;
+  name: string;
+  edition_label: string;
+  pack_type: PackType;
+  opened_at: number;
+}
 
 export interface EditorTab {
   id: string;

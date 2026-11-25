@@ -38,8 +38,20 @@ pub const PSTDR_SIGNING_KEY_ID: &str = "saryu-pstdr-root-2026";
 pub const PSTDR_SIGNING_PUBKEY_HEX: &str =
     "4970e4b61c17aec73af409e091a4e11589603b4db7d23e2535016aa3741c4e09";
 
-/// Built-in PackStudio desktop application version (synchronized with `tauri.conf.json` / `.deb`).
-pub const PACKSTUDIO_APP_VERSION: &str = "0.3.0-beta.1";
+/// Built-in PackStudio desktop application SemVer base version (synchronized with `tauri.conf.json`).
+pub const PACKSTUDIO_APP_VERSION: &str = "0.3.1-beta";
+
+/// Build-time short Git commit SHA injected by `build.rs`.
+pub const PACKSTUDIO_COMMIT_SHA: &str = match option_env!("PACKSTUDIO_COMMIT_SHA") {
+    Some(v) if !v.is_empty() => v,
+    _ => "dev",
+};
+
+/// Full SemVer 2.0 display version (`0.3.1-beta+<commit>`) injected by `build.rs`.
+pub const PACKSTUDIO_DISPLAY_VERSION: &str = match option_env!("PACKSTUDIO_FULL_VERSION") {
+    Some(v) if !v.is_empty() => v,
+    _ => "0.3.1-beta+dev",
+};
 
 /// Fixed GitHub API endpoint for checking the latest published PackStudio release.
 pub const PACKSTUDIO_RELEASES_API_URL: &str =
@@ -1008,7 +1020,7 @@ pub async fn studio_check_update() -> Result<StudioUpdateStatusDto, String> {
 
     if resp.status().as_u16() == 404 {
         return Ok(StudioUpdateStatusDto {
-            current_version: String::from(PACKSTUDIO_APP_VERSION),
+            current_version: String::from(PACKSTUDIO_DISPLAY_VERSION),
             latest_version: String::from(PACKSTUDIO_APP_VERSION),
             update_available: false,
             release_url: String::from("https://github.com/kaito65452/rust-java-bedrock/releases"),
@@ -1058,7 +1070,7 @@ pub async fn studio_check_update() -> Result<StudioUpdateStatusDto, String> {
         .collect();
 
     Ok(StudioUpdateStatusDto {
-        current_version: String::from(PACKSTUDIO_APP_VERSION),
+        current_version: String::from(PACKSTUDIO_DISPLAY_VERSION),
         latest_version: latest_clean,
         update_available,
         release_url,

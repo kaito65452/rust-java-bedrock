@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::pstdr_sync::PACKSTUDIO_APP_VERSION;
+use crate::pstdr_sync::PACKSTUDIO_DISPLAY_VERSION;
 use crate::state::StudioState;
 use crate::workspace::find_in_path;
 
@@ -335,7 +335,7 @@ pub fn build_context_packet_core(
 
     let mut md = String::new();
     md.push_str("# PackStudio Workspace Context Packet\n\n");
-    md.push_str(&format!("- **PackStudio Version:** `{PACKSTUDIO_APP_VERSION}`\n"));
+    md.push_str(&format!("- **PackStudio Version:** `{PACKSTUDIO_DISPLAY_VERSION}`\n"));
     md.push_str(&format!(
         "- **Selected AI Agent:** {} (`{}`)\n",
         active_agent.name, active_agent.id

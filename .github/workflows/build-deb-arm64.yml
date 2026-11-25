@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Debian package version (e.g. 0.3.0-beta.1)"
+        description: "Debian package version (e.g. 0.3.1-beta)"
         type: string
-        default: "0.3.0-beta.1"
+        default: "0.3.1-beta"
 
 concurrency:
   group: build-deb-arm64-${{ github.ref }}
@@ -66,7 +66,10 @@ jobs:
 
       - name: Build PackStudio Tauri Frontend (ARM64)
         working-directory: apps/pack-studio
+        env:
+          VITE_APP_COMMIT_SHA: ${{ github.sha }}
         run: |
+          export VITE_APP_COMMIT_SHA="${GITHUB_SHA::7}"
           npm install --no-audit --no-fund
           npm run build
 
@@ -103,6 +106,7 @@ jobs:
 
       - name: Build pack-studio-tauri Release Binary (ARM64 + Embedded Blockbench + Custom Protocol)
         run: |
+          export PACKSTUDIO_COMMIT_SHA="${GITHUB_SHA::7}"
           test -f apps/pack-studio/dist/index.html
           cargo build --release -p pack-studio-tauri --features "embed-blockbench,custom-protocol"
           ls -lh target/release/pack-studio-tauri
@@ -111,8 +115,10 @@ jobs:
       - name: Build Debian Package (.deb) for arm64
         env:
           DEB_ARCH: arm64
-          DEB_VERSION: ${{ inputs.version || '0.3.0-beta.1' }}
+          BASE_VERSION: ${{ inputs.version || '0.3.1-beta' }}
         run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          export DEB_VERSION="${BASE_VERSION}+${SHORT_SHA}"
           chmod +x scripts/build_deb_arm64.sh
           bash scripts/build_deb_arm64.sh target/release/pack-studio-tauri dist-deb
 

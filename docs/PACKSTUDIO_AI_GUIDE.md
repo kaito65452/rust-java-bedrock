@@ -36,7 +36,7 @@ PackStudio exposes a unified VS Code-style **Settings** workbench tab (`apps/pac
 ### Settings Categories & Live Search
 The top search input filters across all four categories:
 1. **`Updates & PSTDR LSP`**
-   - **PackStudio App Update**: Displays installed PackStudio version (e.g. `0.2.3`) and triggers `studio_check_update` against `https://api.github.com/repos/kaito65452/rust-java-bedrock/releases/latest`.
+   - **PackStudio App Update**: Displays installed PackStudio version (e.g. `0.3.1-beta+<commit>`) and triggers `studio_check_update` against `https://api.github.com/repos/kaito65452/rust-java-bedrock/releases/latest`.
    - **PSTDR LSP & Spec Sync**: Displays installed PSTDR version (`builtin` vs `synced`), active Bedrock spec version, hardcoded Ed25519 signing key ID & SHA-256 fingerprint, **`Check & Sync PSTDR LSP`** (launches `PstdrUpdateModal`), and **`Revert to Built-in`** (`pstdr_sync_revert_builtin`).
 2. **`GitHub Account`**
    - Connects a GitHub account via Personal Access Token (`read:user`), displaying the user's **profile avatar (`avatar_url`)** with offline fallback, display name, `@login`, profile link, and **`Disconnect`** button.
