@@ -20,6 +20,9 @@ import type {
   PreflightReportDto,
   ProjectSnapshot,
   PstdrBuildResultDto,
+  PstdrSyncStatusDto,
+  PstdrUpdateOfferDto,
+  QuarantineVerificationReportDto,
   RenameResult,
   TextureTransformResult,
 } from "./types";
@@ -281,6 +284,24 @@ export const api = {
 
   pstdrConvertWorkspace: () =>
     invoke<PstdrBuildResultDto>("pstdr_convert_workspace"),
+
+  pstdrSyncStatus: () => invoke<PstdrSyncStatusDto>("pstdr_sync_status"),
+
+  pstdrSyncCheck: () => invoke<PstdrUpdateOfferDto>("pstdr_sync_check"),
+
+  pstdrSyncDownloadQuarantine: (version: string) =>
+    invoke<QuarantineVerificationReportDto>("pstdr_sync_download_quarantine", {
+      version,
+    }),
+
+  pstdrSyncApproveAndApply: (version: string) =>
+    invoke<PstdrSyncStatusDto>("pstdr_sync_approve_and_apply", { version }),
+
+  pstdrSyncRejectQuarantine: (version: string) =>
+    invoke<void>("pstdr_sync_reject_quarantine", { version }),
+
+  pstdrSyncRevertBuiltin: () =>
+    invoke<PstdrSyncStatusDto>("pstdr_sync_revert_builtin"),
 
   frontendTraceLog: (
     level: "error" | "warn" | "info" | "trace",

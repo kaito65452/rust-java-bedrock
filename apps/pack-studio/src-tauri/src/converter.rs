@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use pstdr_lang::diagnostics::{Diagnostic as PstdrDiagnostic, Severity as PstdrSeverity, has_errors as pstdr_has_errors};
-use pstdr_lang::spec::BedrockSpec;
 use rp_bedrock::schema::BedrockManifest;
 use rp_bedrock::{
     audit_bedrock_container, emit_bedrock_pack, parse_bedrock_pack,
@@ -821,7 +820,7 @@ pub fn audit_pstdr_workspace(container: &PackContainer, problems: &mut Vec<Conve
         return;
     }
 
-    let spec = BedrockSpec::bundled();
+    let spec = crate::pstdr_sync::load_active_bedrock_spec();
     match pstdr_lang::audit_workspace(&tmp.path, &spec) {
         Ok(diags) => {
             for d in &diags {
@@ -1202,7 +1201,7 @@ pub fn package_pack_core(
     if pack_type == PackType::BedrockAddon && container_has_pstdr_sources(&cleaned) {
         let tmp = TempWorkspaceDir::new("pstdr-package")?;
         tmp.materialize_for_pstdr(&cleaned)?;
-        let spec = BedrockSpec::bundled();
+        let spec = crate::pstdr_sync::load_active_bedrock_spec();
 
         let mut pstdr_diags = pstdr_lang::convert_workspace(&tmp.path, &spec)
             .map_err(|e| anyhow::anyhow!("pstdr compilation failed: {e}"))?;
@@ -1521,7 +1520,7 @@ pub async fn package_pack(
                 && container_has_pstdr_sources(&container_for_diags)
                 && let Ok(tmp) = TempWorkspaceDir::new("pstdr-pkg-diags")
                 && tmp.materialize_for_pstdr(&container_for_diags).is_ok()
-                && let Ok(diags) = pstdr_lang::audit_workspace(&tmp.path, &BedrockSpec::bundled())
+                && let Ok(diags) = pstdr_lang::audit_workspace(&tmp.path, &crate::pstdr_sync::load_active_bedrock_spec())
             {
                 emit_pstdr_diagnostics_to_app(&app, &diags);
             }
@@ -1643,7 +1642,7 @@ pub async fn pstdr_check_workspace(
     let file_count = pstdr_files.len();
 
     let diags = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<PstdrDiagnostic>> {
-        let spec = BedrockSpec::bundled();
+        let spec = crate::pstdr_sync::load_active_bedrock_spec();
         if is_directory
             && let Some(ref root) = source_path
             && root.is_dir()
@@ -1725,7 +1724,7 @@ pub async fn pstdr_convert_workspace(
     let file_count = pstdr_files.len();
     let root_for_build = root.clone();
     let diags = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<PstdrDiagnostic>> {
-        let spec = BedrockSpec::bundled();
+        let spec = crate::pstdr_sync::load_active_bedrock_spec();
         pstdr_lang::convert_workspace(&root_for_build, &spec).map_err(|e| anyhow::anyhow!(e))
     })
     .await

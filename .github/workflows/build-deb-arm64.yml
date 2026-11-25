@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Debian package version (e.g. 0.2.2)"
+        description: "Debian package version (e.g. 0.2.3)"
         type: string
-        default: "0.2.2"
+        default: "0.2.3"
 
 concurrency:
   group: build-deb-arm64-${{ github.ref }}
@@ -111,7 +111,7 @@ jobs:
       - name: Build Debian Package (.deb) for arm64
         env:
           DEB_ARCH: arm64
-          DEB_VERSION: ${{ inputs.version || '0.2.2' }}
+          DEB_VERSION: ${{ inputs.version || '0.2.3' }}
         run: |
           chmod +x scripts/build_deb_arm64.sh
           bash scripts/build_deb_arm64.sh target/release/pack-studio-tauri dist-deb

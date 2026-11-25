@@ -10,7 +10,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use pstdr_lang::diagnostics::{Diagnostic as PstdrDiagnostic, Severity as PstdrSeverity};
 use pstdr_lang::spec::{
-    BedrockSpec, map_item_property, map_method, map_property, map_world_method,
+    map_item_property, map_method, map_property, map_string_array_method, map_system_method,
+    map_world_method,
 };
 use pstdr_lang::{ValidationContext, parse_source, validate_program};
 use rp_core::{ConversionWarning, PipelineStage, WarningSeverity, normalize_bedrock_engine_triplet, parse_minecraft_json};
@@ -27,6 +28,7 @@ use crate::workspace::find_in_path;
 
 pub const BUILTIN_MINECRAFT_SERVER_ID: &str = "builtin.minecraft-rp";
 pub const BUILTIN_PSTDR_SERVER_ID: &str = "builtin.pstdr";
+pub const SYNCED_PSTDR_SERVER_ID: &str = "synced.pstdr-lsp";
 pub const EXTERNAL_PSTDR_SERVER_ID: &str = "external.pstdr-lsp";
 
 /// Live diagnostic item pushed to Monaco & bottom Problems view (`lsp://diagnostics`).
@@ -546,6 +548,7 @@ const PSTDR_MEMBER_PROPERTIES: &[(&str, &str)] = &[
     ("is_climbing", "isClimbing"),
     ("is_falling", "isFalling"),
     ("is_valid", "isValid"),
+    ("current_tick", "system.currentTick"),
 ];
 
 const PSTDR_MEMBER_METHODS: &[(&str, &str, &str)] = &[
@@ -622,6 +625,18 @@ const PSTDR_MEMBER_METHODS: &[(&str, &str, &str)] = &[
     ("teleport", "teleport(${1:loc})", "teleport(loc)"),
     ("kill", "kill()", "kill()"),
     ("players", "players()", "world.getAllPlayers()"),
+    ("get_absolute_time", "get_absolute_time()", "world.getAbsoluteTime()"),
+    ("get_time_of_day", "get_time_of_day()", "world.getTimeOfDay()"),
+    ("lower", "lower()", "toLowerCase()"),
+    ("upper", "upper()", "toUpperCase()"),
+    ("trim", "trim()", "trim()"),
+    ("starts_with", "starts_with(${1:\"prefix\"})", "startsWith(prefix)"),
+    ("ends_with", "ends_with(${1:\"suffix\"})", "endsWith(suffix)"),
+    ("contains", "contains(${1:item})", "includes(item)"),
+    ("replace", "replace(${1:\"from\"}, ${2:\"to\"})", "replace(from, to)"),
+    ("split", "split(${1:\" \"})", "split(separator)"),
+    ("join", "join(${1:\", \"})", "join(separator)"),
+    ("push", "push(${1:item})", "push(item)"),
 ];
 
 const PSTDR_PREDICATES: &[(&str, &str)] = &[
@@ -744,6 +759,91 @@ const PSTDR_TOP_LEVEL_SNIPPETS: &[(&str, &str, &str)] = &[
         "Data-driven entity trigger event (world.afterEvents.dataDrivenEntityTrigger)",
     ),
     (
+        "on cmd",
+        "on cmd \"${1:my_pack:hello}\" description \"${2:Custom slash command}\" permission ${3:any} (${4:arg: string}) by ${5:player} {\n    $0\n}",
+        "Stable custom slash command (system.beforeEvents.startup -> customCommandRegistry)",
+    ),
+    (
+        "on place",
+        "on place of ${1:block} by ${2:player} {\n    $0\n}",
+        "Block place event (cancellable beforeEvents or afterEvents)",
+    ),
+    (
+        "on dimension_change",
+        "on dimension_change of ${1:player} {\n    $0\n}",
+        "Player dimension change event (exposes from_dimension, to_dimension, from_location, to_location)",
+    ),
+    (
+        "on health_change",
+        "on health_change of ${1:entity} {\n    $0\n}",
+        "Entity health changed event (exposes old_value, new_value)",
+    ),
+    (
+        "on interact_entity",
+        "on interact_entity of ${1:target} by ${2:player} {\n    $0\n}",
+        "Player interact with entity event (cancellable)",
+    ),
+    (
+        "on projectile_hit_block",
+        "on projectile_hit_block of ${1:block} by ${2:shooter} {\n    $0\n}",
+        "Projectile hit block event (exposes block, projectile, shooter)",
+    ),
+    (
+        "on entity_hit_block",
+        "on entity_hit_block of ${1:block} by ${2:attacker} {\n    $0\n}",
+        "Entity hit block event (exposes block, attacker)",
+    ),
+    (
+        "on item_release",
+        "on item_release with ${1:\"minecraft:bow\"} by ${2:player} {\n    $0\n}",
+        "Item release use event (exposes player, item, use_duration)",
+    ),
+    (
+        "on explosion",
+        "on explosion {\n    $0\n}",
+        "World explosion event (cancellable; exposes source, impacted_blocks)",
+    ),
+    (
+        "on entity_load",
+        "on entity_load of ${1:entity} {\n    $0\n}",
+        "Entity load event (world.afterEvents.entityLoad)",
+    ),
+    (
+        "on entity_remove",
+        "on entity_remove of ${1:entity} {\n    $0\n}",
+        "Entity remove event (world.afterEvents.entityRemove)",
+    ),
+    (
+        "ui action",
+        "ui action \"${1:Menu Title}\" body \"${2:Choose an option:}\" to ${3:player} {\n    button \"${4:Option 1}\" {\n        $0\n    }\n}",
+        "Native ActionFormData UI menu (@minecraft/server-ui 2.0.0)",
+    ),
+    (
+        "ui message",
+        "ui message \"${1:Confirm}\" body \"${2:Are you sure?}\" to ${3:player} {\n    button1 \"${4:Yes}\" {\n        $0\n    }\n    button2 \"${5:No}\" {\n    }\n}",
+        "Native MessageFormData UI dialog (@minecraft/server-ui 2.0.0)",
+    ),
+    (
+        "ui modal",
+        "ui modal \"${1:Settings}\" to ${2:player} {\n    text_field \"${3:Name}\" placeholder \"${4:Enter...}\" as ${5:name}\n    on submit {\n        $0\n    }\n}",
+        "Native ModalFormData UI form (@minecraft/server-ui 2.0.0)",
+    ),
+    (
+        "scoreboard show",
+        "scoreboard show \"${1:kills}\" title \"${2:Top Kills}\" slot ${3:sidebar}",
+        "Display a scoreboard objective in sidebar, list, or belowname",
+    ),
+    (
+        "scoreboard hide",
+        "scoreboard hide slot ${1:sidebar}",
+        "Clear a scoreboard display slot (sidebar, list, or belowname)",
+    ),
+    (
+        "score",
+        "score[\"${1:objective}\"][${2:player}]",
+        "Read or mutate a native scoreboard score (auto-creates objective)",
+    ),
+    (
         "after",
         "after ${1:2s} {\n    $0\n}",
         "One-shot delayed timer (system.runTimeout)",
@@ -862,7 +962,7 @@ pub fn builtin_pstdr_diagnostics(
     content: &str,
     workspace_root: Option<&Path>,
 ) -> Vec<LspDiagnosticDto> {
-    let spec = BedrockSpec::bundled();
+    let spec = crate::pstdr_sync::load_active_bedrock_spec();
     let (program, mut diags) = parse_source(content, rel_path);
     if let Some(prog) = &program {
         let ctx = ValidationContext {
@@ -915,7 +1015,7 @@ pub fn builtin_pstdr_completion(
     character: u32,
     prefix: &str,
 ) -> Vec<LspCompletionItemDto> {
-    let spec = BedrockSpec::bundled();
+    let spec = crate::pstdr_sync::load_active_bedrock_spec();
     let line_text = content.lines().nth(line.saturating_sub(1) as usize).unwrap_or("");
     let byte_idx = char_col_1based_to_byte_offset(line_text, character);
     let line_prefix = &line_text[..byte_idx];
@@ -1048,11 +1148,9 @@ fn pstdr_describe_duration(token: &str) -> Option<String> {
         (n, "ms")
     } else if let Some(n) = token.strip_suffix('s') {
         (n, "s")
-    } else if let Some(n) = token.strip_suffix('m') {
-        (n, "m")
     } else {
-        let n = token.strip_suffix('t')?;
-        (n, "t")
+        let n = token.strip_suffix('m')?;
+        (n, "m")
     };
     if num_str.is_empty() || !num_str.chars().next()?.is_ascii_digit() {
         return None;
@@ -1062,7 +1160,6 @@ fn pstdr_describe_duration(token: &str) -> Option<String> {
         "ms" => val,
         "s" => val * 1000.0,
         "m" => val * 60_000.0,
-        "t" => val * 50.0,
         _ => return None,
     };
     let ticks = (ms / 50.0).round() as u64;
@@ -1169,7 +1266,7 @@ pub fn builtin_pstdr_hover(
         return None;
     }
 
-    // 1. Duration literal (e.g. `3s`, `500ms`, `2m`, `10t`)
+    // 1. Duration literal (e.g. `3s`, `50ms`, `500ms`, `2m`)
     if let Some(dur_md) = pstdr_describe_duration(word) {
         return Some(mk(dur_md));
     }
@@ -1177,16 +1274,22 @@ pub fn builtin_pstdr_hover(
     // 2. Member property or method after `.` / `?.`
     let before = line_text.get(..start_byte).unwrap_or("").trim_end();
     if before.ends_with('.') {
-        let is_world = before
+        let receiver = before
             .trim_end_matches('.')
             .trim_end_matches('?')
-            .trim_end()
-            .ends_with("world");
-        if is_world
+            .trim_end();
+        if receiver.ends_with("world")
             && let Some(mapped) = map_world_method(word)
         {
             return Some(mk(format!(
                 "**World Helper**\n\n`world.{word}(...)` → `world.{mapped}(...)`"
+            )));
+        }
+        if receiver.ends_with("system")
+            && let Some(mapped) = map_system_method(word)
+        {
+            return Some(mk(format!(
+                "**System Helper**\n\n`system.{word}(...)` → `system.{mapped}(...)`"
             )));
         }
         match word {
@@ -1216,6 +1319,11 @@ pub fn builtin_pstdr_hover(
                 )));
             }
             _ => {}
+        }
+        if let Some(mapped) = map_string_array_method(word) {
+            return Some(mk(format!(
+                "**String / Array Helper**\n\n`.{word}(...)` → `.{mapped}(...)`"
+            )));
         }
         if let Some(mapped) = map_method(word) {
             return Some(mk(format!(
@@ -1252,10 +1360,61 @@ pub fn builtin_pstdr_hover(
             "**`apply <effect> <level> to <target> for <duration>`**\n\nApplies a status effect using 1-based levels (automatically converted to Bedrock 0-based `amplifier`).",
         ),
         "cancel" => Some(
-            "**`cancel event`**\n\nValid inside `on right click`, `on break`, `on interact`, and `on chat` *(Beta API only)*. Automatically switches to `beforeEvents` and schedules mutations in `system.run(...)`.",
+            "**`cancel event`**\n\nValid inside `on right click`, `on break`, `on place`, `on interact`, `on interact_entity`, `on explosion`, and `on chat` *(Beta API only)*. Automatically switches to `beforeEvents` and schedules mutations in `system.run(...)`.",
         ),
         "chat" => Some(
             "**`on chat <msg> by <player> { ... }`** `[Beta API only — requires api = \"...-beta\"]`\n\nCompiles to `world.beforeEvents.chatSend` (cancellable, auto `system.run(...)` for mutations). Requires `@addon(target = \"26.60\", api = \"2.11.0-beta\")` and the **Beta APIs** world experiment (`PSTDR-E018` on stable APIs).",
+        ),
+        "cmd" => Some(
+            "**`on cmd \"<ns>:<name>\" description \"...\" [permission any|gamemakers|admin|host] [(params)] [by player] { ... }`**\n\nStable native slash command registered via `system.beforeEvents.startup` -> `customCommandRegistry.registerCommand(...)`. Automatically wraps the body in `system.run(...)`.",
+        ),
+        "ui" => Some(
+            "**`ui action` / `ui message` / `ui modal`**\n\nNative `@minecraft/server-ui` (`2.0.0`) form blocks (`ActionFormData`, `MessageFormData`, `ModalFormData`). Automatically imports `@minecraft/server-ui`, handles `res.canceled`, defers `.show(...)` in `beforeEvents`, and injects `@minecraft/server-ui` into `BP/manifest.json`.",
+        ),
+        "action" => Some(
+            "**`ui action \"<title>\" [body \"...\"] to <player> { button \"...\" { ... } }`**\n\nBuilds and displays a native `ActionFormData` menu from `@minecraft/server-ui` (`2.0.0`).",
+        ),
+        "message" => Some(
+            "**`ui message \"<title>\" body \"...\" to <player> { button1 \"...\" { ... } button2 \"...\" { ... } }`**\n\nBuilds and displays a native `MessageFormData` two-button dialog from `@minecraft/server-ui` (`2.0.0`).",
+        ),
+        "modal" => Some(
+            "**`ui modal \"<title>\" to <player> { text_field ... on submit { ... } }`**\n\nBuilds and displays a native `ModalFormData` input form (`text_field`, `toggle`, `slider`, `dropdown`) from `@minecraft/server-ui` (`2.0.0`).",
+        ),
+        "scoreboard" => Some(
+            "**`scoreboard show` / `scoreboard hide`**\n\nDisplays or clears a scoreboard objective in `sidebar` (`DisplaySlotId.Sidebar`), `list` (`DisplaySlotId.List`), or `belowname` (`DisplaySlotId.BelowName`).",
+        ),
+        "score" => Some(
+            "**`score[\"<objective>\"][<target>]`**\n\nReads or mutates (`=`, `+=`, `-=`, `*=`, `/=`) a native Bedrock scoreboard score using `__pstdr_get_or_create_objective(id)` so uninitialized objectives never throw.",
+        ),
+        "place" => Some(
+            "**`on place of <block> by <player> { ... }`**\n\nCompiles to `world.afterEvents.playerPlaceBlock` (or `world.beforeEvents.playerPlaceBlock` when `cancel event` is used).",
+        ),
+        "dimension_change" => Some(
+            "**`on dimension_change of <player> { ... }`**\n\nCompiles to `world.afterEvents.playerDimensionChange`. Exposes `<player>`, `from_dimension`, `to_dimension`, `from_location`, and `to_location`.",
+        ),
+        "health_change" => Some(
+            "**`on health_change of <entity> { ... }`**\n\nCompiles to `world.afterEvents.entityHealthChanged`. Exposes `<entity>`, `old_value`, and `new_value`.",
+        ),
+        "interact_entity" => Some(
+            "**`on interact_entity of <target> by <player> { ... }`**\n\nCompiles to `world.afterEvents.playerInteractWithEntity` (or `world.beforeEvents.playerInteractWithEntity` when `cancel event` is used).",
+        ),
+        "projectile_hit_block" => Some(
+            "**`on projectile_hit_block of <block> [by <shooter>] { ... }`**\n\nCompiles to `world.afterEvents.projectileHitBlock`. Exposes `<block>`, `projectile`, and `shooter`.",
+        ),
+        "entity_hit_block" => Some(
+            "**`on entity_hit_block of <block> by <attacker> { ... }`**\n\nCompiles to `world.afterEvents.entityHitBlock`. Exposes `<block>` (`ev.hitBlock`) and `<attacker>` (`ev.damagingEntity`).",
+        ),
+        "item_release" => Some(
+            "**`on item_release with <item_id> by <player> { ... }`**\n\nCompiles to `world.afterEvents.itemReleaseUse`. Exposes `<player>`, `item` (`ev.itemStack`), and `use_duration` (`ev.useDuration`).",
+        ),
+        "explosion" => Some(
+            "**`on explosion { ... }`**\n\nCompiles to `world.afterEvents.explosion` (or `world.beforeEvents.explosion` when `cancel event` is used). Exposes `source` and `impacted_blocks`.",
+        ),
+        "entity_load" => Some(
+            "**`on entity_load of <entity> { ... }`**\n\nCompiles to `world.afterEvents.entityLoad`. Exposes `<entity>` (`ev.entity`).",
+        ),
+        "entity_remove" => Some(
+            "**`on entity_remove of <entity> { ... }`**\n\nCompiles to `world.afterEvents.entityRemove`. Exposes `<entity>`.",
         ),
         "every" => Some(
             "**`every <duration> { ... }`**\n\nCompiles to `system.runInterval(..., ticks)`. Minimum interval is `50ms` (`1` tick).",
@@ -1420,6 +1579,23 @@ fn collect_configured_servers(extensions_root: &std::path::Path) -> Vec<LspContr
         map.insert(custom.server_id.clone(), custom);
     }
 
+    // Verified synced `pstdr-lsp` binary (installed via manual approval modal).
+    if let Some(synced_bin) = crate::pstdr_sync::active_synced_lsp_binary()
+        && !map.contains_key(SYNCED_PSTDR_SERVER_ID)
+    {
+        map.insert(
+            String::from(SYNCED_PSTDR_SERVER_ID),
+            LspContributionDto {
+                server_id: String::from(SYNCED_PSTDR_SERVER_ID),
+                display_name: String::from("PSTDR Synced LSP (Verified Runtime)"),
+                command: synced_bin.display().to_string(),
+                args: Vec::new(),
+                language_ids: vec![String::from("pstdr")],
+                builtin: false,
+            },
+        );
+    }
+
     // Optional external `pstdr-lsp` binary: auto-detected if present on PATH.
     if find_in_path("pstdr-lsp").is_some() && !map.contains_key(EXTERNAL_PSTDR_SERVER_ID) {
         map.insert(
@@ -1535,28 +1711,14 @@ pub fn lsp_unregister_custom_server(
     save_persisted_state(&root, &persisted).map_err(|e| format!("{e:#}"))
 }
 
-/// Tauri Command: Spawn and `initialize` an external stdio JSON-RPC LSP server.
-#[tauri::command]
-pub fn lsp_start_server(
+fn spawn_external_lsp_client(
     app: AppHandle,
-    state: tauri::State<'_, StudioState>,
-    server_id: String,
+    state: &StudioState,
+    sid: String,
     command: String,
     args: Vec<String>,
     language_ids: Vec<String>,
 ) -> Result<(), String> {
-    let sid = server_id.trim().to_string();
-    if sid == BUILTIN_PSTDR_SERVER_ID {
-        state
-            .builtin_pstdr_lsp_enabled
-            .store(true, Ordering::Relaxed);
-        return Ok(());
-    }
-    if sid == BUILTIN_MINECRAFT_SERVER_ID || command.trim() == "builtin" {
-        state.builtin_lsp_enabled.store(true, Ordering::Relaxed);
-        return Ok(());
-    }
-
     let workspace_root = state
         .active_pack
         .lock()
@@ -1703,23 +1865,28 @@ pub fn lsp_start_server(
     let root_uri = workspace_root
         .as_ref()
         .map(|p| rel_path_to_lsp_uri(Some(&p.display().to_string()), ""));
-    let _ = handle.send_request(
-        "initialize",
-        json!({
-            "processId": std::process::id(),
-            "rootUri": root_uri,
-            "capabilities": {
-                "textDocument": {
-                    "synchronization": { "didSave": true },
-                    "completion": { "completionItem": { "snippetSupport": true } },
-                    "hover": { "contentFormat": ["markdown", "plaintext"] },
-                    "codeAction": {},
-                    "publishDiagnostics": {}
+    handle
+        .send_request(
+            "initialize",
+            json!({
+                "processId": std::process::id(),
+                "rootUri": root_uri,
+                "capabilities": {
+                    "textDocument": {
+                        "synchronization": { "didSave": true },
+                        "completion": { "completionItem": { "snippetSupport": true } },
+                        "hover": { "contentFormat": ["markdown", "plaintext"] },
+                        "codeAction": {},
+                        "publishDiagnostics": {}
+                    }
                 }
-            }
-        }),
-        Duration::from_secs(3),
-    );
+            }),
+            Duration::from_secs(3),
+        )
+        .map_err(|e| {
+            handle.shutdown_and_kill();
+            format!("LSP initialize failed: {e}")
+        })?;
     let _ = handle.send_notification("initialized", json!({}));
 
     let mut clients = state
@@ -1730,6 +1897,63 @@ pub fn lsp_start_server(
         old.shutdown_and_kill();
     }
     Ok(())
+}
+
+/// Reloads the synced PSTDR spec/runtime after applying or reverting an update.
+/// Automatically falls back to `builtin.pstdr` if a synced external `pstdr-lsp` binary fails to start.
+pub fn reload_pstdr_runtime(app: &AppHandle, state: &StudioState) {
+    if let Ok(mut clients) = state.lsp_clients.lock()
+        && let Some(old) = clients.remove(SYNCED_PSTDR_SERVER_ID)
+    {
+        old.shutdown_and_kill();
+    }
+
+    if let Some(bin_path) = crate::pstdr_sync::active_synced_lsp_binary() {
+        let cmd_str = bin_path.display().to_string();
+        if let Err(err) = spawn_external_lsp_client(
+            app.clone(),
+            state,
+            String::from(SYNCED_PSTDR_SERVER_ID),
+            cmd_str,
+            Vec::new(),
+            vec![String::from("pstdr")],
+        ) {
+            eprintln!(
+                "[pack-studio:rust:warn] [pstdr_sync] Synced pstdr-lsp failed to start ({err}); falling back to builtin.pstdr"
+            );
+            state
+                .builtin_pstdr_lsp_enabled
+                .store(true, Ordering::Relaxed);
+        }
+    } else {
+        state
+            .builtin_pstdr_lsp_enabled
+            .store(true, Ordering::Relaxed);
+    }
+}
+
+/// Tauri Command: Spawn and `initialize` an external stdio JSON-RPC LSP server.
+#[tauri::command]
+pub fn lsp_start_server(
+    app: AppHandle,
+    state: tauri::State<'_, StudioState>,
+    server_id: String,
+    command: String,
+    args: Vec<String>,
+    language_ids: Vec<String>,
+) -> Result<(), String> {
+    let sid = server_id.trim().to_string();
+    if sid == BUILTIN_PSTDR_SERVER_ID {
+        state
+            .builtin_pstdr_lsp_enabled
+            .store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    if sid == BUILTIN_MINECRAFT_SERVER_ID || command.trim() == "builtin" {
+        state.builtin_lsp_enabled.store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    spawn_external_lsp_client(app, &state, sid, command, args, language_ids)
 }
 
 /// Tauri Command: Stop an active external stdio LSP server or disable Built-in LSP.

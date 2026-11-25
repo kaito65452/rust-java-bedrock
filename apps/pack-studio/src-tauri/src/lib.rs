@@ -2,6 +2,7 @@ pub mod blockbench;
 pub mod converter;
 pub mod extensions;
 pub mod lsp;
+pub mod pstdr_sync;
 pub mod pty;
 pub mod state;
 pub mod texture;
@@ -76,6 +77,12 @@ pub fn run() {
             lsp::lsp_hover,
             lsp::lsp_code_actions,
             lsp::frontend_trace_log,
+            pstdr_sync::pstdr_sync_status,
+            pstdr_sync::pstdr_sync_check,
+            pstdr_sync::pstdr_sync_download_quarantine,
+            pstdr_sync::pstdr_sync_approve_and_apply,
+            pstdr_sync::pstdr_sync_reject_quarantine,
+            pstdr_sync::pstdr_sync_revert_builtin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pack-Studio Tauri application");
@@ -501,16 +508,33 @@ mod tests {
             "command on",
             "run_fn",
             "run_fn on",
+            "on cmd",
+            "on place",
+            "on dimension_change",
+            "on health_change",
+            "on interact_entity",
+            "on projectile_hit_block",
+            "on entity_hit_block",
+            "on item_release",
+            "on explosion",
+            "on entity_load",
+            "on entity_remove",
+            "ui action",
+            "ui message",
+            "ui modal",
+            "scoreboard show",
+            "scoreboard hide",
+            "score",
         ] {
             assert!(
                 top.iter().any(|i| i.label == wave3a_label),
-                "expected Wave 3A completion '{wave3a_label}'"
+                "expected Wave 3A/3B completion '{wave3a_label}'"
             );
         }
 
         let hover_dur =
-            crate::lsp::builtin_pstdr_hover("after 3s {}", 1, 8, "3s").expect("duration hover");
-        assert!(hover_dur.contents.contains("60 ticks"));
+            crate::lsp::builtin_pstdr_hover("after 50ms {}", 1, 8, "50ms").expect("duration hover");
+        assert!(hover_dur.contents.contains("1 ticks"));
 
         let hover_meth =
             crate::lsp::builtin_pstdr_hover("player.actionbar(\"hi\")", 1, 10, "actionbar")
@@ -533,9 +557,25 @@ mod tests {
                 "entity_trigger",
                 "dataDrivenEntityTrigger",
             ),
+            ("on cmd \"pack:hi\" description \"Hi\" {}", 5, "cmd", "customCommandRegistry"),
+            ("ui action \"Menu\" to player {}", 2, "ui", "@minecraft/server-ui"),
+            ("ui action \"Menu\" to player {}", 5, "action", "ActionFormData"),
+            ("ui modal \"Form\" to player {}", 5, "modal", "ModalFormData"),
+            ("ui message \"Ask\" to player {}", 5, "message", "MessageFormData"),
+            ("scoreboard show \"kills\" slot sidebar", 4, "scoreboard", "DisplaySlotId"),
+            ("on place of block by player {}", 5, "place", "playerPlaceBlock"),
+            ("on dimension_change of player {}", 5, "dimension_change", "playerDimensionChange"),
+            ("on health_change of entity {}", 5, "health_change", "entityHealthChanged"),
+            ("on interact_entity of target by player {}", 5, "interact_entity", "playerInteractWithEntity"),
+            ("on projectile_hit_block of block {}", 5, "projectile_hit_block", "projectileHitBlock"),
+            ("on entity_hit_block of block by attacker {}", 5, "entity_hit_block", "entityHitBlock"),
+            ("on item_release with \"minecraft:bow\" by player {}", 5, "item_release", "itemReleaseUse"),
+            ("on explosion {}", 5, "explosion", "impacted_blocks"),
+            ("on entity_load of entity {}", 5, "entity_load", "entityLoad"),
+            ("on entity_remove of entity {}", 5, "entity_remove", "entityRemove"),
         ] {
             let h = crate::lsp::builtin_pstdr_hover(line, 1, col, word)
-                .unwrap_or_else(|| panic!("expected Wave 3A hover for '{word}'"));
+                .unwrap_or_else(|| panic!("expected Wave 3A/3B hover for '{word}'"));
             assert!(
                 h.contents.contains(expected),
                 "hover for '{word}' missing '{expected}': {}",

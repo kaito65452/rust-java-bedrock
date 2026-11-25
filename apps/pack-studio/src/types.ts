@@ -335,6 +335,60 @@ export interface PstdrBuildResultDto {
   elapsed_ms: number;
 }
 
+export interface PstdrSyncStatusDto {
+  active_source: "builtin" | "synced" | string;
+  active_version: string;
+  builtin_version: string;
+  active_spec_version: string;
+  external_runtime_active: boolean;
+  synced_lsp_available: boolean;
+  pubkey_configured: boolean;
+  key_id: string;
+  pubkey_fingerprint: string;
+  runtime_dir: string;
+}
+
+export interface PstdrUpdateArtifactDto {
+  name: string;
+  url: string;
+  expected_sha256: string;
+  size: number;
+}
+
+export interface PstdrUpdateOfferDto {
+  update_available: boolean;
+  version: string;
+  current_version: string;
+  spec_version: string;
+  released_at: string;
+  key_id: string;
+  changelog: string[];
+  signature_verified: boolean;
+  pubkey_fingerprint: string;
+  manifest_sha256: string;
+  artifacts: PstdrUpdateArtifactDto[];
+}
+
+export interface VerifiedQuarantineArtifactDto {
+  name: string;
+  filename: string;
+  expected_sha256: string;
+  computed_sha256: string;
+  size_bytes: number;
+  sha256_verified: boolean;
+}
+
+export interface QuarantineVerificationReportDto {
+  version: string;
+  spec_version: string;
+  quarantine_dir: string;
+  signature_verified: boolean;
+  pubkey_fingerprint: string;
+  manifest_sha256: string;
+  all_hashes_verified: boolean;
+  artifacts: VerifiedQuarantineArtifactDto[];
+}
+
 export interface LspServerStatusDto {
   server_id: string;
   display_name: string;

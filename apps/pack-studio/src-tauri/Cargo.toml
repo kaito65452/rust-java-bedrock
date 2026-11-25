@@ -25,17 +25,22 @@ tauri-build = { version = "2", features = [] }
 anyhow.workspace = true
 base64 = "0.22"
 dirs = "6.0"
+ed25519-dalek = "2.1"
 fast_image_resize = "5.5"
+flate2 = "1.1"
 glam = "0.30"
+hex = "0.4"
 image = { workspace = true, features = ["tga", "jpeg", "webp"] }
 notify = "8.2"
 portable-pty = "0.9"
 pstdr-lang = { git = "https://github.com/kaito65452/pstdr-dsl.git", branch = "main" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
 rp-bedrock.workspace = true
 rp-core.workspace = true
 rp-io.workspace = true
 rp-java.workspace = true
 rp-transforms.workspace = true
+semver = "1.0"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

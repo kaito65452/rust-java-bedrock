@@ -14,6 +14,7 @@ import { ImportAssetsModal } from "./components/ImportAssetsModal";
 import { MetadataPackagingTab } from "./components/MetadataPackagingTab";
 import { MonacoCodeTab } from "./components/MonacoCodeTab";
 import { NewProjectWizardModal } from "./components/NewProjectWizardModal";
+import { PstdrUpdateModal } from "./components/PstdrUpdateModal";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { TexturePaintTab } from "./components/TexturePaintTab";
 import type {
@@ -31,6 +32,8 @@ import type {
   NewProjectConfig,
   OutputLogLine,
   ProjectSnapshot,
+  PstdrSyncStatusDto,
+  PstdrUpdateOfferDto,
   StudioSettings,
   UvAtlasGuardMode,
 } from "./types";
@@ -100,6 +103,11 @@ export default function App() {
   >({});
 
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [pstdrUpdateModalOpen, setPstdrUpdateModalOpen] = useState(false);
+  const [pstdrSyncStatus, setPstdrSyncStatus] =
+    useState<PstdrSyncStatusDto | null>(null);
+  const [pstdrUpdateOffer, setPstdrUpdateOffer] =
+    useState<PstdrUpdateOfferDto | null>(null);
   const [paletteMode, setPaletteMode] = useState<null | "commands" | "files">(
     null,
   );
@@ -176,6 +184,27 @@ export default function App() {
     );
     void refreshFileManagers();
     void refreshExtensionsAndLsp();
+    void api
+      .pstdrSyncStatus()
+      .then((st) => {
+        setPstdrSyncStatus(st);
+        if (st.pubkey_configured) {
+          // Passive check only: never auto-downloads or auto-applies updates.
+          void api
+            .pstdrSyncCheck()
+            .then((offer) => {
+              if (offer.update_available) {
+                setPstdrUpdateOffer(offer);
+                appendLog(
+                  "info",
+                  `Verified PSTDR update v${offer.version} available. Click the status bar badge to review fingerprints.`,
+                );
+              }
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
   }, [appendLog, refreshFileManagers, refreshExtensionsAndLsp]);
 
   const refreshActiveProject = useCallback(async () => {
@@ -674,6 +703,10 @@ export default function App() {
       {
         label: "Audit: Run Semantic Auditor",
         action: () => void handleRunAudit(),
+      },
+      {
+        label: "PSTDR: Check for Verified Updates...",
+        action: () => setPstdrUpdateModalOpen(true),
       },
       ...(hasPstdrWorkspace
         ? [
@@ -1979,6 +2012,27 @@ export default function App() {
         <div className="status-group">
           <span
             className="status-item"
+            onClick={() => setPstdrUpdateModalOpen(true)}
+            title={
+              pstdrUpdateOffer?.update_available
+                ? `Verified PSTDR update v${pstdrUpdateOffer.version} available — click to review fingerprints`
+                : "Check for cryptographically verified PSTDR updates"
+            }
+            style={
+              pstdrUpdateOffer?.update_available
+                ? { color: "#7ee787", fontWeight: 600 }
+                : undefined
+            }
+          >
+            <span className="codicon codicon-shield" />
+            {pstdrUpdateOffer?.update_available
+              ? `PSTDR Update: v${pstdrUpdateOffer.version}`
+              : pstdrSyncStatus?.external_runtime_active
+                ? `PSTDR v${pstdrSyncStatus.active_version}`
+                : "Check PSTDR Updates"}
+          </span>
+          <span
+            className="status-item"
             onClick={() => {
               setActivity("extensions");
               setSidebarOpen(true);
@@ -2032,6 +2086,20 @@ export default function App() {
               `Created ${snap.edition_label} project '${snap.pack_name}'`,
             );
           }}
+        />
+      )}
+
+      {pstdrUpdateModalOpen && (
+        <PstdrUpdateModal
+          status={pstdrSyncStatus}
+          initialOffer={pstdrUpdateOffer}
+          onClose={() => setPstdrUpdateModalOpen(false)}
+          onStatusChanged={(next) => {
+            setPstdrSyncStatus(next);
+            void refreshExtensionsAndLsp();
+          }}
+          onOfferChanged={(next) => setPstdrUpdateOffer(next)}
+          onLog={appendLog}
         />
       )}
 
