@@ -664,6 +664,11 @@ const PSTDR_TOP_LEVEL_SNIPPETS: &[(&str, &str, &str)] = &[
         "Isolated raw JavaScript function",
     ),
     (
+        "mcfunction",
+        "mcfunction \"${1:folder/my_func}\" {\n    $0\n}",
+        "Inline .mcfunction block emitted to BP/functions/<path>.mcfunction",
+    ),
+    (
         "on join",
         "on join of ${1:player} {\n    $0\n}",
         "Player initial join event",
@@ -729,6 +734,16 @@ const PSTDR_TOP_LEVEL_SNIPPETS: &[(&str, &str, &str)] = &[
         "Entity spawn event",
     ),
     (
+        "on script_event",
+        "on script_event \"${1:my_pack:my_event}\" {\n    $0\n}",
+        "Script event receiver (system.afterEvents.scriptEventReceive)",
+    ),
+    (
+        "on entity_trigger",
+        "on entity_trigger \"${1:my_pack:on_trigger}\" for \"${2:my_pack:boss}\" {\n    $0\n}",
+        "Data-driven entity trigger event (world.afterEvents.dataDrivenEntityTrigger)",
+    ),
+    (
         "after",
         "after ${1:2s} {\n    $0\n}",
         "One-shot delayed timer (system.runTimeout)",
@@ -737,6 +752,26 @@ const PSTDR_TOP_LEVEL_SNIPPETS: &[(&str, &str, &str)] = &[
         "every",
         "every ${1:1s} {\n    $0\n}",
         "Repeating interval timer (system.runInterval)",
+    ),
+    (
+        "command",
+        "command \"${1:say Hello}\"",
+        "Run a Bedrock command on the overworld dimension (sync runCommand)",
+    ),
+    (
+        "command on",
+        "command on ${1:player} \"${2:particle minecraft:totem_particle ~ ~1 ~}\"",
+        "Run a Bedrock command on a specific entity or dimension",
+    ),
+    (
+        "run_fn",
+        "run_fn \"${1:folder/my_func}\"",
+        "Execute a BP/functions/<path>.mcfunction (validated by PSTDR-E017)",
+    ),
+    (
+        "run_fn on",
+        "run_fn on ${1:player} \"${2:folder/my_func}\"",
+        "Execute a BP/functions/<path>.mcfunction as a target entity or dimension",
     ),
     (
         "spawn particle",
@@ -1225,6 +1260,21 @@ pub fn builtin_pstdr_hover(
         ),
         "bind_target" => Some(
             "**`bind_target(\"BP/...\")`**\n\nExplicitly binds a Behavior Pack item or block JSON file for automatic custom component wiring.",
+        ),
+        "command" => Some(
+            "**`command [on <target>] \"<cmd>\"`**\n\nExecutes a synchronous Bedrock command via `.runCommand(...)` (on `world.getDimension(\"overworld\")` by default, or on `<target>`). Automatically deferred via `system.run(...)` inside `beforeEvents` handlers.",
+        ),
+        "run_fn" => Some(
+            "**`run_fn [on <target>] \"<path>\"`**\n\nCompiles to `.runCommand(\"function <path>\")`. Validated against `BP/functions/<path>.mcfunction` and inline `mcfunction` blocks (`PSTDR-E017`). Automatically deferred via `system.run(...)` inside `beforeEvents` handlers.",
+        ),
+        "mcfunction" => Some(
+            "**`mcfunction \"<path>\" { ... }`**\n\nTop-level inline `.mcfunction` declaration emitted to `BP/functions/<path>.mcfunction` during workspace conversion (stripping `//` comments and blank lines).",
+        ),
+        "script_event" => Some(
+            "**`on script_event \"<ns>:<id>\" { ... }`**\n\nCompiles to `system.afterEvents.scriptEventReceive.subscribe(..., { namespaces: [\"<ns>\"] })`. Exposes `event.id`, `event.message`, `source` (`event.sourceEntity`), and `source_block` (`event.sourceBlock`).",
+        ),
+        "entity_trigger" => Some(
+            "**`on entity_trigger \"<event_id>\" [for \"<entity_type>\"] { ... }`**\n\nCompiles to `world.afterEvents.dataDrivenEntityTrigger.subscribe(..., { eventTypes: [\"<event_id>\"], ... })`. Exposes `entity` (`event.entity`) and `event_id` (`event.eventId`).",
         ),
         "const" => Some(
             "**`const <name> = <expr>`**\n\nDeclares an immutable binding (`PSTDR-E002` if reassigned).",

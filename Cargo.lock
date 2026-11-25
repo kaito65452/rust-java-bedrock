@@ -4615,7 +4615,7 @@ dependencies = [
 [[package]]
 name = "pstdr-lang"
 version = "0.1.0-alpha.1"
-source = "git+https://github.com/kaito65452/pstdr-dsl.git?branch=main#e2b2ecb139e3629569cf6cbd7eba5bcac5b67090"
+source = "git+https://github.com/kaito65452/pstdr-dsl.git?branch=main#7ef9a1566186c4c58f6a123bca28753cead18c13"
 dependencies = [
  "serde",
  "serde_json",

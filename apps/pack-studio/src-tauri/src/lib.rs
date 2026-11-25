@@ -480,6 +480,20 @@ mod tests {
         let top = crate::lsp::builtin_pstdr_completion("", 1, 1, "");
         let on_chat = top.iter().find(|i| i.label == "on chat").expect("on chat");
         assert!(on_chat.detail.contains("Beta API only"));
+        for wave3a_label in [
+            "mcfunction",
+            "on script_event",
+            "on entity_trigger",
+            "command",
+            "command on",
+            "run_fn",
+            "run_fn on",
+        ] {
+            assert!(
+                top.iter().any(|i| i.label == wave3a_label),
+                "expected Wave 3A completion '{wave3a_label}'"
+            );
+        }
 
         let hover_dur =
             crate::lsp::builtin_pstdr_hover("after 3s {}", 1, 8, "3s").expect("duration hover");
@@ -489,6 +503,32 @@ mod tests {
             crate::lsp::builtin_pstdr_hover("player.actionbar(\"hi\")", 1, 10, "actionbar")
                 .expect("method hover");
         assert!(hover_meth.contents.contains("onScreenDisplay.setActionBar"));
+
+        for (line, col, word, expected) in [
+            ("command \"say hi\"", 3, "command", "runCommand"),
+            ("run_fn \"setup/init\"", 3, "run_fn", "PSTDR-E017"),
+            ("mcfunction \"setup/init\" {}", 4, "mcfunction", "BP/functions/"),
+            (
+                "on script_event \"pack:ev\" {}",
+                8,
+                "script_event",
+                "scriptEventReceive",
+            ),
+            (
+                "on entity_trigger \"pack:go\" {}",
+                8,
+                "entity_trigger",
+                "dataDrivenEntityTrigger",
+            ),
+        ] {
+            let h = crate::lsp::builtin_pstdr_hover(line, 1, col, word)
+                .unwrap_or_else(|| panic!("expected Wave 3A hover for '{word}'"));
+            assert!(
+                h.contents.contains(expected),
+                "hover for '{word}' missing '{expected}': {}",
+                h.contents
+            );
+        }
     }
 
     #[test]
@@ -512,8 +552,15 @@ mod tests {
         })
         .unwrap();
 
-        let container =
+        let mut container =
             PackContainer::read_from_directory(&addon_root, rp_io::IoLimits::default()).unwrap();
+        container
+            .insert(
+                "src/main.pstdr",
+                b"@addon(target = \"26.60\", api = \"2.11.0\")\n\nmcfunction \"frost/welcome\" {\n    // greet all players\n    say Welcome to Frost Addon\n}\n\non join of player {\n    run_fn on player \"frost/welcome\"\n}\n"
+                    .to_vec(),
+            )
+            .unwrap();
         let summary = package_pack_core(
             &container,
             None,
@@ -543,6 +590,30 @@ mod tests {
         assert!(
             names.iter().any(|n| n == "BP/scripts/generated/main.js"),
             "expected compiled BP/scripts/generated/main.js in .mcaddon: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "BP/functions/frost/welcome.mcfunction"),
+            "expected emitted BP/functions/frost/welcome.mcfunction in .mcaddon: {names:?}"
+        );
+
+        // Missing `.mcfunction` guard (PSTDR-E017)
+        let mut missing_fn_container = container.clone();
+        missing_fn_container
+            .insert(
+                "src/main.pstdr",
+                b"@addon(target = \"26.60\", api = \"2.11.0\")\non join of player {\n    run_fn \"frost/does_not_exist\"\n}\n"
+                    .to_vec(),
+            )
+            .unwrap();
+        let missing_fn_audit = run_audit_core(&missing_fn_container).unwrap();
+        assert_eq!(missing_fn_audit.status, AuditStatus::Failed);
+        assert!(
+            missing_fn_audit
+                .problems
+                .iter()
+                .any(|p| p.message.contains("PSTDR-E017")),
+            "expected PSTDR-E017 for missing .mcfunction: {:?}",
+            missing_fn_audit.problems
         );
 
         // Beta API guard (PSTDR-E018): `on chat` under stable api = "2.11.0" must fail audit

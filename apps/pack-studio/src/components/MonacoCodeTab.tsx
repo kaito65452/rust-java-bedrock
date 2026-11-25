@@ -86,6 +86,8 @@ function registerMinecraftLanguages(m: typeof monaco) {
       "tick",
       "projectile",
       "spawn",
+      "script_event",
+      "entity_trigger",
       "every",
       "after",
       "cancel",
@@ -96,6 +98,9 @@ function registerMinecraftLanguages(m: typeof monaco) {
       "ignite",
       "play_sound",
       "particle",
+      "command",
+      "run_fn",
+      "mcfunction",
       "state",
       "const",
       "mut",
@@ -159,6 +164,22 @@ function registerMinecraftLanguages(m: typeof monaco) {
         [/[a-zA-Z_]\w*/, "variable"],
         [/\./, "delimiter"],
         [/[^{}]+/, "variable"],
+      ],
+    },
+  });
+
+  m.languages.register({ id: "mcfunction", extensions: [".mcfunction"] });
+  m.languages.setMonarchTokensProvider("mcfunction", {
+    tokenizer: {
+      root: [
+        [/^\s*#.*$/, "comment"],
+        [/^\s*\/?[a-z_][a-z0-9_]*/, "keyword"],
+        [/@[paserncv](?=\[|\s|$)|@initiator(?=\[|\s|$)/, "variable.predefined"],
+        [/[~^]-?\d*(\.\d+)?/, "number.float"],
+        [/-?\d+(\.\d+)?/, "number"],
+        [/"([^"\\]|\\.)*"/, "string"],
+        [/[a-z0-9_]+:[a-z0-9_./-]+/, "type.identifier"],
+        [/[\[\]{}()=,]/, "delimiter"],
       ],
     },
   });
@@ -305,6 +326,7 @@ function ensureLspProvidersRegistered(m: typeof monaco) {
 function detectMonacoLanguage(relPath: string): string {
   const lower = relPath.toLowerCase();
   if (lower.endsWith(".pstdr")) return "pstdr";
+  if (lower.endsWith(".mcfunction")) return "mcfunction";
   if (lower.endsWith(".js")) return "javascript";
   if (lower.endsWith(".ts")) return "typescript";
   if (lower.endsWith(".toml")) return "ini";

@@ -163,7 +163,12 @@ export function fileIconClass(relPath: string, isDir: boolean, expanded = false)
   if (lower.endsWith(".molang")) {
     return "codicon-symbol-method";
   }
-  if (lower.endsWith(".pstdr") || lower.endsWith(".js") || lower.endsWith(".ts")) {
+  if (
+    lower.endsWith(".pstdr") ||
+    lower.endsWith(".mcfunction") ||
+    lower.endsWith(".js") ||
+    lower.endsWith(".ts")
+  ) {
     return "codicon-file-code";
   }
   if (lower.endsWith(".toml")) {
@@ -189,6 +194,7 @@ export function isTextCodeAsset(relPath: string): boolean {
     lower.endsWith(".material") ||
     lower.endsWith(".properties") ||
     lower.endsWith(".pstdr") ||
+    lower.endsWith(".mcfunction") ||
     lower.endsWith(".toml") ||
     lower.endsWith(".js") ||
     lower.endsWith(".ts")

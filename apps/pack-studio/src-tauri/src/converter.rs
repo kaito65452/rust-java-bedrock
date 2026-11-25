@@ -718,6 +718,7 @@ impl TempWorkspaceDir {
             // placeholder files for binary textures so pstdr-lang asset existence checks pass
             // without copying megabytes of PNG/TGA data.
             if lower.ends_with(".pstdr")
+                || lower.ends_with(".mcfunction")
                 || lower.ends_with(".toml")
                 || lower.ends_with(".json")
                 || lower.ends_with(".js")
@@ -1226,8 +1227,8 @@ pub fn package_pack_core(
             );
         }
 
-        // Merge compiled scripts & wired component JSONs back into `cleaned` for bundling.
-        for sub in ["BP/scripts", "BP/items", "BP/blocks"] {
+        // Merge compiled scripts, wired component JSONs, and generated `.mcfunction` files back into `cleaned` for bundling.
+        for sub in ["BP/scripts", "BP/items", "BP/blocks", "BP/functions"] {
             collect_disk_dir_into_container(&tmp.path, &tmp.path.join(sub), &mut cleaned)?;
         }
         let bp_manifest_disk = tmp.path.join("BP/manifest.json");
