@@ -20,6 +20,7 @@ export type SettingsCategory = "updates" | "github" | "ai-agents" | "workbench";
 
 interface SettingsViewProps {
   initialCategory?: SettingsCategory;
+  categoryNonce?: number;
   project: ProjectSnapshot | null;
   activeFilePath: string | null;
   diagnostics: ConversionWarning[];
@@ -71,6 +72,7 @@ const CATEGORIES: {
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   initialCategory = "updates",
+  categoryNonce = 0,
   project,
   activeFilePath,
   diagnostics,
@@ -90,6 +92,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [selectedCategory, setSelectedCategory] =
     useState<SettingsCategory>(initialCategory);
   const [searchQuery, setSearchQuery] = useState("");
+
+  useEffect(() => {
+    setSelectedCategory(initialCategory);
+    setSearchQuery("");
+  }, [initialCategory, categoryNonce]);
 
   // Studio Update state
   const [studioUpdate, setStudioUpdate] = useState<StudioUpdateStatusDto | null>(null);

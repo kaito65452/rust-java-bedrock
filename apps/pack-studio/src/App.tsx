@@ -14,7 +14,7 @@ import { MetadataPackagingTab } from "./components/MetadataPackagingTab";
 import { MonacoCodeTab } from "./components/MonacoCodeTab";
 import { NewProjectWizardModal } from "./components/NewProjectWizardModal";
 import { PstdrUpdateModal } from "./components/PstdrUpdateModal";
-import { SettingsView } from "./components/SettingsView";
+import { SettingsView, type SettingsCategory } from "./components/SettingsView";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { TexturePaintTab } from "./components/TexturePaintTab";
 import type {
@@ -115,6 +115,14 @@ export default function App() {
     useState<GithubAuthStatusDto | null>(null);
   const [aiAgentsStatus, setAiAgentsStatus] =
     useState<AiAgentsStatusDto | null>(null);
+  const [activityMenu, setActivityMenu] = useState<null | "accounts" | "gear">(
+    null,
+  );
+  const [settingsCategory, setSettingsCategory] =
+    useState<SettingsCategory>("updates");
+  const [settingsNavNonce, setSettingsNavNonce] = useState(0);
+  const [activityAvatarError, setActivityAvatarError] = useState(false);
+  const activityBottomRef = useRef<HTMLDivElement | null>(null);
   const [paletteMode, setPaletteMode] = useState<null | "commands" | "files">(
     null,
   );
@@ -368,6 +376,38 @@ export default function App() {
       setActiveTabId(tab.id);
     },
     [],
+  );
+
+  useEffect(() => {
+    setActivityAvatarError(false);
+  }, [githubStatus?.avatar_url]);
+
+  useEffect(() => {
+    if (!activityMenu) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (
+        activityBottomRef.current &&
+        !activityBottomRef.current.contains(e.target as Node)
+      ) {
+        setActivityMenu(null);
+      }
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    return () => window.removeEventListener("mousedown", onPointerDown);
+  }, [activityMenu]);
+
+  const openSettingsCategory = useCallback(
+    (category: SettingsCategory) => {
+      setActivityMenu(null);
+      setSettingsCategory(category);
+      setSettingsNavNonce((n) => n + 1);
+      openOrFocusTab({
+        id: "tool:settings",
+        kind: "settings",
+        title: "Settings",
+      });
+    },
+    [openOrFocusTab],
   );
 
   const handleOpenBlockbench = useCallback(
@@ -649,18 +689,15 @@ export default function App() {
         setSidebarOpen(true);
       } else if (ctrl && !e.shiftKey && e.key === ",") {
         e.preventDefault();
-        openOrFocusTab({
-          id: "tool:settings",
-          kind: "settings",
-          title: "Settings",
-        });
+        openSettingsCategory("updates");
       } else if (e.key === "Escape") {
         setPaletteMode(null);
+        setActivityMenu(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openOrFocusTab]);
+  }, [openSettingsCategory]);
 
   const searchResults = useMemo(() => {
     if (!project) return [];
@@ -1027,17 +1064,96 @@ export default function App() {
             </button>
           </div>
 
-          <div className="activity-group">
+          <div
+            className="activity-group"
+            ref={activityBottomRef}
+            style={{ position: "relative" }}
+          >
+            {/* Accounts / GitHub Profile Avatar */}
             <button
-              className={`activity-btn ${activeTab?.kind === "settings" ? "active" : ""}`}
-              title="Settings (Ctrl+,)"
-              onClick={() => {
-                openOrFocusTab({
-                  id: "tool:settings",
-                  kind: "settings",
-                  title: "Settings",
-                });
-              }}
+              className={`activity-btn ${activityMenu === "accounts" ? "active" : ""}`}
+              title={
+                githubStatus?.connected && githubStatus.login
+                  ? `Accounts — GitHub (@${githubStatus.login})`
+                  : "Accounts — Connect GitHub"
+              }
+              onClick={() =>
+                setActivityMenu((cur) => (cur === "accounts" ? null : "accounts"))
+              }
+            >
+              {githubStatus?.connected ? (
+                <span
+                  style={{
+                    position: "relative",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 24,
+                    height: 24,
+                  }}
+                >
+                  {githubStatus.avatar_url && !activityAvatarError ? (
+                    <img
+                      src={githubStatus.avatar_url}
+                      alt={githubStatus.login ?? "GitHub"}
+                      onError={() => setActivityAvatarError(true)}
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: "50%",
+                        objectFit: "cover",
+                        border: "1px solid rgba(255, 255, 255, 0.25)",
+                        background: "#18181a",
+                      }}
+                    />
+                  ) : (
+                    <span
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: "50%",
+                        background: "#163825",
+                        border: "1px solid #3fb950",
+                        color: "#7ee787",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {(githubStatus.login ?? "G").slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      position: "absolute",
+                      right: -1,
+                      bottom: -1,
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: "#3fb950",
+                      border: "1.5px solid var(--vsc-activity, #18181a)",
+                    }}
+                  />
+                </span>
+              ) : (
+                <span className="codicon codicon-account" />
+              )}
+            </button>
+
+            {/* Manage / Settings Gear */}
+            <button
+              className={`activity-btn ${
+                activityMenu === "gear" || activeTab?.kind === "settings"
+                  ? "active"
+                  : ""
+              }`}
+              title="Manage & Settings (Ctrl+,)"
+              onClick={() =>
+                setActivityMenu((cur) => (cur === "gear" ? null : "gear"))
+              }
             >
               <span className="codicon codicon-settings-gear" />
               {pstdrUpdateOffer?.update_available && (
@@ -1046,6 +1162,209 @@ export default function App() {
                 </span>
               )}
             </button>
+
+            {/* Floating Accounts Popover */}
+            {activityMenu === "accounts" && (
+              <div
+                className="menu-popover"
+                style={{ left: 54, bottom: 52, minWidth: 236 }}
+              >
+                {githubStatus?.connected ? (
+                  <>
+                    <div
+                      style={{
+                        padding: "7px 9px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 9,
+                        borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+                        marginBottom: 4,
+                      }}
+                    >
+                      {githubStatus.avatar_url && !activityAvatarError ? (
+                        <img
+                          src={githubStatus.avatar_url}
+                          alt={githubStatus.login ?? "GitHub"}
+                          onError={() => setActivityAvatarError(true)}
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: "50%",
+                            objectFit: "cover",
+                            border: "1px solid #3fb950",
+                          }}
+                        />
+                      ) : (
+                        <span
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: "50%",
+                            background: "#163825",
+                            border: "1px solid #3fb950",
+                            color: "#7ee787",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          {(githubStatus.login ?? "G").slice(0, 1).toUpperCase()}
+                        </span>
+                      )}
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "#ffffff",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          @{githubStatus.login}
+                        </div>
+                        <div style={{ fontSize: 10.5, color: "#7ee787" }}>
+                          GitHub Connected
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      className="menu-item"
+                      onClick={() => openSettingsCategory("github")}
+                    >
+                      <span className="codicon codicon-github-inverted" />
+                      <span>Manage GitHub Account</span>
+                    </div>
+                    <div
+                      className="context-item danger"
+                      onClick={() => {
+                        setActivityMenu(null);
+                        void api
+                          .githubDisconnect()
+                          .then((next) => {
+                            setGithubStatus(next);
+                            appendLog(
+                              "info",
+                              "Disconnected GitHub account and removed stored token.",
+                            );
+                          })
+                          .catch((e) =>
+                            appendLog("error", `GitHub disconnect failed: ${String(e)}`),
+                          );
+                      }}
+                    >
+                      <span className="codicon codicon-sign-out" />
+                      <span>Disconnect</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        padding: "6px 9px",
+                        fontSize: 11,
+                        color: "var(--vsc-text-dim)",
+                        borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+                        marginBottom: 4,
+                      }}
+                    >
+                      Not signed in to GitHub
+                    </div>
+                    <div
+                      className="menu-item"
+                      onClick={() => openSettingsCategory("github")}
+                    >
+                      <span className="codicon codicon-github-inverted" />
+                      <span>Connect GitHub Account...</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Floating Gear / Settings Popover */}
+            {activityMenu === "gear" && (
+              <div
+                className="menu-popover"
+                style={{ left: 54, bottom: 26, minWidth: 256 }}
+              >
+                <div
+                  className="menu-item"
+                  style={{ justifyContent: "space-between" }}
+                  onClick={() => {
+                    setActivityMenu(null);
+                    setPaletteQuery("");
+                    setPaletteMode("commands");
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="codicon codicon-terminal-cmd" />
+                    <span>Command Palette...</span>
+                  </span>
+                  <span style={{ fontSize: 10.5, color: "var(--vsc-text-dim)" }}>
+                    Ctrl+Shift+P
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    height: 1,
+                    background: "rgba(255, 255, 255, 0.08)",
+                    margin: "4px 6px",
+                  }}
+                />
+
+                <div
+                  className="menu-item"
+                  style={{ justifyContent: "space-between" }}
+                  onClick={() => openSettingsCategory("updates")}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="codicon codicon-settings-gear" />
+                    <span>Settings</span>
+                  </span>
+                  <span style={{ fontSize: 10.5, color: "var(--vsc-text-dim)" }}>
+                    Ctrl+,
+                  </span>
+                </div>
+
+                <div
+                  className="menu-item"
+                  style={{ justifyContent: "space-between" }}
+                  onClick={() => openSettingsCategory("updates")}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="codicon codicon-cloud-download" />
+                    <span>Updates &amp; PSTDR LSP...</span>
+                  </span>
+                  {pstdrUpdateOffer?.update_available && (
+                    <span
+                      style={{
+                        padding: "1px 5px",
+                        borderRadius: 3,
+                        background: "#163825",
+                        color: "#7ee787",
+                        fontSize: 10,
+                        fontWeight: 600,
+                      }}
+                    >
+                      v{pstdrUpdateOffer.version}
+                    </span>
+                  )}
+                </div>
+
+                <div
+                  className="menu-item"
+                  onClick={() => openSettingsCategory("ai-agents")}
+                >
+                  <span className="codicon codicon-sparkle" />
+                  <span>AI Coding Agents...</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1634,6 +1953,8 @@ export default function App() {
 
                       {activeTab?.kind === "settings" && (
                         <SettingsView
+                          initialCategory={settingsCategory}
+                          categoryNonce={settingsNavNonce}
                           project={project}
                           activeFilePath={
                             tabs.find((t) => t.kind === "code" && t.relPath)?.relPath ??
