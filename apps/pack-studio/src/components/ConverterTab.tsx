@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { open as dialogOpen, save as dialogSave } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
+import { safeListen } from "../utils/tauriEvents";
 import type {
   ConversionResultDto,
   ConverterOptions,
@@ -63,13 +63,9 @@ export const ConverterTab: React.FC<ConverterTabProps> = ({
   }, [project?.edition, useActivePack]);
 
   useEffect(() => {
-    const unlistenPromise = listen<ConvertProgressEvent>(
-      "converter://progress",
-      (ev) => setProgress(ev.payload),
+    return safeListen<ConvertProgressEvent>("converter://progress", (ev) =>
+      setProgress(ev.payload),
     );
-    return () => {
-      void unlistenPromise.then((fn) => fn());
-    };
   }, []);
 
   const resolvedInput = useActivePack

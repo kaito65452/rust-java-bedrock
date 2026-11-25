@@ -38,6 +38,13 @@ pub const PSTDR_SIGNING_KEY_ID: &str = "saryu-pstdr-root-2026";
 pub const PSTDR_SIGNING_PUBKEY_HEX: &str =
     "4970e4b61c17aec73af409e091a4e11589603b4db7d23e2535016aa3741c4e09";
 
+/// Built-in PackStudio desktop application version (synchronized with `tauri.conf.json` / `.deb`).
+pub const PACKSTUDIO_APP_VERSION: &str = "0.2.3";
+
+/// Fixed GitHub API endpoint for checking the latest published PackStudio release.
+pub const PACKSTUDIO_RELEASES_API_URL: &str =
+    "https://api.github.com/repos/kaito65452/rust-java-bedrock/releases/latest";
+
 /// Built-in compiled `pstdr-lang` version shipped inside PackStudio.
 pub const BUILTIN_PSTDR_VERSION: &str = "0.1.0-pre-beta.1";
 
@@ -963,6 +970,103 @@ pub fn revert_to_builtin_core(runtime_dir: &Path) -> Result<()> {
 }
 
 // ─── Tauri Commands ──────────────────────────────────────────────────────────
+
+/// Status DTO returned by `studio_check_update`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StudioUpdateStatusDto {
+    pub current_version: String,
+    pub latest_version: String,
+    pub update_available: bool,
+    pub release_url: String,
+    pub published_at: Option<String>,
+    pub release_notes: String,
+    pub note: Option<String>,
+}
+
+/// Tauri Command: Check GitHub Releases for a newer PackStudio application release (read-only).
+#[tauri::command]
+pub async fn studio_check_update() -> Result<StudioUpdateStatusDto, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("PackStudio/{PACKSTUDIO_APP_VERSION}"))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed creating HTTPS client: {e}"))?;
+
+    let mut req = client
+        .get(PACKSTUDIO_RELEASES_API_URL)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+    if let Some(token) = crate::github_auth::load_stored_github_token_internal() {
+        req = req.bearer_auth(token);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("Failed checking PackStudio updates: {e}"))?;
+
+    if resp.status().as_u16() == 404 {
+        return Ok(StudioUpdateStatusDto {
+            current_version: String::from(PACKSTUDIO_APP_VERSION),
+            latest_version: String::from(PACKSTUDIO_APP_VERSION),
+            update_available: false,
+            release_url: String::from("https://github.com/kaito65452/rust-java-bedrock/releases"),
+            published_at: None,
+            release_notes: String::new(),
+            note: Some(String::from(
+                "No published PackStudio GitHub Release found yet. You are running the latest development build.",
+            )),
+        });
+    }
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "GitHub Releases API returned HTTP {} while checking PackStudio updates.",
+            resp.status().as_u16()
+        ));
+    }
+
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed reading PackStudio release response: {e}"))?;
+    let val: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("Failed parsing PackStudio release JSON: {e}"))?;
+    let raw_tag = val
+        .get("tag_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(PACKSTUDIO_APP_VERSION);
+    let latest_clean = raw_tag.trim().trim_start_matches('v').to_string();
+    let update_available = check_anti_downgrade(PACKSTUDIO_APP_VERSION, &latest_clean).is_ok();
+    let release_url = val
+        .get("html_url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|u| u.starts_with("https://github.com/kaito65452/rust-java-bedrock/"))
+        .unwrap_or("https://github.com/kaito65452/rust-java-bedrock/releases")
+        .to_string();
+    let published_at = val
+        .get("published_at")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let release_notes = val
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .take(2000)
+        .collect();
+
+    Ok(StudioUpdateStatusDto {
+        current_version: String::from(PACKSTUDIO_APP_VERSION),
+        latest_version: latest_clean,
+        update_available,
+        release_url,
+        published_at,
+        release_notes,
+        note: None,
+    })
+}
 
 /// Tauri Command: Return current active PSTDR version, spec version, and signing key fingerprint.
 #[tauri::command]

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -15,10 +14,12 @@ import { MetadataPackagingTab } from "./components/MetadataPackagingTab";
 import { MonacoCodeTab } from "./components/MonacoCodeTab";
 import { NewProjectWizardModal } from "./components/NewProjectWizardModal";
 import { PstdrUpdateModal } from "./components/PstdrUpdateModal";
+import { SettingsView } from "./components/SettingsView";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { TexturePaintTab } from "./components/TexturePaintTab";
 import type {
   ActivityView,
+  AiAgentsStatusDto,
   BinaryAssetData,
   BlockbenchSavedEvent,
   BottomTab,
@@ -26,6 +27,7 @@ import type {
   DetectedFileManagers,
   EditorTab,
   ExtensionsSnapshotDto,
+  GithubAuthStatusDto,
   LspDiagnosticDto,
   LspDiagnosticsEvent,
   LspServerStatusDto,
@@ -37,6 +39,7 @@ import type {
   StudioSettings,
   UvAtlasGuardMode,
 } from "./types";
+import { safeListen, safeUnlisten } from "./utils/tauriEvents";
 import {
   baseName,
   computeResourceId,
@@ -108,6 +111,10 @@ export default function App() {
     useState<PstdrSyncStatusDto | null>(null);
   const [pstdrUpdateOffer, setPstdrUpdateOffer] =
     useState<PstdrUpdateOfferDto | null>(null);
+  const [githubStatus, setGithubStatus] =
+    useState<GithubAuthStatusDto | null>(null);
+  const [aiAgentsStatus, setAiAgentsStatus] =
+    useState<AiAgentsStatusDto | null>(null);
   const [paletteMode, setPaletteMode] = useState<null | "commands" | "files">(
     null,
   );
@@ -185,6 +192,14 @@ export default function App() {
     void refreshFileManagers();
     void refreshExtensionsAndLsp();
     void api
+      .githubAuthStatus()
+      .then(setGithubStatus)
+      .catch(() => {});
+    void api
+      .aiAgentsStatus()
+      .then(setAiAgentsStatus)
+      .catch(() => {});
+    void api
       .pstdrSyncStatus()
       .then((st) => {
         setPstdrSyncStatus(st);
@@ -219,11 +234,11 @@ export default function App() {
   }, [appendLog]);
 
   useEffect(() => {
-    const unlistenFs = listen<string[]>("fs://changed", (ev) => {
+    const stopFs = safeListen<string[]>("fs://changed", (ev) => {
       appendLog("info", `Filesystem changed: ${ev.payload.join(", ")}`);
       void refreshActiveProject();
     });
-    const unlistenBb = listen<BlockbenchSavedEvent>(
+    const stopBb = safeListen<BlockbenchSavedEvent>(
       "blockbench://saved",
       (ev) => {
         appendLog(
@@ -236,7 +251,7 @@ export default function App() {
         void refreshActiveProject();
       },
     );
-    const unlistenLsp = listen<LspDiagnosticsEvent>(
+    const stopLsp = safeListen<LspDiagnosticsEvent>(
       "lsp://diagnostics",
       (ev) => {
         const payload = ev.payload;
@@ -257,9 +272,9 @@ export default function App() {
       },
     );
     return () => {
-      void unlistenFs.then((f) => f());
-      void unlistenBb.then((f) => f());
-      void unlistenLsp.then((f) => f());
+      stopFs();
+      stopBb();
+      stopLsp();
     };
   }, [appendLog, refreshActiveProject, showToast]);
 
@@ -294,9 +309,11 @@ export default function App() {
   );
 
   useEffect(() => {
+    let cancelled = false;
     let unlistenDrop: (() => void) | undefined;
     void getCurrentWebview()
       .onDragDropEvent((ev) => {
+        if (cancelled) return;
         const payload = ev.payload as { type: string; paths?: string[] };
         if (payload.type === "enter" || payload.type === "over") {
           setDragOver(true);
@@ -316,12 +333,18 @@ export default function App() {
         }
       })
       .then((fn) => {
-        unlistenDrop = fn;
+        if (cancelled) {
+          safeUnlisten(fn);
+        } else {
+          unlistenDrop = fn;
+        }
       })
       .catch(() => {});
 
     return () => {
-      if (unlistenDrop) unlistenDrop();
+      cancelled = true;
+      safeUnlisten(unlistenDrop);
+      unlistenDrop = undefined;
     };
   }, [handleImportPaths, selectedRelPath]);
 
@@ -624,13 +647,20 @@ export default function App() {
         e.preventDefault();
         setActivity("extensions");
         setSidebarOpen(true);
+      } else if (ctrl && !e.shiftKey && e.key === ",") {
+        e.preventDefault();
+        openOrFocusTab({
+          id: "tool:settings",
+          kind: "settings",
+          title: "Settings",
+        });
       } else if (e.key === "Escape") {
         setPaletteMode(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [openOrFocusTab]);
 
   const searchResults = useMemo(() => {
     if (!project) return [];
@@ -703,6 +733,15 @@ export default function App() {
       {
         label: "Audit: Run Semantic Auditor",
         action: () => void handleRunAudit(),
+      },
+      {
+        label: "Preferences: Open Settings (Ctrl+,)",
+        action: () =>
+          openOrFocusTab({
+            id: "tool:settings",
+            kind: "settings",
+            title: "Settings",
+          }),
       },
       {
         label: "PSTDR: Check for Verified Updates...",
@@ -990,17 +1029,22 @@ export default function App() {
 
           <div className="activity-group">
             <button
-              className={`activity-btn ${activity === "settings" && sidebarOpen ? "active" : ""}`}
-              title="Settings & File Managers"
+              className={`activity-btn ${activeTab?.kind === "settings" ? "active" : ""}`}
+              title="Settings (Ctrl+,)"
               onClick={() => {
-                if (activity === "settings" && sidebarOpen) setSidebarOpen(false);
-                else {
-                  setActivity("settings");
-                  setSidebarOpen(true);
-                }
+                openOrFocusTab({
+                  id: "tool:settings",
+                  kind: "settings",
+                  title: "Settings",
+                });
               }}
             >
               <span className="codicon codicon-settings-gear" />
+              {pstdrUpdateOffer?.update_available && (
+                <span className="activity-badge" style={{ background: "#2e7d53" }}>
+                  1
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -1396,9 +1440,11 @@ export default function App() {
                                     ? "codicon-package"
                                     : tab.kind === "extensions"
                                       ? "codicon-extensions"
-                                      : tab.kind === "blockbench"
-                                        ? "codicon-cube"
-                                        : fileIconClass(tab.relPath || "", false)
+                                      : tab.kind === "settings"
+                                        ? "codicon-settings-gear"
+                                        : tab.kind === "blockbench"
+                                          ? "codicon-cube"
+                                          : fileIconClass(tab.relPath || "", false)
                               }`}
                             />
                             <span className="editor-tab-title">{tab.title}</span>
@@ -1583,6 +1629,32 @@ export default function App() {
                           onProjectUpdated={setProject}
                           onLog={appendLog}
                           onRevealPath={(path) => void handleReveal(path)}
+                        />
+                      )}
+
+                      {activeTab?.kind === "settings" && (
+                        <SettingsView
+                          project={project}
+                          activeFilePath={
+                            tabs.find((t) => t.kind === "code" && t.relPath)?.relPath ??
+                            selectedRelPath
+                          }
+                          diagnostics={mergedProblems}
+                          studioSettings={settings}
+                          fileManagers={fileManagers}
+                          pstdrStatus={pstdrSyncStatus}
+                          pstdrOffer={pstdrUpdateOffer}
+                          githubStatus={githubStatus}
+                          aiAgentsStatus={aiAgentsStatus}
+                          onStudioSettingsChange={setSettings}
+                          onPstdrStatusChange={(next) => {
+                            setPstdrSyncStatus(next);
+                            void refreshExtensionsAndLsp();
+                          }}
+                          onOpenPstdrUpdateModal={() => setPstdrUpdateModalOpen(true)}
+                          onGithubStatusChange={setGithubStatus}
+                          onAiAgentsStatusChange={setAiAgentsStatus}
+                          onLog={appendLog}
                         />
                       )}
 
@@ -2010,27 +2082,33 @@ export default function App() {
         </div>
 
         <div className="status-group">
-          <span
-            className="status-item"
-            onClick={() => setPstdrUpdateModalOpen(true)}
-            title={
-              pstdrUpdateOffer?.update_available
-                ? `Verified PSTDR update v${pstdrUpdateOffer.version} available — click to review fingerprints`
-                : "Check for cryptographically verified PSTDR updates"
-            }
-            style={
-              pstdrUpdateOffer?.update_available
-                ? { color: "#7ee787", fontWeight: 600 }
-                : undefined
-            }
-          >
-            <span className="codicon codicon-shield" />
-            {pstdrUpdateOffer?.update_available
-              ? `PSTDR Update: v${pstdrUpdateOffer.version}`
-              : pstdrSyncStatus?.external_runtime_active
-                ? `PSTDR v${pstdrSyncStatus.active_version}`
-                : "Check PSTDR Updates"}
-          </span>
+          {githubStatus?.connected && githubStatus.login && (
+            <span
+              className="status-item"
+              onClick={() =>
+                openOrFocusTab({
+                  id: "tool:settings",
+                  kind: "settings",
+                  title: "Settings",
+                })
+              }
+              title={`GitHub connected as @${githubStatus.login} — open Settings`}
+            >
+              <span className="codicon codicon-github-inverted" />
+              @{githubStatus.login}
+            </span>
+          )}
+          {pstdrUpdateOffer?.update_available && (
+            <span
+              className="status-item"
+              onClick={() => setPstdrUpdateModalOpen(true)}
+              title={`Verified PSTDR update v${pstdrUpdateOffer.version} available — click to review fingerprints`}
+              style={{ color: "#7ee787", fontWeight: 600 }}
+            >
+              <span className="codicon codicon-shield" />
+              PSTDR v{pstdrUpdateOffer.version}
+            </span>
+          )}
           <span
             className="status-item"
             onClick={() => {

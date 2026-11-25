@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AiAgentsStatusDto,
+  AiContextPacketDto,
   AuditResultDto,
   BinaryAssetData,
   BlockbenchLaunchInfo,
@@ -7,6 +9,7 @@ import type {
   ConverterOptions,
   DetectedFileManagers,
   ExtensionsSnapshotDto,
+  GithubAuthStatusDto,
   ImportResult,
   LspCodeActionDto,
   LspCompletionItemDto,
@@ -24,6 +27,7 @@ import type {
   PstdrUpdateOfferDto,
   QuarantineVerificationReportDto,
   RenameResult,
+  StudioUpdateStatusDto,
   TextureTransformResult,
 } from "./types";
 
@@ -285,6 +289,8 @@ export const api = {
   pstdrConvertWorkspace: () =>
     invoke<PstdrBuildResultDto>("pstdr_convert_workspace"),
 
+  studioCheckUpdate: () => invoke<StudioUpdateStatusDto>("studio_check_update"),
+
   pstdrSyncStatus: () => invoke<PstdrSyncStatusDto>("pstdr_sync_status"),
 
   pstdrSyncCheck: () => invoke<PstdrUpdateOfferDto>("pstdr_sync_check"),
@@ -302,6 +308,36 @@ export const api = {
 
   pstdrSyncRevertBuiltin: () =>
     invoke<PstdrSyncStatusDto>("pstdr_sync_revert_builtin"),
+
+  githubAuthStatus: () => invoke<GithubAuthStatusDto>("github_auth_status"),
+
+  githubConnectPat: (token: string) =>
+    invoke<GithubAuthStatusDto>("github_connect_pat", { token }),
+
+  githubDisconnect: () => invoke<GithubAuthStatusDto>("github_disconnect"),
+
+  aiAgentsStatus: () => invoke<AiAgentsStatusDto>("ai_agents_status"),
+
+  aiSetActiveAgent: (agentId: string) =>
+    invoke<AiAgentsStatusDto>("ai_set_active_agent", { agentId }),
+
+  aiConfigureAgent: (agentId: string, command: string, args: string[]) =>
+    invoke<AiAgentsStatusDto>("ai_configure_agent", {
+      agentId,
+      command,
+      args,
+    }),
+
+  aiBuildContextPacket: (
+    workspacePath?: string | null,
+    activeFile?: string | null,
+    diagnosticsSummary?: string | null,
+  ) =>
+    invoke<AiContextPacketDto>("ai_build_context_packet", {
+      workspacePath: workspacePath ?? null,
+      activeFile: activeFile ?? null,
+      diagnosticsSummary: diagnosticsSummary ?? null,
+    }),
 
   frontendTraceLog: (
     level: "error" | "warn" | "info" | "trace",

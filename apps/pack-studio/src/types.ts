@@ -389,6 +389,49 @@ export interface QuarantineVerificationReportDto {
   artifacts: VerifiedQuarantineArtifactDto[];
 }
 
+export interface StudioUpdateStatusDto {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  release_url: string;
+  published_at: string | null;
+  release_notes: string;
+  note: string | null;
+}
+
+export interface GithubAuthStatusDto {
+  connected: boolean;
+  token_stored: boolean;
+  login: string | null;
+  name: string | null;
+  avatar_url: string | null;
+  html_url: string | null;
+  storage_path: string;
+}
+
+export interface AiAgentEntryDto {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  installed: boolean;
+  resolved_path: string | null;
+  description: string;
+}
+
+export interface AiAgentsStatusDto {
+  active_agent_id: string;
+  agents: AiAgentEntryDto[];
+}
+
+export interface AiContextPacketDto {
+  agent_id: string;
+  agent_name: string;
+  suggested_command: string;
+  truncated: boolean;
+  markdown: string;
+}
+
 export interface LspServerStatusDto {
   server_id: string;
   display_name: string;
@@ -416,6 +459,7 @@ export type EditorTabKind =
   | "converter"
   | "metadata"
   | "extensions"
+  | "settings"
   | "blockbench";
 
 export interface EditorTab {

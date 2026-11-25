@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { api } from "../api";
 import type { PtyDataEvent, PtyExitEvent } from "../types";
+import { safeListen } from "../utils/tauriEvents";
 
 interface TerminalPanelProps {
   cwd: string | null;
@@ -72,13 +72,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ cwd, onLog }) => {
       }
     });
 
-    const unlistenData = listen<PtyDataEvent>("pty://data", (ev) => {
+    const stopData = safeListen<PtyDataEvent>("pty://data", (ev) => {
       if (ev.payload.session_id === sessionIdRef.current) {
         term.write(ev.payload.data);
       }
     });
 
-    const unlistenExit = listen<PtyExitEvent>("pty://exit", (ev) => {
+    const stopExit = safeListen<PtyExitEvent>("pty://exit", (ev) => {
       if (ev.payload.session_id === sessionIdRef.current) {
         setAlive(false);
         term.writeln("\r\n\x1b[33m[Process exited]\x1b[0m");
@@ -98,8 +98,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ cwd, onLog }) => {
     return () => {
       ro.disconnect();
       dataDisposable.dispose();
-      void unlistenData.then((fn) => fn());
-      void unlistenExit.then((fn) => fn());
+      stopData();
+      stopExit();
       if (sessionIdRef.current !== null) {
         void api.ptyKill(sessionIdRef.current);
         sessionIdRef.current = null;

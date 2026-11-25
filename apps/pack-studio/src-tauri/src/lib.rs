@@ -1,6 +1,8 @@
+pub mod ai_agents;
 pub mod blockbench;
 pub mod converter;
 pub mod extensions;
+pub mod github_auth;
 pub mod lsp;
 pub mod pstdr_sync;
 pub mod pty;
@@ -77,12 +79,20 @@ pub fn run() {
             lsp::lsp_hover,
             lsp::lsp_code_actions,
             lsp::frontend_trace_log,
+            pstdr_sync::studio_check_update,
             pstdr_sync::pstdr_sync_status,
             pstdr_sync::pstdr_sync_check,
             pstdr_sync::pstdr_sync_download_quarantine,
             pstdr_sync::pstdr_sync_approve_and_apply,
             pstdr_sync::pstdr_sync_reject_quarantine,
             pstdr_sync::pstdr_sync_revert_builtin,
+            github_auth::github_auth_status,
+            github_auth::github_connect_pat,
+            github_auth::github_disconnect,
+            ai_agents::ai_agents_status,
+            ai_agents::ai_set_active_agent,
+            ai_agents::ai_configure_agent,
+            ai_agents::ai_build_context_packet,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pack-Studio Tauri application");
