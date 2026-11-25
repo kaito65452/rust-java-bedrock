@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="160 120 704 784" width="256" height="285">
+
+  <!-- Subtle back edges of outer wireframe cube -->
+  <g stroke="#09090B" stroke-opacity="0.24" stroke-width="10" stroke-linecap="round" fill="none">
+    <line x1="512" y1="168" x2="512" y2="548"/>
+    <line x1="512" y1="548" x2="224" y2="698"/>
+    <line x1="512" y1="548" x2="800" y2="698"/>
+  </g>
+
+  <!-- 8 Crisp Hyper-edges connecting outer cube vertices to inner voxel core -->
+  <g stroke="#09090B" stroke-width="10" stroke-linecap="round" fill="none">
+    <line x1="512" y1="548" x2="512" y2="528" stroke-opacity="0.28"/>
+    <line x1="512" y1="168" x2="512" y2="354" stroke-opacity="0.62"/>
+    <line x1="224" y1="326" x2="380" y2="426" stroke-opacity="0.62"/>
+    <line x1="800" y1="326" x2="644" y2="426" stroke-opacity="0.62"/>
+    <line x1="224" y1="698" x2="380" y2="598" stroke-opacity="0.62"/>
+    <line x1="800" y1="698" x2="644" y2="598" stroke-opacity="0.62"/>
+    <line x1="512" y1="856" x2="512" y2="670" stroke-opacity="0.62"/>
+    <line x1="512" y1="476" x2="512" y2="496" stroke-opacity="0.78"/>
+  </g>
+
+  <!-- Inner solid faceted Voxel Core (flat opacity steps: 1.0 / 0.72 / 0.45) -->
+  <g>
+    <polygon points="512,354 644,426 512,496 380,426" fill="#09090B" fill-opacity="1.0"/>
+    <polygon points="380,426 512,496 512,670 380,598" fill="#09090B" fill-opacity="0.72"/>
+    <polygon points="644,426 512,496 512,670 644,598" fill="#09090B" fill-opacity="0.45"/>
+    <g stroke="#09090B" stroke-opacity="0.92" stroke-width="6" stroke-linejoin="round" stroke-linecap="round" fill="none">
+      <polygon points="512,354 644,426 644,598 512,670 380,598 380,426"/>
+      <line x1="380" y1="426" x2="512" y2="496"/>
+      <line x1="644" y1="426" x2="512" y2="496"/>
+      <line x1="512" y1="496" x2="512" y2="670"/>
+    </g>
+  </g>
+
+  <!-- Outer wireframe cube (crisp solid monochrome edges) -->
+  <g stroke="#09090B" stroke-width="18" stroke-linejoin="round" stroke-linecap="round" fill="none">
+    <polygon points="512,168 800,326 800,698 512,856 224,698 224,326"/>
+    <line x1="224" y1="326" x2="512" y2="476"/>
+    <line x1="800" y1="326" x2="512" y2="476"/>
+    <line x1="512" y1="476" x2="512" y2="856"/>
+  </g>
+</svg>

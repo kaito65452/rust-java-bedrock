@@ -1,7 +1,11 @@
 <div align="center">
-  <img src="apps/pack-studio/src-tauri/icons/128x128@2x.png" alt="PackStudio Voxel Tesseract Logo" width="128" height="128" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/packstudio-logo-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/packstudio-logo-light.svg" />
+    <img src="docs/assets/packstudio-logo-dark.svg" alt="PackStudio Logo" width="112" height="124" />
+  </picture>
 
-  <h1>PackStudio (<code>rust-java-bedrock</code>)</h1>
+  <h1>PackStudio</h1>
 
   <p><strong>Offline-first Minecraft Java &amp; Bedrock Resource Pack, Add-on &amp; PSTDR-DSL Workbench</strong></p>
 
