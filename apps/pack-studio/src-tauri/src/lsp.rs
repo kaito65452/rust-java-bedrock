@@ -880,10 +880,18 @@ pub fn builtin_pstdr_diagnostics(
             .then_with(|| a.code.cmp(&b.code))
     });
     diags.dedup_by(|a, b| a.line == b.line && a.column == b.column && a.code == b.code);
-    diags
+    let out: Vec<LspDiagnosticDto> = diags
         .iter()
         .map(|d| pstdr_diag_to_lsp_dto(d, rel_path))
-        .collect()
+        .collect();
+    if crate::is_trace_enabled() {
+        eprintln!(
+            "[pack-studio:rust:trace] [builtin.pstdr] diagnostics for '{}' -> {} item(s)",
+            rel_path,
+            out.len()
+        );
+    }
+    out
 }
 
 fn char_col_1based_to_byte_offset(line_text: &str, col_1based: u32) -> usize {
@@ -1779,6 +1787,16 @@ pub fn lsp_sync_document(
 ) -> Vec<LspDiagnosticDto> {
     if let Ok(mut docs) = state.open_documents.lock() {
         docs.insert(rel_path.clone(), content.clone());
+    }
+    if crate::is_trace_enabled() {
+        eprintln!(
+            "[pack-studio:rust:trace] [lsp_sync_document] event='{}' lang='{}' path='{}' v={} ({} bytes)",
+            event_kind,
+            language_id,
+            rel_path,
+            version,
+            content.len()
+        );
     }
 
     let (root_path, root_str, known_files) = state

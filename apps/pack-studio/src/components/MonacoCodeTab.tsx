@@ -32,156 +32,217 @@ if (typeof self !== "undefined") {
 
 loader.config({ monaco });
 
-let customLanguagesRegistered = false;
+const registeredCustomLanguages = new Set<string>();
 let lspProvidersRegistered = false;
 let activeRelPathForProviders = "";
 let activeLanguageForProviders = "json";
 let activeSnippetsForProviders: ExtensionSnippetDto[] = [];
 
+function registerLanguageOnce(
+  m: typeof monaco,
+  id: string,
+  extensions: string[] | undefined,
+  configure: () => void,
+) {
+  if (registeredCustomLanguages.has(id)) return;
+  try {
+    const alreadyRegistered = m.languages
+      .getLanguages()
+      .some((lang) => lang.id === id);
+    if (!alreadyRegistered) {
+      m.languages.register(extensions ? { id, extensions } : { id });
+    }
+    configure();
+    registeredCustomLanguages.add(id);
+    api.frontendTraceLog("trace", "monaco.lang", `Registered language '${id}'`);
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    api.frontendTraceLog(
+      "error",
+      "monaco.lang",
+      `Failed registering language '${id}': ${e.message}`,
+      e.stack ?? null,
+    );
+  }
+}
+
 function registerMinecraftLanguages(m: typeof monaco) {
-  if (customLanguagesRegistered) return;
-  customLanguagesRegistered = true;
-
-  m.languages.register({ id: "mc-lang" });
-  m.languages.setMonarchTokensProvider("mc-lang", {
-    tokenizer: {
-      root: [
-        [/##.*$/, "comment"],
-        [/§[0-9a-gk-or]/i, "keyword"],
-        [/^[^=\r\n]+(?==)/, "attribute.name"],
-        [/=/, "delimiter"],
-        [/[^\r\n§]+/, "string"],
-      ],
-    },
-  });
-
-  m.languages.register({ id: "molang" });
-  m.languages.setMonarchTokensProvider("molang", {
-    tokenizer: {
-      root: [
-        [/\/\/.*$/, "comment"],
-        [/\b(query|q|variable|v|temp|t|context|c|math)\.[a-zA-Z0-9_]+/, "type.identifier"],
-        [/\b(return|loop|for_each|break|continue|true|false)\b/, "keyword"],
-        [/-?\d+(\.\d+)?/, "number"],
-        [/'[^']*'/, "string"],
-      ],
-    },
-  });
-
-  m.languages.register({ id: "pstdr", extensions: [".pstdr"] });
-  m.languages.setMonarchTokensProvider("pstdr", {
-    keywords: [
-      "on",
-      "join",
-      "leave",
-      "chat",
-      "right",
-      "click",
-      "hit",
-      "break",
-      "hurt",
-      "die",
-      "consume",
-      "interact",
-      "tick",
-      "projectile",
-      "spawn",
-      "script_event",
-      "entity_trigger",
-      "every",
-      "after",
-      "cancel",
-      "event",
-      "send",
-      "apply",
-      "damage",
-      "ignite",
-      "play_sound",
-      "particle",
-      "command",
-      "run_fn",
-      "mcfunction",
-      "state",
-      "const",
-      "mut",
-      "func",
-      "unsafe",
-      "if",
-      "else",
-      "for",
-      "in",
-      "while",
-      "return",
-      "and",
-      "or",
-      "not",
-      "is",
-      "true",
-      "false",
-      "null",
-      "of",
-      "by",
-      "with",
-      "to",
-      "at",
-      "type",
-      "bind_target",
-    ],
-    tokenizer: {
-      root: [
-        [/\/\/.*$/, "comment"],
-        [/\/\*/, "comment", "@comment"],
-        [/@[a-zA-Z_]\w*/, "annotation"],
-        [/\b\d+(\.\d+)?(ms|s|m|t)\b/, "number.float"],
-        [/\b\d+(\.\d+)?\b/, "number"],
-        [/"/, "string", "@string"],
-        [
-          /[a-zA-Z_]\w*/,
-          {
-            cases: {
-              "@keywords": "keyword",
-              "@default": "identifier",
-            },
-          },
+  registerLanguageOnce(m, "mc-lang", [".lang"], () => {
+    m.languages.setMonarchTokensProvider("mc-lang", {
+      tokenizer: {
+        root: [
+          [/##.*$/, "comment"],
+          [/§[0-9a-gk-or]/i, "keyword"],
+          [/^[^=\r\n]+(?==)/, "attribute.name"],
+          [/=/, "delimiter"],
+          [/[^\r\n§]+/, "string"],
         ],
-        [/[{}()\[\]]/, "@brackets"],
-        [/[?:.,;]/, "delimiter"],
-        [/[+\-*/%=!<>&|]+/, "operator"],
-      ],
-      comment: [
-        [/[^/*]+/, "comment"],
-        [/\*\//, "comment", "@pop"],
-        [/[/*]/, "comment"],
-      ],
-      string: [
-        [/\\./, "string.escape"],
-        [/\{/, { token: "delimiter.bracket", next: "@interpolation" }],
-        [/"/, "string", "@pop"],
-        [/[^\\"{]+/, "string"],
-      ],
-      interpolation: [
-        [/\}/, { token: "delimiter.bracket", next: "@pop" }],
-        [/[a-zA-Z_]\w*/, "variable"],
-        [/\./, "delimiter"],
-        [/[^{}]+/, "variable"],
-      ],
-    },
+      },
+    });
   });
 
-  m.languages.register({ id: "mcfunction", extensions: [".mcfunction"] });
-  m.languages.setMonarchTokensProvider("mcfunction", {
-    tokenizer: {
-      root: [
-        [/^\s*#.*$/, "comment"],
-        [/^\s*\/?[a-z_][a-z0-9_]*/, "keyword"],
-        [/@[paserncv](?=\[|\s|$)|@initiator(?=\[|\s|$)/, "variable.predefined"],
-        [/[~^]-?\d*(\.\d+)?/, "number.float"],
-        [/-?\d+(\.\d+)?/, "number"],
-        [/"([^"\\]|\\.)*"/, "string"],
-        [/[a-z0-9_]+:[a-z0-9_./-]+/, "type.identifier"],
-        [/[\[\]{}()=,]/, "delimiter"],
+  registerLanguageOnce(m, "molang", [".molang"], () => {
+    m.languages.setMonarchTokensProvider("molang", {
+      tokenizer: {
+        root: [
+          [/\/\/.*$/, "comment"],
+          [/\b(query|q|variable|v|temp|t|context|c|math)\.[a-zA-Z0-9_]+/, "type.identifier"],
+          [/\b(return|loop|for_each|break|continue|true|false)\b/, "keyword"],
+          [/-?\d+(\.\d+)?/, "number"],
+          [/'[^']*'/, "string"],
+        ],
+      },
+    });
+  });
+
+  registerLanguageOnce(m, "pstdr", [".pstdr"], () => {
+    m.languages.setLanguageConfiguration("pstdr", {
+      comments: {
+        lineComment: "//",
+        blockComment: ["/*", "*/"],
+      },
+      brackets: [
+        ["{", "}"],
+        ["[", "]"],
+        ["(", ")"],
       ],
-    },
+      autoClosingPairs: [
+        { open: "{", close: "}" },
+        { open: "[", close: "]" },
+        { open: "(", close: ")" },
+        { open: '"', close: '"' },
+      ],
+    });
+    m.languages.setMonarchTokensProvider("pstdr", {
+      keywords: [
+        "on",
+        "join",
+        "leave",
+        "chat",
+        "right",
+        "click",
+        "hit",
+        "break",
+        "hurt",
+        "die",
+        "consume",
+        "interact",
+        "tick",
+        "projectile",
+        "spawn",
+        "script_event",
+        "entity_trigger",
+        "every",
+        "after",
+        "cancel",
+        "event",
+        "send",
+        "apply",
+        "damage",
+        "ignite",
+        "play_sound",
+        "particle",
+        "command",
+        "run_fn",
+        "mcfunction",
+        "state",
+        "const",
+        "mut",
+        "func",
+        "unsafe",
+        "if",
+        "else",
+        "for",
+        "in",
+        "while",
+        "return",
+        "and",
+        "or",
+        "not",
+        "is",
+        "true",
+        "false",
+        "null",
+        "of",
+        "by",
+        "with",
+        "to",
+        "at",
+        "type",
+        "bind_target",
+      ],
+      brackets: [
+        { open: "{", close: "}", token: "delimiter.curly" },
+        { open: "[", close: "]", token: "delimiter.square" },
+        { open: "(", close: ")", token: "delimiter.parenthesis" },
+      ],
+      tokenizer: {
+        root: [
+          [/\/\/.*$/, "comment"],
+          [/\/\*/, "comment", "@comment"],
+          [/[@][a-zA-Z_]\w*/, "annotation"],
+          [/\b\d+(\.\d+)?(ms|s|m|t)\b/, "number.float"],
+          [/\b\d+(\.\d+)?\b/, "number"],
+          [/"/, "string", "@string"],
+          [
+            /[a-zA-Z_]\w*/,
+            {
+              cases: {
+                "@keywords": "keyword",
+                "@default": "identifier",
+              },
+            },
+          ],
+          [/[{}()\[\]]/, "@brackets"],
+          [/[?:.,;]/, "delimiter"],
+          [/[+\-*/%=!<>&|]+/, "operator"],
+        ],
+        comment: [
+          [/[^/*]+/, "comment"],
+          [/\*\//, "comment", "@pop"],
+          [/[/*]/, "comment"],
+        ],
+        string: [
+          [/\\./, "string.escape"],
+          [/\{/, { token: "delimiter.bracket", next: "@interpolation" }],
+          [/"/, "string", "@pop"],
+          [/[^\\"{]+/, "string"],
+        ],
+        interpolation: [
+          [/\}/, { token: "delimiter.bracket", next: "@pop" }],
+          [/[a-zA-Z_]\w*/, "variable"],
+          [/\./, "delimiter"],
+          [/[^{}]+/, "variable"],
+        ],
+      },
+    });
+  });
+
+  registerLanguageOnce(m, "mcfunction", [".mcfunction"], () => {
+    m.languages.setLanguageConfiguration("mcfunction", {
+      comments: {
+        lineComment: "#",
+      },
+      brackets: [
+        ["{", "}"],
+        ["[", "]"],
+        ["(", ")"],
+      ],
+    });
+    m.languages.setMonarchTokensProvider("mcfunction", {
+      tokenizer: {
+        root: [
+          [/^\s*#.*$/, "comment"],
+          [/^\s*\/?[a-z_][a-z0-9_]*/, "keyword"],
+          [/[@](?:initiator|[paserncv])(?=\[|\s|$)/, "variable.predefined"],
+          [/[~^]-?\d*(\.\d+)?/, "number.float"],
+          [/-?\d+(\.\d+)?/, "number"],
+          [/"([^"\\]|\\.)*"/, "string"],
+          [/[a-z0-9_]+:[a-z0-9_./-]+/, "type.identifier"],
+          [/[\[\]{}()=,]/, "delimiter"],
+        ],
+      },
+    });
   });
 }
 
@@ -193,12 +254,13 @@ function ensureLspProvidersRegistered(m: typeof monaco) {
     m.languages.registerCompletionItemProvider(langId, {
       triggerCharacters: [".", '"', "/", "§", " ", "@"],
       async provideCompletionItems(model, position) {
+        if (!model || !position) return { suggestions: [] };
         const word = model.getWordUntilPosition(position);
         const range = {
-          startLineNumber: position.lineNumber,
-          endLineNumber: position.lineNumber,
-          startColumn: word.startColumn,
-          endColumn: word.endColumn,
+          startLineNumber: Math.max(1, position.lineNumber),
+          endLineNumber: Math.max(1, position.lineNumber),
+          startColumn: Math.max(1, word?.startColumn ?? position.column),
+          endColumn: Math.max(1, word?.endColumn ?? position.column),
         };
 
         const suggestions: monaco.languages.CompletionItem[] = [];
@@ -254,6 +316,7 @@ function ensureLspProvidersRegistered(m: typeof monaco) {
 
     m.languages.registerHoverProvider(langId, {
       async provideHover(model, position) {
+        if (!model || !position) return null;
         const word = model.getWordAtPosition(position);
         const term = word?.word ?? "";
         try {
@@ -280,40 +343,60 @@ function ensureLspProvidersRegistered(m: typeof monaco) {
 
   m.languages.registerCodeActionProvider("pstdr", {
     async provideCodeActions(model, range) {
+      if (!model || !range) {
+        return { actions: [], dispose: () => {} };
+      }
       try {
         const items = await api.lspCodeActions(
           activeRelPathForProviders,
           "pstdr",
-          range.startLineNumber,
-          range.startColumn,
-          range.endLineNumber,
-          range.endColumn,
+          Math.max(1, range.startLineNumber),
+          Math.max(1, range.startColumn),
+          Math.max(1, range.endLineNumber),
+          Math.max(1, range.endColumn),
         );
-        const actions: monaco.languages.CodeAction[] = items.map((item) => ({
-          title: item.title,
-          kind: item.kind || "quickfix",
-          isPreferred: item.is_preferred,
-          edit: {
-            edits: item.edits.map((te) => ({
-              resource: model.uri,
-              versionId: model.getVersionId(),
-              textEdit: {
-                range: {
-                  startLineNumber: Math.max(1, te.line),
-                  startColumn: Math.max(1, te.column),
-                  endLineNumber: Math.max(1, te.end_line),
-                  endColumn: Math.max(1, te.end_column),
-                },
-                text: te.new_text,
-              },
-            })),
-          },
-        }));
+        const safeItems = Array.isArray(items) ? items : [];
+        const actions: monaco.languages.CodeAction[] = safeItems
+          .filter((item) => item && Array.isArray(item.edits) && item.edits.length > 0)
+          .map((item) => ({
+            title: item.title || "Quick Fix",
+            kind: item.kind || "quickfix",
+            isPreferred: Boolean(item.is_preferred),
+            edit: {
+              edits: item.edits.map((te) => {
+                const startLine = Math.max(1, Number(te.line) || 1);
+                const endLine = Math.max(startLine, Number(te.end_line) || startLine);
+                const startCol = Math.max(1, Number(te.column) || 1);
+                const endCol = Math.max(
+                  endLine === startLine ? startCol : 1,
+                  Number(te.end_column) || startCol + 1,
+                );
+                return {
+                  resource: model.uri,
+                  versionId: model.getVersionId(),
+                  textEdit: {
+                    range: {
+                      startLineNumber: startLine,
+                      startColumn: startCol,
+                      endLineNumber: endLine,
+                      endColumn: endCol,
+                    },
+                    text: String(te.new_text ?? ""),
+                  },
+                };
+              }),
+            },
+          }));
         return {
           actions,
           dispose: () => {},
         };
-      } catch {
+      } catch (err) {
+        api.frontendTraceLog(
+          "warn",
+          "monaco.codeAction",
+          `Code action error for '${activeRelPathForProviders}': ${String(err)}`,
+        );
         return {
           actions: [],
           dispose: () => {},
@@ -407,7 +490,27 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
 
   // Sync open & incremental changes to Rust stdio LSP + built-in Minecraft LSP
   useEffect(() => {
-    void api.lspSyncDocument(relPath, lang, initialContent, 1, "open").catch(() => {});
+    api.frontendTraceLog(
+      "trace",
+      "monaco.tab",
+      `Sync open '${relPath}' (lang='${lang}', len=${initialContent.length})`,
+    );
+    void api
+      .lspSyncDocument(relPath, lang, initialContent, 1, "open")
+      .then((diags) => {
+        api.frontendTraceLog(
+          "trace",
+          "monaco.lsp",
+          `lspSyncDocument(open) '${relPath}' -> ${Array.isArray(diags) ? diags.length : 0} diag(s)`,
+        );
+      })
+      .catch((err) => {
+        api.frontendTraceLog(
+          "warn",
+          "monaco.lsp",
+          `lspSyncDocument(open) failed for '${relPath}': ${String(err)}`,
+        );
+      });
   }, [relPath, lang, initialContent]);
 
   useEffect(() => {
@@ -415,7 +518,20 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
       versionRef.current += 1;
       void api
         .lspSyncDocument(relPath, lang, content, versionRef.current, "change")
-        .catch(() => {});
+        .then((diags) => {
+          api.frontendTraceLog(
+            "trace",
+            "monaco.lsp",
+            `lspSyncDocument(change) '${relPath}' v=${versionRef.current} -> ${Array.isArray(diags) ? diags.length : 0} diag(s)`,
+          );
+        })
+        .catch((err) => {
+          api.frontendTraceLog(
+            "warn",
+            "monaco.lsp",
+            `lspSyncDocument(change) failed for '${relPath}': ${String(err)}`,
+          );
+        });
     }, 280);
     return () => window.clearTimeout(timer);
   }, [relPath, lang, content]);
@@ -427,23 +543,38 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
     if (!ed || !m) return;
     const model = ed.getModel();
     if (!model) return;
-    const markers: monaco.editor.IMarkerData[] = lspDiagnostics
-      .filter((d) => d.rel_path === relPath)
-      .map((d) => ({
-        startLineNumber: Math.max(1, d.line),
-        startColumn: Math.max(1, d.column),
-        endLineNumber: Math.max(1, d.end_line),
-        endColumn: Math.max(2, d.end_column),
-        code: d.code ?? undefined,
-        message: `[${d.source}] ${d.message}`,
-        severity:
-          d.severity === "error"
-            ? m.MarkerSeverity.Error
-            : d.severity === "warning"
-              ? m.MarkerSeverity.Warning
-              : m.MarkerSeverity.Info,
-      }));
-    m.editor.setModelMarkers(model, "packstudio-lsp", markers);
+    const safeDiags = Array.isArray(lspDiagnostics) ? lspDiagnostics : [];
+    const markers: monaco.editor.IMarkerData[] = safeDiags
+      .filter((d) => d && typeof d.rel_path === "string" && d.rel_path === relPath)
+      .map((d) => {
+        const startLine = Math.max(1, Number(d.line) || 1);
+        const endLine = Math.max(startLine, Number(d.end_line) || startLine);
+        const startCol = Math.max(1, Number(d.column) || 1);
+        const endCol = Math.max(startCol + 1, Number(d.end_column) || startCol + 1);
+        return {
+          startLineNumber: startLine,
+          startColumn: startCol,
+          endLineNumber: endLine,
+          endColumn: endCol,
+          code: d.code ?? undefined,
+          message: `[${d.source || "lsp"}] ${d.message || "Diagnostic"}`,
+          severity:
+            d.severity === "error"
+              ? m.MarkerSeverity.Error
+              : d.severity === "warning"
+                ? m.MarkerSeverity.Warning
+                : m.MarkerSeverity.Info,
+        };
+      });
+    try {
+      m.editor.setModelMarkers(model, "packstudio-lsp", markers);
+    } catch (err) {
+      api.frontendTraceLog(
+        "warn",
+        "monaco.markers",
+        `setModelMarkers failed for '${relPath}': ${String(err)}`,
+      );
+    }
   }, [relPath, lspDiagnostics]);
 
   useEffect(() => {
@@ -571,6 +702,11 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
           language={lang}
           value={content}
           beforeMount={(m) => {
+            api.frontendTraceLog(
+              "trace",
+              "monaco.mount",
+              `beforeMount '${relPath}' (lang='${lang}')`,
+            );
             monacoRef.current = m;
             registerMinecraftLanguages(m);
             ensureLspProvidersRegistered(m);
@@ -583,9 +719,33 @@ export const MonacoCodeTab: React.FC<MonacoCodeTabProps> = ({
           onMount={(ed, m) => {
             editorRef.current = ed;
             monacoRef.current = m;
+            registerMinecraftLanguages(m);
+            ensureLspProvidersRegistered(m);
             activeRelPathForProviders = relPath;
             activeLanguageForProviders = lang;
             activeSnippetsForProviders = extensions?.active_snippets ?? [];
+            const model = ed.getModel();
+            if (model && model.getLanguageId() !== lang) {
+              try {
+                api.frontendTraceLog(
+                  "trace",
+                  "monaco.mount",
+                  `setModelLanguage '${relPath}' -> '${lang}'`,
+                );
+                m.editor.setModelLanguage(model, lang);
+              } catch (err) {
+                api.frontendTraceLog(
+                  "error",
+                  "monaco.mount",
+                  `setModelLanguage failed for '${relPath}' -> '${lang}': ${String(err)}`,
+                );
+              }
+            }
+            api.frontendTraceLog(
+              "trace",
+              "monaco.mount",
+              `onMount complete for '${relPath}' (lang='${lang}')`,
+            );
             ed.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => {
               void handleSave();
             });

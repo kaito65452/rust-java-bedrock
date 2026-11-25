@@ -281,4 +281,22 @@ export const api = {
 
   pstdrConvertWorkspace: () =>
     invoke<PstdrBuildResultDto>("pstdr_convert_workspace"),
+
+  frontendTraceLog: (
+    level: "error" | "warn" | "info" | "trace",
+    scope: string,
+    message: string,
+    stack?: string | null,
+  ) => {
+    try {
+      void invoke<void>("frontend_trace_log", {
+        level,
+        scope,
+        message,
+        stack: stack ?? null,
+      }).catch(() => {});
+    } catch {
+      // Never allow trace logging to throw or interrupt UI execution.
+    }
+  },
 };

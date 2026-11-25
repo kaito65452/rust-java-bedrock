@@ -9,6 +9,46 @@ pub mod workspace;
 
 use state::StudioState;
 
+/// Returns true when verbose terminal trace logging is enabled via `PACKSTUDIO_TRACE=1` or `RUST_LOG`.
+#[must_use]
+pub fn is_trace_enabled() -> bool {
+    if let Ok(val) = std::env::var("PACKSTUDIO_TRACE") {
+        let trimmed = val.trim();
+        if trimmed == "1" || trimmed.eq_ignore_ascii_case("true") {
+            return true;
+        }
+    }
+    std::env::var("RUST_LOG").is_ok_and(|v| !v.trim().is_empty())
+}
+
+/// Tauri Command: Forward frontend errors, warnings, and opt-in trace breadcrumbs to terminal `stderr`.
+#[tauri::command]
+pub fn frontend_trace_log(level: String, scope: String, message: String, stack: Option<String>) {
+    let norm_level = level.trim().to_ascii_lowercase();
+    let always_print = matches!(norm_level.as_str(), "error" | "warn");
+    if !always_print && !is_trace_enabled() {
+        return;
+    }
+    let clean_level = if norm_level.is_empty() {
+        "info"
+    } else {
+        norm_level.as_str()
+    };
+    let clean_scope = if scope.trim().is_empty() {
+        "app"
+    } else {
+        scope.trim()
+    };
+    eprintln!("[pack-studio:frontend:{clean_level}] [{clean_scope}] {message}");
+    if let Some(st) = stack {
+        for line in st.lines() {
+            if !line.trim().is_empty() {
+                eprintln!("    {line}");
+            }
+        }
+    }
+}
+
 /// Launches the Pack-Studio Tauri v2 application runtime.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -63,6 +103,7 @@ pub fn run() {
             lsp::lsp_completion,
             lsp::lsp_hover,
             lsp::lsp_code_actions,
+            frontend_trace_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pack-Studio Tauri application");

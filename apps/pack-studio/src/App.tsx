@@ -6,6 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Allotment } from "allotment";
 import { api } from "./api";
 import { ConverterTab } from "./components/ConverterTab";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ExplorerSidebar } from "./components/ExplorerSidebar";
 import { ExtensionsSidebar } from "./components/ExtensionsSidebar";
 import { ExtensionsTab } from "./components/ExtensionsTab";
@@ -209,10 +210,20 @@ export default function App() {
     const unlistenLsp = listen<LspDiagnosticsEvent>(
       "lsp://diagnostics",
       (ev) => {
-        const key = `${ev.payload.server_id}::${ev.payload.rel_path}`;
+        const payload = ev.payload;
+        if (!payload || typeof payload.rel_path !== "string") return;
+        const safeDiags = Array.isArray(payload.diagnostics)
+          ? payload.diagnostics
+          : [];
+        api.frontendTraceLog(
+          "trace",
+          "app.lsp",
+          `Received lsp://diagnostics server='${payload.server_id}' path='${payload.rel_path}' count=${safeDiags.length}`,
+        );
+        const key = `${payload.server_id ?? "lsp"}::${payload.rel_path}`;
         setLspDiagMap((prev) => ({
           ...prev,
-          [key]: ev.payload.diagnostics,
+          [key]: safeDiags,
         }));
       },
     );
@@ -348,6 +359,12 @@ export default function App() {
           : isTextCodeAsset(relPath) || isModelAsset(relPath)
             ? "code"
             : "code");
+
+      api.frontendTraceLog(
+        "trace",
+        "app.openAssetTab",
+        `Opening '${relPath}' (mode='${mode}', forceMode='${forceMode ?? "auto"}')`,
+      );
 
       try {
         if (mode === "texture") {
@@ -706,15 +723,17 @@ export default function App() {
   );
 
   const mergedProblems = useMemo(() => {
-    const lspWarnings: ConversionWarning[] = allLspDiagnostics.map((d) => ({
-      source_path: d.rel_path,
-      stage: "audit",
-      severity: d.severity,
-      reason: `${d.message} (L${d.line}:${d.column})`,
-      actionable_fix: `LSP: ${d.source}`,
-      asset: d.rel_path,
-      message: d.message,
-    }));
+    const lspWarnings: ConversionWarning[] = allLspDiagnostics
+      .filter((d): d is LspDiagnosticDto => Boolean(d && typeof d.rel_path === "string"))
+      .map((d) => ({
+        source_path: d.rel_path,
+        stage: "audit",
+        severity: d.severity ?? "info",
+        reason: `${d.message ?? "Diagnostic"} (L${d.line ?? 1}:${d.column ?? 1})`,
+        actionable_fix: `LSP: ${d.source ?? "lsp"}`,
+        asset: d.rel_path,
+        message: d.message ?? "Diagnostic",
+      }));
     return [...problems, ...lspWarnings];
   }, [problems, allLspDiagnostics]);
 
@@ -1427,24 +1446,30 @@ export default function App() {
                       )}
 
                       {activeTab?.kind === "code" && activeTab.relPath && (
-                        <MonacoCodeTab
-                          relPath={activeTab.relPath}
-                          initialContent={textCache[activeTab.relPath] ?? ""}
-                          revealLine={activeTab.revealLine}
-                          problems={problems}
-                          extensions={extensionsSnapshot}
-                          lspDiagnostics={allLspDiagnostics}
-                          onDirtyChange={(dirty) => setTabDirty(activeTab.id, dirty)}
-                          onSave={async (rel, content) => {
-                            const snap = await api.fsWriteText(rel, content);
-                            setTextCache((c) => ({ ...c, [rel]: content }));
-                            setProject(snap);
-                            appendLog("success", `Saved ${rel}`);
-                          }}
-                          onOpenBlockbench={(rel) =>
-                            void handleOpenBlockbench(rel)
-                          }
-                        />
+                        <ErrorBoundary
+                          scope="editor-pane"
+                          title={`Code editor crashed while rendering ${activeTab.relPath}`}
+                          resetKey={activeTab.relPath}
+                        >
+                          <MonacoCodeTab
+                            relPath={activeTab.relPath}
+                            initialContent={textCache[activeTab.relPath] ?? ""}
+                            revealLine={activeTab.revealLine}
+                            problems={problems}
+                            extensions={extensionsSnapshot}
+                            lspDiagnostics={allLspDiagnostics}
+                            onDirtyChange={(dirty) => setTabDirty(activeTab.id, dirty)}
+                            onSave={async (rel, content) => {
+                              const snap = await api.fsWriteText(rel, content);
+                              setTextCache((c) => ({ ...c, [rel]: content }));
+                              setProject(snap);
+                              appendLog("success", `Saved ${rel}`);
+                            }}
+                            onOpenBlockbench={(rel) =>
+                              void handleOpenBlockbench(rel)
+                            }
+                          />
+                        </ErrorBoundary>
                       )}
 
                       {activeTab?.kind === "texture" &&
