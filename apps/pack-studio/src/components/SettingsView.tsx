@@ -466,7 +466,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div style={{ fontSize: 12, color: "var(--vsc-text-dim)", marginTop: 2 }}>
                       Installed version:{" "}
                       <span style={{ fontFamily: "var(--font-mono)", color: "#9cdcfe" }}>
-                        v{studioUpdate?.current_version ?? "0.2.3"}
+                        v{studioUpdate?.current_version ?? "0.3.0-beta.1"}
                       </span>
                     </div>
                   </div>

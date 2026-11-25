@@ -39,7 +39,7 @@ pub const PSTDR_SIGNING_PUBKEY_HEX: &str =
     "4970e4b61c17aec73af409e091a4e11589603b4db7d23e2535016aa3741c4e09";
 
 /// Built-in PackStudio desktop application version (synchronized with `tauri.conf.json` / `.deb`).
-pub const PACKSTUDIO_APP_VERSION: &str = "0.2.3";
+pub const PACKSTUDIO_APP_VERSION: &str = "0.3.0-beta.1";
 
 /// Fixed GitHub API endpoint for checking the latest published PackStudio release.
 pub const PACKSTUDIO_RELEASES_API_URL: &str =

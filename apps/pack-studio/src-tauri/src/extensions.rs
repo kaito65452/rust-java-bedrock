@@ -121,7 +121,7 @@ pub fn builtin_extension_dto(enabled: bool) -> InstalledExtensionDto {
         "name": "minecraft-pack-intelligence",
         "publisher": "packstudio",
         "displayName": "Minecraft Resource Pack Intelligence (Built-in LSP)",
-        "version": "0.2.3",
+        "version": "0.3.0-beta.1",
         "description": "Built-in diagnostics, completions, and hover documentation for pack.mcmeta, Bedrock manifest.json, terrain_texture.json, item_texture.json, .geo.json, .lang, and Molang.",
         "contributes": {
             "languages": ["json", "mc-lang", "molang"],
@@ -138,7 +138,7 @@ pub fn builtin_extension_dto(enabled: bool) -> InstalledExtensionDto {
         id: String::from(BUILTIN_MINECRAFT_EXT_ID),
         display_name: String::from("Minecraft Pack Intelligence (LSP)"),
         publisher: String::from("packstudio"),
-        version: String::from("0.2.3"),
+        version: String::from("0.3.0-beta.1"),
         description: String::from(
             "Built-in diagnostics, live asset-path completions, and hover docs for pack.mcmeta, Bedrock manifest.json, texture atlases, .geo.json, .lang, and Molang.",
         ),

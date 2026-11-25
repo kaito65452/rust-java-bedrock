@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${DEB_ARCH:-$(dpkg --print-architecture)}"
-VERSION="${DEB_VERSION:-0.2.3}"
+VERSION="${DEB_VERSION:-0.3.0-beta.1}"
 BINARY_PATH="${1:-${REPO_ROOT}/target/release/pack-studio-tauri}"
 OUT_DIR="${2:-${REPO_ROOT}/dist-deb}"
 
