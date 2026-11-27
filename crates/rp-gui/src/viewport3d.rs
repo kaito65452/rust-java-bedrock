@@ -263,7 +263,7 @@ impl ModelViewportState {
         painter.rect_stroke(
             rect,
             6.0,
-            Stroke::new(1.0, Color32::from_rgb(58, 72, 92)),
+            Stroke::new(1.0_f32, Color32::from_rgb(58, 72, 92)),
             egui::StrokeKind::Inside,
         );
 
@@ -301,8 +301,8 @@ impl ModelViewportState {
 
         // 1. 16-unit Minecraft block floor grid at Y = 0
         if self.show_block_grid {
-            let minor = Stroke::new(0.8, Color32::from_rgba_unmultiplied(110, 130, 160, 38));
-            let major = Stroke::new(1.2, Color32::from_rgba_unmultiplied(140, 175, 215, 95));
+            let minor = Stroke::new(0.8_f32, Color32::from_rgba_unmultiplied(110, 130, 160, 38));
+            let major = Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(140, 175, 215, 95));
             for i in 0..=16 {
                 let f = f64::from(i);
                 let stroke = if i == 0 || i == 8 || i == 16 {
@@ -329,7 +329,7 @@ impl ModelViewportState {
             ];
             for (end, col, label) in axes {
                 let p = to_screen(project_cam(end));
-                painter.line_segment([o, p], Stroke::new(1.8, col));
+                painter.line_segment([o, p], Stroke::new(1.8_f32, col));
                 painter.text(
                     p + Vec2::new(4.0, -4.0),
                     egui::Align2::LEFT_CENTER,
@@ -342,7 +342,7 @@ impl ModelViewportState {
 
         // 3. Optional Player Head [4..12]^3 reference wireframe
         if self.show_head_ref {
-            let head_stroke = Stroke::new(1.2, Color32::from_rgba_unmultiplied(235, 190, 90, 130));
+            let head_stroke = Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(235, 190, 90, 130));
             draw_box_wireframe(
                 &painter,
                 [4.0, 4.0, 4.0],
@@ -374,7 +374,7 @@ impl ModelViewportState {
                 ],
                 &project_cam,
                 &to_screen,
-                Stroke::new(1.4, b_col),
+                Stroke::new(1.4_f32, b_col),
             );
         }
 
@@ -452,7 +452,7 @@ impl ModelViewportState {
             );
             let outline = if self.show_wireframe {
                 Stroke::new(
-                    if quad.selected { 1.4 } else { 0.9 },
+                    if quad.selected { 1.4_f32 } else { 0.9_f32 },
                     if quad.selected {
                         Color32::from_rgb(255, 235, 130)
                     } else {
@@ -466,11 +466,11 @@ impl ModelViewportState {
         }
 
         for &(a, b) in &all_wire_edges {
-            painter.line_segment([a, b], Stroke::new(1.1, Color32::from_rgb(90, 210, 255)));
+            painter.line_segment([a, b], Stroke::new(1.1_f32, Color32::from_rgb(90, 210, 255)));
         }
         // Highlight selected element edges clearly on top
         for &(a, b) in &selected_edges {
-            painter.line_segment([a, b], Stroke::new(2.0, Color32::from_rgb(255, 215, 70)));
+            painter.line_segment([a, b], Stroke::new(2.0_f32, Color32::from_rgb(255, 215, 70)));
         }
 
         // 6. Selected element rotation pivot crosshair + tether to cube center
@@ -503,9 +503,9 @@ impl ModelViewportState {
             let p_scr = to_screen(project_cam(pivot_world));
             let c_scr = to_screen(project_cam(cube_center));
             let pivot_col = Color32::from_rgb(255, 95, 225);
-            painter.line_segment([p_scr, c_scr], Stroke::new(1.2, pivot_col));
+            painter.line_segment([p_scr, c_scr], Stroke::new(1.2_f32, pivot_col));
             painter.circle_filled(p_scr, 4.5, pivot_col);
-            painter.circle_stroke(p_scr, 7.0, Stroke::new(1.3, Color32::WHITE));
+            painter.circle_stroke(p_scr, 7.0, Stroke::new(1.3_f32, Color32::WHITE));
             painter.text(
                 p_scr + Vec2::new(8.0, -8.0),
                 egui::Align2::LEFT_CENTER,

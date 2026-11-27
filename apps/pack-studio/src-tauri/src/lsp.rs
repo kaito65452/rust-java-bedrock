@@ -965,11 +965,7 @@ pub fn builtin_pstdr_diagnostics(
     let spec = crate::pstdr_sync::load_active_bedrock_spec();
     let (program, mut diags) = parse_source(content, rel_path);
     if let Some(prog) = &program {
-        let ctx = ValidationContext {
-            workspace_root,
-            spec: &spec,
-            strict_vanilla_ids: true,
-        };
+        let ctx = ValidationContext::simple(workspace_root, &spec, true);
         let (_info, val_diags) = validate_program(prog, &ctx);
         diags.extend(val_diags);
     }

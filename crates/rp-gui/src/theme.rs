@@ -189,7 +189,7 @@ pub fn apply_material3_theme(ctx: &Context, dark_mode: bool) -> M3Palette {
     visuals.code_bg_color = p.surface_container_lowest;
 
     visuals.window_corner_radius = CornerRadius::same(16);
-    visuals.window_stroke = Stroke::new(1.0, p.outline_variant);
+    visuals.window_stroke = Stroke::new(1.0_f32, p.outline_variant);
     visuals.menu_corner_radius = CornerRadius::same(12);
     visuals.popup_shadow = egui::epaint::Shadow {
         offset: [0, 3],
@@ -200,7 +200,7 @@ pub fn apply_material3_theme(ctx: &Context, dark_mode: bool) -> M3Palette {
     visuals.window_shadow = visuals.popup_shadow;
 
     visuals.selection.bg_fill = p.primary_container;
-    visuals.selection.stroke = Stroke::new(1.25, p.primary);
+    visuals.selection.stroke = Stroke::new(1.25_f32, p.primary);
     visuals.hyperlink_color = p.primary;
     visuals.warn_fg_color = p.warning;
     visuals.error_fg_color = p.error;
@@ -208,37 +208,37 @@ pub fn apply_material3_theme(ctx: &Context, dark_mode: bool) -> M3Palette {
     // Material 3 Non-interactive containers (cards, frames, dividers)
     visuals.widgets.noninteractive.bg_fill = p.surface_container;
     visuals.widgets.noninteractive.weak_bg_fill = p.surface_container_low;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.outline_variant);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.on_surface_variant);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.outline_variant);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.on_surface_variant);
     visuals.widgets.noninteractive.corner_radius = CornerRadius::same(12);
 
     // Material 3 Inactive controls (tonal buttons, text inputs, chips)
     visuals.widgets.inactive.bg_fill = p.surface_container_highest;
     visuals.widgets.inactive.weak_bg_fill = p.surface_container_high;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, p.outline_variant);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, p.on_surface);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, p.outline_variant);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.on_surface);
     visuals.widgets.inactive.corner_radius = CornerRadius::same(12);
 
     // Material 3 Hovered controls (tonal state layer)
     visuals.widgets.hovered.bg_fill = p.secondary_container;
     visuals.widgets.hovered.weak_bg_fill = p.secondary_container;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.2, p.primary);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.2, p.on_secondary_container);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.2_f32, p.primary);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.2_f32, p.on_secondary_container);
     visuals.widgets.hovered.corner_radius = CornerRadius::same(12);
     visuals.widgets.hovered.expansion = 0.5;
 
     // Material 3 Active / Pressed controls
     visuals.widgets.active.bg_fill = p.primary_container;
     visuals.widgets.active.weak_bg_fill = p.primary_container;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.5, p.primary);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.5, p.on_primary_container);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, p.primary);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.5_f32, p.on_primary_container);
     visuals.widgets.active.corner_radius = CornerRadius::same(12);
 
     // Open combo boxes / menus
     visuals.widgets.open.bg_fill = p.surface_container_highest;
     visuals.widgets.open.weak_bg_fill = p.surface_container_high;
-    visuals.widgets.open.bg_stroke = Stroke::new(1.2, p.primary);
-    visuals.widgets.open.fg_stroke = Stroke::new(1.2, p.on_surface);
+    visuals.widgets.open.bg_stroke = Stroke::new(1.2_f32, p.primary);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.2_f32, p.on_surface);
     visuals.widgets.open.corner_radius = CornerRadius::same(12);
 
     ctx.set_visuals(visuals);
@@ -259,7 +259,7 @@ pub fn apply_material3_theme(ctx: &Context, dark_mode: bool) -> M3Palette {
 pub fn m3_card_frame(p: &M3Palette) -> Frame {
     Frame::new()
         .fill(p.surface_container)
-        .stroke(Stroke::new(1.0, p.outline_variant))
+        .stroke(Stroke::new(1.0_f32, p.outline_variant))
         .corner_radius(CornerRadius::same(14))
         .inner_margin(Margin::symmetric(12, 10))
 }
@@ -269,7 +269,7 @@ pub fn m3_card_frame(p: &M3Palette) -> Frame {
 pub fn m3_rail_frame(p: &M3Palette) -> Frame {
     Frame::new()
         .fill(p.surface_container_low)
-        .stroke(Stroke::new(1.0, p.outline_variant))
+        .stroke(Stroke::new(1.0_f32, p.outline_variant))
         .inner_margin(Margin::symmetric(8, 6))
 }
 
@@ -296,12 +296,12 @@ pub fn m3_segmented_button(
     let btn = if selected {
         egui::Button::new(RichText::new(label).color(selected_fg).strong())
             .fill(selected_bg)
-            .stroke(Stroke::new(1.2, p.outline))
+            .stroke(Stroke::new(1.2_f32, p.outline))
             .corner_radius(CornerRadius::same(18))
     } else {
         egui::Button::new(RichText::new(label).color(p.on_surface_variant))
             .fill(p.surface_container_high)
-            .stroke(Stroke::new(1.0, p.outline_variant))
+            .stroke(Stroke::new(1.0_f32, p.outline_variant))
             .corner_radius(CornerRadius::same(18))
     };
     ui.add(btn)
@@ -315,7 +315,7 @@ pub fn m3_tonal_button(ui: &mut Ui, enabled: bool, label: &str, p: &M3Palette) -
             .strong(),
     )
     .fill(p.secondary_container)
-    .stroke(Stroke::new(1.0, p.outline_variant))
+    .stroke(Stroke::new(1.0_f32, p.outline_variant))
     .corner_radius(CornerRadius::same(18));
     ui.add_enabled(enabled, btn)
 }

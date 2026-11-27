@@ -1304,7 +1304,7 @@ impl RpGuiApp {
             .frame(
                 egui::Frame::new()
                     .fill(palette.surface_container)
-                    .stroke(Stroke::new(1.0, palette.outline_variant))
+                    .stroke(Stroke::new(1.0_f32, palette.outline_variant))
                     .inner_margin(egui::Margin::symmetric(12, 7)),
             )
             .show(ctx, |ui| {
@@ -1417,7 +1417,7 @@ impl RpGuiApp {
             .frame(
                 egui::Frame::new()
                     .fill(palette.surface_container_low)
-                    .stroke(Stroke::new(1.0, palette.outline_variant))
+                    .stroke(Stroke::new(1.0_f32, palette.outline_variant))
                     .inner_margin(egui::Margin::symmetric(12, 5)),
             )
             .show(ctx, |ui| {
@@ -2326,7 +2326,7 @@ impl RpGuiApp {
             .frame(
                 egui::Frame::new()
                     .fill(palette.surface_container_low)
-                    .stroke(Stroke::new(1.0, palette.outline_variant))
+                    .stroke(Stroke::new(1.0_f32, palette.outline_variant))
                     .inner_margin(egui::Margin::symmetric(12, 6)),
             )
             .show(ctx, |ui| {
@@ -2419,7 +2419,7 @@ impl RpGuiApp {
                                 Color32::TRANSPARENT
                             })
                             .stroke(if active {
-                                Stroke::new(1.0, palette.primary)
+                                Stroke::new(1.0_f32, palette.primary)
                             } else {
                                 Stroke::NONE
                             })
@@ -3571,7 +3571,7 @@ impl RpGuiApp {
                         if step_x >= 3.5 && step_y >= 3.5 {
                             let p = ui.painter_at(rect);
                             let grid_stroke = Stroke::new(
-                                0.6,
+                                0.6_f32,
                                 Color32::from_rgba_unmultiplied(255, 255, 255, 45),
                             );
                             for x in 1..(px_w as i32) {
@@ -3768,7 +3768,7 @@ fn draw_checkerboard(ui: &Ui, rect: Rect) {
     painter.rect_stroke(
         rect,
         2.0,
-        Stroke::new(1.0, Color32::GRAY),
+        Stroke::new(1.0_f32, Color32::GRAY),
         egui::StrokeKind::Inside,
     );
 }
