@@ -4763,8 +4763,8 @@ dependencies = [
 
 [[package]]
 name = "pstdr-lang"
-version = "0.1.0-pre-beta.1"
-source = "git+https://github.com/kaito65452/pstdr-dsl.git?branch=main#5288aba6d095e3c5ece7e4ea842d436c3778ef9e"
+version = "0.2.0-beta.1"
+source = "git+https://github.com/kaito65452/pstdr-dsl.git?branch=main#d5d0d4570471e6e04bae08e3b75f27833dc73098"
 dependencies = [
  "serde",
  "serde_json",
